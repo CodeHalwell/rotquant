@@ -17,7 +17,7 @@ from __future__ import annotations
 
 import copy
 from dataclasses import dataclass
-from typing import Dict, Iterable, Optional
+from typing import Dict, Optional, Sequence
 
 import torch
 import torch.nn as nn
@@ -38,7 +38,7 @@ class PatchConfig:
     rotation: str = "fwht"            # none | fwht | dense | learned
     block: int = 128
     mode: str = "consistent"          # see PATCH_MODES
-    include: Optional[Iterable[str]] = None
+    include: Optional[Sequence[str]] = None
     fallback: bool = False
     seed: int = 0
 
@@ -74,9 +74,10 @@ def patch_model(model: nn.Module, cfg: PatchConfig,
         raise ValueError(f"unknown patch mode: {cfg.mode}")
     hessians = hessians or {}
 
+    include_terms = tuple(cfg.include) if cfg.include is not None else None
     targets = [(n, m) for n, m in model.named_modules()
                if isinstance(m, nn.Linear)
-               and (cfg.include is None or any(k in n for k in cfg.include))]
+               and (include_terms is None or any(k in n for k in include_terms))]
 
     for i, (name, linear) in enumerate(targets):
         weight_rot, act_rot = _make_rotations(linear.in_features, cfg,

@@ -72,11 +72,14 @@ class QuantizedWeight:
         return w
 
     def bit_budget(self) -> BitBudget:
-        extra = 0.0
+        extra_code_bits = 0.0
+        extra_scale_bits = 0.0
         if self.residual_packed is not None:
-            extra = self.residual_packed.bits + self.scale_bits_residual
+            extra_code_bits = self.residual_packed.bits
+            extra_scale_bits = self.scale_bits_residual
         return BitBudget(levels=2 ** self.packed.bits, group_size=self.group_size,
-                         scale_bits=self.scale_bits_main + extra * self.group_size)
+                         scale_bits=(self.scale_bits_main + extra_scale_bits
+                                     + extra_code_bits * self.group_size))
 
     # bookkeeping for accounting
     scale_bits_main: float = 16.0

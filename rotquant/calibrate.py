@@ -1,6 +1,7 @@
 """Calibration: forward-hook activation capture and incremental layer Hessians.
 
-For each target ``nn.Linear`` we accumulate the (input) Hessian ``H = sum x^T x``
+For each target ``nn.Linear`` we accumulate the (input) Hessian estimate
+``H = mean_t x_t^T x_t``
 incrementally over a calibration set -- we never store the activations themselves.
 A damping term (default 1% of the mean diagonal) is added, auto-increasing on
 Cholesky failure, which is the instability the spec warns about.
@@ -8,7 +9,7 @@ Cholesky failure, which is the instability the spec warns about.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Dict, Iterable, List, Optional
+from typing import Dict, Iterable, List, Optional, Sequence
 
 import torch
 import torch.nn as nn
@@ -19,7 +20,7 @@ logger = get_logger()
 
 
 class HessianAccumulator:
-    """Incrementally accumulates ``H = sum_t x_t^T x_t`` for one linear layer."""
+    """Incrementally accumulates ``H = mean_t x_t^T x_t`` for one linear layer."""
 
     def __init__(self, in_features: int, device=None, dtype=torch.float32):
         self.in_features = in_features
@@ -51,7 +52,7 @@ class CalibrationResult:
     n_samples: Dict[str, int] = field(default_factory=dict)
 
 
-def _iter_linears(model: nn.Module, include: Optional[Iterable[str]] = None):
+def _iter_linears(model: nn.Module, include: Optional[Sequence[str]] = None):
     for name, mod in model.named_modules():
         if isinstance(mod, nn.Linear):
             if include is None or any(k in name for k in include):
@@ -60,7 +61,7 @@ def _iter_linears(model: nn.Module, include: Optional[Iterable[str]] = None):
 
 @torch.no_grad()
 def collect_hessians(model: nn.Module, dataloader: Iterable, device,
-                     include: Optional[Iterable[str]] = None,
+                     include: Optional[Sequence[str]] = None,
                      max_batches: Optional[int] = None,
                      damp_frac: float = 0.01) -> CalibrationResult:
     """Run the model over calibration batches, capturing per-linear input Hessians.
@@ -79,7 +80,8 @@ def collect_hessians(model: nn.Module, dataloader: Iterable, device,
             accums[name].update(x)
         return hook
 
-    for name, mod in _iter_linears(model, include):
+    include_terms = tuple(include) if include is not None else None
+    for name, mod in _iter_linears(model, include_terms):
         handles.append(mod.register_forward_hook(make_hook(name, mod.in_features)))
 
     model.eval()
