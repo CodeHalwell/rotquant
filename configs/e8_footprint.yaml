@@ -1,0 +1,7 @@
+# E8: footprint & speed. Best 3-bit config, packed (QuantLinear) vs fp16 fallback.
+# Report peak VRAM and tokens/s. Expect packed ~5x smaller; fallback OOMs on 7B+.
+experiment: E8
+label: e8_packed_3bit
+quant: {bits: 3, codebook: gaussian, scale: mse_search, group_size: 128, error_comp: none}
+patch: {rotation: fwht, block: 128, mode: consistent, fallback: false}
+eval: {perplexity: true, ppl_datasets: [wikitext2]}

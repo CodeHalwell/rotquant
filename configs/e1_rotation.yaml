@@ -1,0 +1,10 @@
+# E1: rotation transfers; FWHT ~= dense (weight-only).
+# Sweep `patch.rotation` over [none, dense, fwht, learned] at >=3 seeds.
+# Expect: FWHT ~= dense, both >> none; learned ~= FWHT for weight-only.
+experiment: E1
+label: e1_fwht_3bit
+model: meta-llama/Llama-2-7b-hf
+seed: 0
+quant: {bits: 3, codebook: gaussian, scale: mse_search, group_size: 128, error_comp: none}
+patch: {rotation: fwht, block: 128, mode: consistent}
+eval: {perplexity: true, ppl_datasets: [wikitext2, c4], zeroshot: true}

@@ -1,0 +1,7 @@
+# E2: Gaussian MSE-optimal grid > uniform at equal bits.
+# Sweep `quant.codebook` over [uniform, nf, gaussian].
+experiment: E2
+label: e2_gaussian_3bit
+quant: {bits: 3, codebook: gaussian, scale: mse_search, group_size: 128, error_comp: none}
+patch: {rotation: fwht, block: 128, mode: consistent}
+eval: {perplexity: true, ppl_datasets: [wikitext2, c4]}

@@ -1,0 +1,7 @@
+# E3: drop QJL. Equal total bits (3 + 1). Compare error_comp=residual vs qjl.
+# Expect: deterministic residual wins on PPL and layer-MSE.
+experiment: E3
+label: e3_residual_3plus1
+quant: {bits: 3, codebook: gaussian, scale: mse_search, group_size: 128, error_comp: residual, residual_bits: 1}
+patch: {rotation: fwht, block: 128, mode: consistent}
+eval: {perplexity: true, ppl_datasets: [wikitext2, c4]}

@@ -1,0 +1,25 @@
+# requirements.lock
+#
+# Versions verified to install cleanly in the CPU foundation environment used to
+# develop and unit-test rotquant (Python 3.12). GPU packages (fast-hadamard-transform,
+# lm-eval, gptqmodel, autoawq, aqlm, flute-kernel) are intentionally NOT pinned here
+# because they require a CUDA toolchain; pin them on the GPU box after a clean install
+# and append below. Record torch/CUDA/driver/GPU in every result file.
+torch==2.12.0
+numpy==2.4.6
+scipy==1.17.1
+pytest==9.0.3
+PyYAML==6.0.3
+
+# --- pin on the GPU box (examples; fill exact versions after a clean install) ---
+# transformers==
+# datasets==
+# accelerate==
+# safetensors==
+# sentencepiece==
+# fast-hadamard-transform==
+# lm-eval==
+# gptqmodel==
+# autoawq==
+# aqlm==
+# flute-kernel==
