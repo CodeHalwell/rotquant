@@ -1,0 +1,36 @@
+[build-system]
+requires = ["setuptools>=64"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "rotquant"
+version = "0.1.0"
+description = "Rotation-based weight compression evaluation toolkit"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+    "torch>=2.4",
+    "numpy",
+    "scipy",
+]
+
+[project.optional-dependencies]
+# Heavier deps only needed for the GPU eval / baseline paths.
+eval = [
+    "transformers",
+    "datasets",
+    "accelerate",
+    "safetensors",
+    "sentencepiece",
+    "pandas",
+    "matplotlib",
+    "pyyaml",
+    "lm-eval",
+]
+dev = ["pytest"]
+
+[tool.setuptools]
+packages = ["rotquant", "eval"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

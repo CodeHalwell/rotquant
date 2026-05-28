@@ -203,6 +203,12 @@ class LearnedRotation(Rotation):
         init = 1e-3 * torch.randn(n, generator=gen, dtype=torch.float32)
         self.theta = nn.Parameter(init.to(device=device, dtype=torch.float32))
         self._dtype = dtype
+        self._cached_R: Optional[torch.Tensor] = None
+
+    def train(self, mode: bool = True):
+        # Switching modes invalidates the eval-time cached rotation matrix.
+        self._cached_R = None
+        return super().train(mode)
 
     def _skew(self) -> torch.Tensor:
         a = torch.zeros(self.dim, self.dim, device=self.theta.device,
@@ -213,9 +219,16 @@ class LearnedRotation(Rotation):
         return a
 
     def matrix(self) -> torch.Tensor:
+        # In eval mode theta is frozen, so cache the (expensive O(d^3)) solve and
+        # reuse it across forward passes instead of recomputing per token.
+        if not self.training and self._cached_R is not None:
+            return self._cached_R
         a = self._skew()
         eye = torch.eye(self.dim, device=a.device, dtype=a.dtype)
         r = torch.linalg.solve(eye + a, eye - a)
+        if not self.training:
+            self._cached_R = r.detach()
+            return self._cached_R
         return r
 
     def rotate_activation(self, x: torch.Tensor) -> torch.Tensor:

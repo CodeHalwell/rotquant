@@ -16,7 +16,7 @@ from .utils import BitBudget
 
 @dataclass
 class PackedTensor:
-    data: torch.Tensor          # packed uint32 buffer
+    data: torch.Tensor          # packed buffer of int32 words (uint32 bit patterns)
     shape: Tuple[int, ...]      # logical shape of the index tensor
     bits: int                   # bits per code
     numel: int                  # number of codes
@@ -36,13 +36,14 @@ def pack_indices(idx: torch.Tensor, bits: int) -> PackedTensor:
     if bits < 1 or bits > 16:
         raise ValueError("bits must be in [1, 16]")
     flat = idx.reshape(-1).to(torch.int64)
+    device = flat.device  # keep every working buffer on the input's device (CPU or CUDA)
     if flat.numel() and (flat.min() < 0 or flat.max() >= (1 << bits)):
         raise ValueError("index out of range for given bits")
     n = flat.numel()
     total_bits = n * bits
     words = (total_bits + 31) // 32
-    out = torch.zeros(words, dtype=torch.int64)
-    bit_positions = torch.arange(n, dtype=torch.int64) * bits
+    out = torch.zeros(words, dtype=torch.int64, device=device)
+    bit_positions = torch.arange(n, dtype=torch.int64, device=device) * bits
     word_idx = bit_positions // 32
     offset = bit_positions % 32
     # Low part of each code in its starting word.
@@ -53,16 +54,20 @@ def pack_indices(idx: torch.Tensor, bits: int) -> PackedTensor:
         si = word_idx[spill] + 1
         sval = (flat[spill] >> (32 - offset[spill])) & 0xFFFFFFFF
         out.scatter_add_(0, si, sval)
-    return PackedTensor(data=out.to(torch.int64), shape=tuple(idx.shape),
+    # Store as genuine 32-bit words so the in-memory footprint (4 bytes/word)
+    # matches the bits/weight accounting. Values >= 2^31 wrap to negative int32,
+    # which is fine: unpack reads each word back as unsigned.
+    return PackedTensor(data=out.to(torch.int32), shape=tuple(idx.shape),
                         bits=bits, numel=n)
 
 
 def unpack_indices(packed: PackedTensor) -> torch.Tensor:
     """Inverse of :func:`pack_indices`."""
     n, bits = packed.numel, packed.bits
-    out = torch.empty(n, dtype=torch.int64)
-    data = packed.data
-    bit_positions = torch.arange(n, dtype=torch.int64) * bits
+    # Read the stored int32 words back as unsigned 32-bit values.
+    data = packed.data.to(torch.int64) & 0xFFFFFFFF
+    device = data.device
+    bit_positions = torch.arange(n, dtype=torch.int64, device=device) * bits
     word_idx = bit_positions // 32
     offset = bit_positions % 32
     mask = (1 << bits) - 1
@@ -75,6 +80,6 @@ def unpack_indices(packed: PackedTensor) -> torch.Tensor:
 
 
 def packed_bytes(packed: PackedTensor) -> int:
-    # Each element of the buffer holds one logical 32-bit word; real kernels
-    # store it as uint32 (4 bytes), which is what the footprint accounting uses.
-    return packed.data.numel() * 4
+    # The buffer is stored as int32, so this is the true in-memory footprint
+    # (4 bytes per 32-bit word) -- it matches what a real uint32 kernel would use.
+    return packed.data.numel() * packed.data.element_size()

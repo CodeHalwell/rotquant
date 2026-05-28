@@ -120,8 +120,11 @@ def normal_float(levels: int, offset: float = 0.5) -> np.ndarray:
 class ScalarCodebook:
     """Wraps a sorted set of centroids with nearest-centroid encode/decode."""
 
-    def __init__(self, centroids: np.ndarray, name: str = "scalar"):
+    def __init__(self, centroids, name: str = "scalar"):
+        # Accepts an array-like (np.ndarray) or a torch.Tensor (e.g. the QJL grid).
         self.name = name
+        if isinstance(centroids, torch.Tensor):
+            centroids = centroids.detach().cpu().numpy()
         self.centroids = torch.as_tensor(np.sort(np.asarray(centroids)),
                                           dtype=torch.float32)
         self._bounds = (self.centroids[:-1] + self.centroids[1:]) / 2.0
@@ -147,9 +150,17 @@ class ScalarCodebook:
         return self.decode(idx), idx
 
     def to(self, device) -> "ScalarCodebook":
-        self.centroids = self.centroids.to(device)
-        self._bounds = self._bounds.to(device)
-        return self
+        """Return a *new* codebook on ``device``.
+
+        Non-mutating on purpose: codebooks are built once and shared across many
+        :class:`QuantizedWeight` objects (see ``build_scalar_codebook``), so moving
+        one in place would silently corrupt the others.
+        """
+        out = ScalarCodebook.__new__(ScalarCodebook)
+        out.name = self.name
+        out.centroids = self.centroids.to(device)
+        out._bounds = self._bounds.to(device)
+        return out
 
 
 def build_scalar_codebook(kind: str, levels: int) -> ScalarCodebook:

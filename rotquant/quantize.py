@@ -187,6 +187,10 @@ class Quantizer:
               H: Optional[torch.Tensor]) -> Tuple[torch.Tensor, torch.Tensor]:
         out, inf = w.shape
         if H is None:
+            logger.warning(
+                "GPTQ requested without a Hessian; falling back to H=I, which is "
+                "exactly plain rounding (no error feedback). Did you forget "
+                "calibration?")
             H = torch.eye(inf, device=w.device, dtype=torch.float32)
         H = H.to(torch.float32).clone()
         gs = self.cfg.group_size
@@ -229,7 +233,7 @@ class Quantizer:
                 Hinv = torch.cholesky_inverse(L)
                 Hinv = torch.linalg.cholesky(Hinv, upper=True)
                 return Hinv
-            except Exception:
+            except torch.linalg.LinAlgError:
                 logger.warning("Cholesky failed; increasing damping %.4f -> %.4f",
                                damp, damp * 10)
                 damp *= 10
