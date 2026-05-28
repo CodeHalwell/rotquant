@@ -1,0 +1,8 @@
+# E5: GPTQ helps with real activations. 3-bit & 4-bit, FWHT, real calibration H.
+# Compare FWHT+scalar vs FWHT+scalar+GPTQ vs external GPTQ/AWQ baselines.
+experiment: E5
+label: e5_fwht_gptq_3bit
+calibrate: true
+quant: {bits: 3, codebook: gaussian, scale: mse_search, group_size: 128, error_comp: gptq, percdamp: 0.01}
+patch: {rotation: fwht, block: 128, mode: consistent}
+eval: {perplexity: true, ppl_datasets: [wikitext2, c4], zeroshot: true}

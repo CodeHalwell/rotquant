@@ -75,4 +75,6 @@ def unpack_indices(packed: PackedTensor) -> torch.Tensor:
 
 
 def packed_bytes(packed: PackedTensor) -> int:
-    return packed.data.numel() * 8  # int64 storage; real kernels use uint32
+    # Each element of the buffer holds one logical 32-bit word; real kernels
+    # store it as uint32 (4 bytes), which is what the footprint accounting uses.
+    return packed.data.numel() * 4

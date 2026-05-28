@@ -1,0 +1,8 @@
+# E7: consistency trap. Same model, 3 patch modes.
+# Sweep `patch.mode` in [consistent, fused_inverse, mismatched]; read layer-wise
+# cosine drift. Expect mismatched drifts monotonically pre-collapse.
+experiment: E7
+label: e7_mismatched
+quant: {bits: 3, codebook: gaussian, scale: mse_search, group_size: 128, error_comp: none}
+patch: {rotation: fwht, block: 128, mode: mismatched}
+eval: {perplexity: true, ppl_datasets: [wikitext2, c4]}

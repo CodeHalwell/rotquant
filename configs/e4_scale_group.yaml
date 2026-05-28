@@ -1,0 +1,8 @@
+# E4: scale-search win + group tradeoff.
+# Sweep `quant.scale` in [rms, mse_search] x group_size in [32,64,128,256].
+# Report PPL vs *true* bpw (finer groups cost bits).
+experiment: E4
+label: e4_msesearch_g128
+quant: {bits: 3, codebook: gaussian, scale: mse_search, group_size: 128, error_comp: none}
+patch: {rotation: fwht, block: 128, mode: consistent}
+eval: {perplexity: true, ppl_datasets: [wikitext2, c4]}

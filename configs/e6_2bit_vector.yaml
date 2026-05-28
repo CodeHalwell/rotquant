@@ -1,0 +1,8 @@
+# E6: scalar ceiling; vector needed at 2-bit.
+# Compare FWHT+scalar(+GPTQ) vs FWHT+vector/trellis residual vs QuIP#/AQLM/QTIP.
+experiment: E6
+label: e6_fwht_scalar_2bit
+calibrate: true
+quant: {bits: 2, codebook: gaussian, scale: mse_search, group_size: 128, error_comp: gptq}
+patch: {rotation: fwht, block: 128, mode: consistent}
+eval: {perplexity: true, ppl_datasets: [wikitext2, c4], zeroshot: true}
