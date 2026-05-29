@@ -21,7 +21,8 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-from .quantize import QuantConfig, Quantizer, QuantizedWeight
+from .pack import packed_bytes, unpack_indices
+from .quantize import QuantConfig, Quantizer, QuantizedWeight, _generate_sketch_matrix
 from .rotate import Identity, Rotation
 from .utils import get_logger
 
@@ -58,7 +59,22 @@ class QuantLinear(nn.Module):
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         xr = self.act_rotation.rotate_activation(x)
-        return F.linear(xr, self._weight().to(xr.dtype), self.bias)
+        base_out = F.linear(xr, self._weight().to(xr.dtype), self.bias)
+        if self.qweight.sketch is not None:
+            k = self.qweight.sketch_k
+            G = _generate_sketch_matrix(
+                self.in_features, k, self.qweight.sketch_seed, xr.device,
+            ).to(xr.dtype)
+            xr_proj = torch.sign(xr @ G)                          # [..., k]
+            sketch = (
+                unpack_indices(self.qweight.sketch)
+                .reshape(self.out_features, k)
+                .to(xr.dtype)
+            ) * 2 - 1                                              # {0,1} -> {-1,+1}
+            row_norms = self.qweight.sketch_row_norms.to(xr.dtype)  # [out]
+            correction = (xr_proj @ sketch.T) * (row_norms / k)
+            return base_out + correction
+        return base_out
 
     @classmethod
     def from_linear(cls, linear: nn.Linear, config: QuantConfig,
@@ -80,11 +96,14 @@ class QuantLinear(nn.Module):
         return cls(qw, act_rotation=act_rotation, bias=bias, fallback=fallback)
 
     def packed_state_bytes(self) -> int:
-        """Persistent storage in packed mode (codes + scales), in bytes."""
-        from .pack import packed_bytes
+        """Persistent storage in packed mode (codes + scales + sketch), in bytes."""
         b = packed_bytes(self.qweight.packed)
-        b += self.qweight.scales.numel() * 2  # fp16 scales
+        if self.qweight.scales is not None:
+            b += self.qweight.scales.numel() * 2  # fp16 per-group scales
         if self.qweight.residual_packed is not None:
             b += packed_bytes(self.qweight.residual_packed)
             b += self.qweight.residual_scales.numel() * 2
+        if self.qweight.sketch is not None:
+            b += packed_bytes(self.qweight.sketch)
+            b += self.qweight.sketch_row_norms.numel() * 2  # fp16 row norms
         return b
