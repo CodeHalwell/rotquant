@@ -66,8 +66,10 @@ def run(config_path: str, output_dir: str = "results") -> Dict[str, Any]:
 
     # Let a per-block ``seed:`` override the top-level one, but don't explode if
     # the same key appears in both the block and the explicit kwarg.
-    quant_kwargs = dict(cfg.get("quant", {}))
-    patch_kwargs = dict(cfg.get("patch", {}))
+    # ``or {}`` handles an explicit ``quant: null`` in the YAML (which makes
+    # cfg.get("quant", {}) return None and dict(None) raise TypeError).
+    quant_kwargs = dict(cfg.get("quant") or {})
+    patch_kwargs = dict(cfg.get("patch") or {})
     qcfg = QuantConfig(seed=quant_kwargs.pop("seed", seed), **quant_kwargs)
     pcfg = PatchConfig(quant=qcfg, seed=patch_kwargs.pop("seed", seed), **patch_kwargs)
 

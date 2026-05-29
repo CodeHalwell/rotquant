@@ -123,10 +123,8 @@ class ScalarCodebook:
     def __init__(self, centroids, name: str = "scalar"):
         # Accepts an array-like (np.ndarray) or a torch.Tensor (e.g. the QJL grid).
         self.name = name
-        if isinstance(centroids, torch.Tensor):
-            centroids = centroids.detach().cpu().numpy()
-        self.centroids = torch.as_tensor(np.sort(np.asarray(centroids)),
-                                          dtype=torch.float32)
+        self.centroids, _ = torch.sort(
+            torch.as_tensor(centroids, dtype=torch.float32))
         self._bounds = (self.centroids[:-1] + self.centroids[1:]) / 2.0
 
     @property
@@ -156,7 +154,7 @@ class ScalarCodebook:
         :class:`QuantizedWeight` objects (see ``build_scalar_codebook``), so moving
         one in place would silently corrupt the others.
         """
-        out = ScalarCodebook.__new__(ScalarCodebook)
+        out = self.__class__.__new__(self.__class__)
         out.name = self.name
         out.centroids = self.centroids.to(device)
         out._bounds = self._bounds.to(device)

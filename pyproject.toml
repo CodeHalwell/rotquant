@@ -26,6 +26,10 @@ eval = [
     "matplotlib",
     "pyyaml",
     "lm-eval",
+    # CUDA rotation kernel (QuaRot/QuIP# FWHT primitive); rotquant.rotate falls
+    # back to a pure-torch FWHT on CPU if this isn't installed, but that path
+    # is prohibitively slow at typical model dimensions on GPU.
+    "fast-hadamard-transform",
 ]
 dev = ["pytest"]
 
