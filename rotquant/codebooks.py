@@ -26,6 +26,20 @@ import torch
 SQRT2 = math.sqrt(2.0)
 
 
+def turboquant_mse_bound(bits: float) -> float:
+    """TurboQuant Theorem 1: theoretical MSE bound after randomised Hadamard rotation.
+
+    After rotation the weight distribution is universal (concentrated Beta/Gaussian),
+    so a single pre-computed Lloyd-Max codebook achieves:
+
+        MSE ≤ (sqrt(3)·π/2) · 4^{-b}
+
+    which is within ≈2.7× of the Shannon rate-distortion limit for a Gaussian source.
+    ``bits`` can be fractional (e.g. 3.125 for 3-bit codes + 16-bit scale / 128 group).
+    """
+    return (math.sqrt(3) * math.pi / 2) * (4.0 ** -bits)
+
+
 def _normal_pdf(x: np.ndarray) -> np.ndarray:
     return np.exp(-0.5 * x * x) / math.sqrt(2 * math.pi)
 

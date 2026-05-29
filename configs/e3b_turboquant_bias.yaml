@@ -1,0 +1,36 @@
+# E3b: TurboQuant Stage-2 QJL correction (this row).
+#
+# scale=turboquant: per-row RMS scale (one per output neuron), much lower metadata
+# overhead than per-group (scale_bits/in_features vs scale_bits/group_size bpw).
+# error_comp=turboquant: Stage-2 QJL sketch (sketch_k=64 sign-projections of the
+# residual) stored at pack time; applied as an unbiased inner-product correction
+# at inference via (π/2)‖xr‖(sign(xr@G)·sketch^T)(row_norms/k).
+#
+# Compare against (separate configs):
+#   e3b_tq_baseline  -- turboquant scale, error_comp=none
+#   e3_qjl.yaml      -- rms scale + deterministic 1-bit residual (E3 control)
+experiment: E3b
+run_id: e3b_turboquant_bias
+
+model: facebook/opt-125m
+device: cuda
+dtype: float16
+seed: 42
+
+quant:
+  bits: 3
+  codebook: gaussian
+  scale: turboquant
+  group_size: 128
+  error_comp: turboquant
+  sketch_k: 64
+
+patch:
+  rotation: fwht
+  block: 128
+  mode: consistent
+
+eval:
+  perplexity: true
+  ppl_datasets: [wikitext2, c4]
+  zeroshot: false

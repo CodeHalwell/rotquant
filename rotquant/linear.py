@@ -15,13 +15,15 @@ the patcher can build the deliberately-broken "mismatched" mode for E7.
 """
 from __future__ import annotations
 
+import math
 from typing import Optional
 
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-from .quantize import QuantConfig, Quantizer, QuantizedWeight
+from .pack import packed_bytes, unpack_indices
+from .quantize import QuantConfig, Quantizer, QuantizedWeight, _generate_sketch_matrix
 from .rotate import Identity, Rotation
 from .utils import get_logger
 
@@ -42,6 +44,11 @@ class QuantLinear(nn.Module):
         else:
             self.bias = None
         self._fp_cache: Optional[torch.Tensor] = None
+        # Non-persistent caches for QJL sketch inference.  Populated lazily on the first
+        # forward pass; invalidated automatically when device or dtype changes.
+        self.register_buffer("_sketch_G", None, persistent=False)
+        self.register_buffer("_sketch_mat", None, persistent=False)
+        self.register_buffer("_sketch_norms", None, persistent=False)
         if fallback:
             logger.warning(
                 "QuantLinear in FALLBACK mode: materialising fp16 weight "
@@ -51,6 +58,23 @@ class QuantLinear(nn.Module):
             )
             self._fp_cache = self.qweight.dequantize()
 
+    def _ensure_sketch_cache(self, xr: torch.Tensor) -> None:
+        """Materialise G, ±1 sketch matrix, and row norms; rebuild when device/dtype changes."""
+        qw = self.qweight
+        if (self._sketch_G is None
+                or self._sketch_G.device != xr.device
+                or self._sketch_G.dtype != xr.dtype):
+            k = qw.sketch_k
+            self._sketch_G = _generate_sketch_matrix(
+                self.in_features, k, qw.sketch_seed, xr.device,
+            ).to(xr.dtype)
+            self._sketch_mat = (
+                unpack_indices(qw.sketch)
+                .reshape(self.out_features, k)
+                .to(device=xr.device, dtype=xr.dtype)
+            ) * 2 - 1   # {0, 1} -> {-1, +1}
+            self._sketch_norms = qw.sketch_row_norms.to(device=xr.device, dtype=xr.dtype)
+
     def _weight(self) -> torch.Tensor:
         if self.fallback:
             return self._fp_cache
@@ -58,7 +82,21 @@ class QuantLinear(nn.Module):
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         xr = self.act_rotation.rotate_activation(x)
-        return F.linear(xr, self._weight().to(xr.dtype), self.bias)
+        base_out = F.linear(xr, self._weight().to(xr.dtype), self.bias)
+        if self.qweight.sketch is not None:
+            self._ensure_sketch_cache(xr)
+            xr_proj = torch.sign(xr @ self._sketch_G)             # [..., k]
+            xr_norm = xr.norm(dim=-1, keepdim=True)               # [..., 1]
+            # Unbiased QJL inner-product estimator:
+            #   E[(π/2) ‖xr‖ ‖r_i‖ (1/k) sign(xr·G) · sign(r_i·G)] = xr · r_i
+            correction = (
+                (xr_proj @ self._sketch_mat.T)                     # [..., out]
+                * (self._sketch_norms / self.qweight.sketch_k)     # [out]
+                * xr_norm                                           # [..., 1]
+                * (math.pi / 2)
+            )
+            return base_out + correction
+        return base_out
 
     @classmethod
     def from_linear(cls, linear: nn.Linear, config: QuantConfig,
@@ -80,11 +118,14 @@ class QuantLinear(nn.Module):
         return cls(qw, act_rotation=act_rotation, bias=bias, fallback=fallback)
 
     def packed_state_bytes(self) -> int:
-        """Persistent storage in packed mode (codes + scales), in bytes."""
-        from .pack import packed_bytes
+        """Persistent storage in packed mode (codes + scales + sketch), in bytes."""
         b = packed_bytes(self.qweight.packed)
-        b += self.qweight.scales.numel() * 2  # fp16 scales
+        if self.qweight.scales is not None:
+            b += self.qweight.scales.numel() * 2  # fp16 per-group scales
         if self.qweight.residual_packed is not None:
             b += packed_bytes(self.qweight.residual_packed)
             b += self.qweight.residual_scales.numel() * 2
+        if self.qweight.sketch is not None:
+            b += packed_bytes(self.qweight.sketch)
+            b += self.qweight.sketch_row_norms.numel() * 2  # fp16 row norms
         return b

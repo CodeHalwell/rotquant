@@ -6,6 +6,7 @@ from .rotate import (
 )
 from .codebooks import (
     lloyd_max_gaussian, quantizer_mse, uniform_signed, normal_float,
+    turboquant_mse_bound,
     ScalarCodebook, build_scalar_codebook, E8LatticeCodebook, nearest_e8,
 )
 from .pack import pack_indices, unpack_indices, PackedTensor
@@ -19,6 +20,7 @@ __all__ = [
     "build_rotation", "Identity", "RandomizedHadamard", "DenseOrthogonal",
     "LearnedRotation", "fwht",
     "lloyd_max_gaussian", "quantizer_mse", "uniform_signed", "normal_float",
+    "turboquant_mse_bound",
     "ScalarCodebook", "build_scalar_codebook", "E8LatticeCodebook", "nearest_e8",
     "pack_indices", "unpack_indices", "PackedTensor",
     "Quantizer", "QuantConfig", "QuantizedWeight",

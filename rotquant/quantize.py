@@ -3,19 +3,29 @@
 Pluggable along four axes, matching the experiment matrix:
 
 * **codebook**       -- ``gaussian`` | ``uniform`` | ``nf`` (see :mod:`codebooks`)
-* **scale strategy** -- ``rms`` | ``mse_search`` (data-free scale search, E4)
+* **scale strategy** -- ``rms`` | ``mse_search`` | ``turboquant``
 * **group size**     -- per-group scales along the input dimension
-* **error comp**     -- ``none`` | ``gptq`` | ``residual`` | ``qjl``
+* **error comp**     -- ``none`` | ``gptq`` | ``residual`` | ``qjl`` | ``turboquant``
 
-``qjl`` (a stochastic 1-bit Johnson-Lindenstrauss-style residual) is implemented
-**only so it can be shown to lose** against the deterministic ``residual`` pass at
-equal bits -- it is the null hypothesis for finding 2.
+``scale="turboquant"`` skips per-group scale metadata entirely: after a randomised
+Hadamard pre-rotation the weight distribution is universal (concentrated Gaussian),
+so the Lloyd-Max codebook centroids are applied directly without rescaling.  This
+saves ``scale_bits / group_size`` bits/weight overhead.
+
+``error_comp="turboquant"`` applies the TurboQuant Stage-2 QJL correction: a
+1-bit random-projection sketch ``sign(r @ G)`` of the quantisation residual is
+stored at pack time and used at inference to cancel the inner-product bias that
+would otherwise remain from the unscaled codebook rounding.
+
+``qjl`` (the *old* stochastic residual) is kept as the null hypothesis for E3 --
+it loses to deterministic residual and TurboQuant QJL at equal bits.
 
 Rotation is applied to the weight *before* quantisation by the patcher; this
 module quantises an (already-rotated) ``[out, in]`` weight matrix.
 """
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass, field
 from typing import Optional, Tuple
 
@@ -28,13 +38,25 @@ from .utils import BitBudget, get_logger
 logger = get_logger()
 
 
+def _generate_sketch_matrix(in_features: int, k: int, seed: int, device) -> torch.Tensor:
+    """Random Gaussian sketch matrix ``G`` of shape ``[in_features, k]``.
+
+    Deterministically seeded so the same matrix is reconstructed at inference
+    from ``sketch_seed`` without storing ``G``.  Columns are normalised by
+    ``1/sqrt(k)`` so that ``||Gx||^2 ≈ ||x||^2`` in expectation (JL property).
+    """
+    gen = torch.Generator(device="cpu").manual_seed(seed + 7919)
+    G = torch.randn(in_features, k, generator=gen, dtype=torch.float32) / math.sqrt(k)
+    return G.to(device)
+
+
 @dataclass
 class QuantConfig:
     bits: int = 3
     codebook: str = "gaussian"          # gaussian | uniform | nf
-    scale: str = "rms"                  # rms | mse_search
+    scale: str = "rms"                  # rms | mse_search | turboquant
     group_size: int = 128
-    error_comp: str = "none"            # none | gptq | residual | qjl
+    error_comp: str = "none"            # none | gptq | residual | qjl | turboquant
     residual_bits: int = 1              # bits for residual / qjl pass
     residual_codebook: str = "gaussian"
     percdamp: float = 0.01              # Hessian damping (1% of mean diagonal)
@@ -43,12 +65,13 @@ class QuantConfig:
     mse_search_hi: float = 1.5
     seed: int = 0
     scale_bits: float = 16.0
+    sketch_k: int = 64                  # QJL projection dimension (error_comp="turboquant")
 
 
 @dataclass
 class QuantizedWeight:
     packed: PackedTensor
-    scales: torch.Tensor                # [out, n_groups]
+    scales: Optional[torch.Tensor]       # [out, n_groups]; [out, 1] for TurboQuant per-row
     codebook: ScalarCodebook
     group_size: int
     out_features: int
@@ -56,13 +79,25 @@ class QuantizedWeight:
     residual_packed: Optional[PackedTensor] = None
     residual_scales: Optional[torch.Tensor] = None
     residual_codebook: Optional[ScalarCodebook] = None
+    # TurboQuant Stage-2 QJL sketch for inner-product bias correction (error_comp="turboquant")
+    sketch: Optional[PackedTensor] = None
+    sketch_row_norms: Optional[torch.Tensor] = None  # [out_features] fp16
+    sketch_k: int = 0
+    sketch_seed: int = 0
+    # Effective group size for scale metadata (None → same as group_size).
+    # TurboQuant uses scale_group_size=in_features (one scale per output row), which
+    # gives (scale_bits / in_features) bpw overhead instead of (scale_bits / group_size).
+    scale_group_size: Optional[int] = None
 
     def dequantize(self) -> torch.Tensor:
         idx = unpack_indices(self.packed).reshape(self.out_features, self.in_features)
         centroids = self.codebook.centroids.to(idx.device)
         q = centroids[idx]
-        scales = _expand_scales(self.scales, self.group_size, self.in_features)
-        w = q * scales
+        if self.scales is not None:
+            sgs = self.scale_group_size if self.scale_group_size is not None else self.group_size
+            w = q * _expand_scales(self.scales, sgs, self.in_features)
+        else:
+            w = q
         if self.residual_packed is not None:
             ridx = unpack_indices(self.residual_packed).reshape(
                 self.out_features, self.in_features)
@@ -77,9 +112,23 @@ class QuantizedWeight:
         if self.residual_packed is not None:
             extra_code_bits = self.residual_packed.bits
             extra_scale_bits = self.scale_bits_residual
+        sgs = self.scale_group_size if self.scale_group_size is not None else self.group_size
+        if self.scales is None:
+            main_scale = 0.0
+        else:
+            # Amortise scale cost over the code group.  For per-row TurboQuant scales
+            # sgs = in_features, so the per-code-group cost is scale_bits * group / in_features.
+            main_scale = self.scale_bits_main * self.group_size / sgs
+        # Sketch overhead: sketch_k 1-bit projections + 1 fp16 row norm per output row,
+        # amortised over (out * in_features) weights → (sketch_k + 16) * group / in_features
+        # bits per code group.
+        sketch_overhead = 0.0
+        if self.sketch is not None:
+            sketch_overhead = (self.sketch_k + 16) * self.group_size / self.in_features
         return BitBudget(levels=2 ** self.packed.bits, group_size=self.group_size,
-                         scale_bits=(self.scale_bits_main + extra_scale_bits
-                                     + extra_code_bits * self.group_size))
+                         scale_bits=(main_scale + extra_scale_bits
+                                     + extra_code_bits * self.group_size
+                                     + sketch_overhead))
 
     # bookkeeping for accounting
     scale_bits_main: float = 16.0
@@ -105,9 +154,18 @@ def _group_scales_rms(w: torch.Tensor, group_size: int) -> torch.Tensor:
     return rms  # [out, ng]
 
 
-def _quantize_groups(w: torch.Tensor, scales: torch.Tensor, codebook: ScalarCodebook,
+def _quantize_groups(w: torch.Tensor, scales: Optional[torch.Tensor],
+                     codebook: ScalarCodebook,
                      group_size: int) -> Tuple[torch.Tensor, torch.Tensor]:
-    """Return (dequantized weight, integer indices) using fixed per-group scales."""
+    """Return (dequantized weight, integer indices).
+
+    When ``scales`` is ``None`` (TurboQuant mode) the codebook is applied directly
+    to ``w`` without any normalisation -- the Hadamard rotation has already made
+    the distribution universal.
+    """
+    if scales is None:
+        q, idx = codebook.quantize(w)
+        return q, idx
     out, inf = w.shape
     sc = _expand_scales(scales, group_size, inf)
     normed = w / sc
@@ -123,7 +181,13 @@ class Quantizer:
     # ------------------------------------------------------------------ #
     # scale selection
     # ------------------------------------------------------------------ #
-    def _select_scales(self, w: torch.Tensor) -> torch.Tensor:
+    def _select_scales(self, w: torch.Tensor) -> Optional[torch.Tensor]:
+        if self.cfg.scale == "turboquant":
+            # Per-row RMS: one scale per output neuron, amortised over in_features weights.
+            # After Hadamard rotation the distribution *shape* is universal (Gaussian) but
+            # the *scale* varies per layer; a per-row scale is necessary for correctness.
+            # Overhead: scale_bits/in_features bpw vs scale_bits/group_size for per-group.
+            return _group_scales_rms(w, w.shape[1])  # [out, 1]
         rms = _group_scales_rms(w, self.cfg.group_size)
         if self.cfg.scale == "rms":
             return rms
@@ -165,19 +229,30 @@ class Quantizer:
         scales = self._select_scales(w)
 
         if self.cfg.error_comp == "gptq":
+            if self.cfg.scale == "turboquant":
+                raise ValueError(
+                    "GPTQ requires per-group scales with group_size < in_features; "
+                    "set scale='rms' or 'mse_search' when error_comp='gptq'."
+                )
             q_w, idx = self._gptq(w, scales, H)
         else:
             q_w, idx = _quantize_groups(w, scales, self.codebook, self.cfg.group_size)
 
         packed = pack_indices(idx.reshape(-1), self.cfg.bits)
+        # TurboQuant uses one scale per output row; pass scale_group_size=in_features
+        # so dequantize() and bit_budget() use the right expansion factor.
+        scale_group_size = inf if self.cfg.scale == "turboquant" else None
         qw = QuantizedWeight(
             packed=packed, scales=scales, codebook=self.codebook,
             group_size=self.cfg.group_size, out_features=out, in_features=inf,
+            scale_group_size=scale_group_size,
             scale_bits_main=self.cfg.scale_bits,
         )
 
         if self.cfg.error_comp in ("residual", "qjl"):
             self._add_residual(qw, w, q_w)
+        elif self.cfg.error_comp == "turboquant":
+            self._turboquant_sketch(qw, w - q_w)
         return qw
 
     # ------------------------------------------------------------------ #
@@ -270,3 +345,20 @@ class Quantizer:
         u = torch.rand(normed.shape, generator=gen, device=r.device)
         idx = (u < p_pos).to(torch.int64)  # 1 -> +1, 0 -> -1
         return cb, idx
+
+    def _turboquant_sketch(self, qw: QuantizedWeight, r: torch.Tensor) -> None:
+        """TurboQuant Stage-2: store a QJL sketch of the quantisation residual.
+
+        At pack time: compute ``sign(r @ G)`` where ``G`` is a random Gaussian
+        ``[in, k]`` matrix.  Stores the 1-bit packed sketch and the per-row L2
+        norm of ``r`` so the forward pass can apply an unbiased inner-product
+        correction ``(sign(xr @ G) @ sketch^T) * (row_norms / k)``.
+        """
+        k = self.cfg.sketch_k
+        G = _generate_sketch_matrix(r.shape[1], k, self.cfg.seed, r.device)
+        proj = r @ G  # [out, k]
+        sketch_bits = (proj > 0).to(torch.int64)
+        qw.sketch = pack_indices(sketch_bits.reshape(-1), 1)
+        qw.sketch_row_norms = r.norm(dim=1).half()
+        qw.sketch_k = k
+        qw.sketch_seed = self.cfg.seed
