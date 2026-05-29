@@ -203,6 +203,17 @@ class LearnedRotation(Rotation):
         init = 1e-3 * torch.randn(n, generator=gen, dtype=torch.float32)
         self.theta = nn.Parameter(init.to(device=device, dtype=torch.float32))
         self._dtype = dtype
+        # Non-persistent buffer: follows the module across .to() / device moves
+        # (PyTorch's _apply propagates registered buffers) but is not saved to
+        # state_dict so it never carries stale values across checkpoints.
+        self.register_buffer("_cached_R", None, persistent=False)
+
+    def train(self, mode: bool = True):
+        if self.training != mode:
+            # Only invalidate when the mode actually changes; a repeated .eval()
+            # call otherwise evicts the cache and forces an O(d^3) recompute.
+            self._cached_R = None
+        return super().train(mode)
 
     def _skew(self) -> torch.Tensor:
         a = torch.zeros(self.dim, self.dim, device=self.theta.device,
@@ -213,9 +224,20 @@ class LearnedRotation(Rotation):
         return a
 
     def matrix(self) -> torch.Tensor:
+        # In eval mode theta is frozen, so cache the (expensive O(d^3)) solve and
+        # reuse it across forward passes instead of recomputing per token.
+        # Also guard against a stale cache after load_state_dict() by checking
+        # that the cached tensor is on the same device as theta.
+        if (not self.training
+                and self._cached_R is not None
+                and self._cached_R.device == self.theta.device):
+            return self._cached_R
         a = self._skew()
         eye = torch.eye(self.dim, device=a.device, dtype=a.dtype)
         r = torch.linalg.solve(eye + a, eye - a)
+        if not self.training:
+            self._cached_R = r.detach()
+            return self._cached_R
         return r
 
     def rotate_activation(self, x: torch.Tensor) -> torch.Tensor:

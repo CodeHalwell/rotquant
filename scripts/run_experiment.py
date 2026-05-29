@@ -64,8 +64,14 @@ def run(config_path: str, output_dir: str = "results") -> Dict[str, Any]:
     tokenizer = AutoTokenizer.from_pretrained(model_name, use_fast=True)
     model = AutoModelForCausalLM.from_pretrained(model_name, torch_dtype=dtype).to(device)
 
-    qcfg = QuantConfig(**cfg.get("quant", {}), seed=seed)
-    pcfg = PatchConfig(quant=qcfg, seed=seed, **cfg.get("patch", {}))
+    # Let a per-block ``seed:`` override the top-level one, but don't explode if
+    # the same key appears in both the block and the explicit kwarg.
+    # ``or {}`` handles an explicit ``quant: null`` in the YAML (which makes
+    # cfg.get("quant", {}) return None and dict(None) raise TypeError).
+    quant_kwargs = dict(cfg.get("quant") or {})
+    patch_kwargs = dict(cfg.get("patch") or {})
+    qcfg = QuantConfig(seed=quant_kwargs.pop("seed", seed), **quant_kwargs)
+    pcfg = PatchConfig(quant=qcfg, seed=patch_kwargs.pop("seed", seed), **patch_kwargs)
 
     metrics: Dict[str, Any] = {}
     hessians = None
