@@ -1,14 +1,12 @@
-# E4b: TurboQuant (no per-group scale) vs rms-scaled baseline at equal code bits.
+# E4b: TurboQuant per-row scale vs rms per-group baseline at equal code bits (this row).
 #
-# TurboQuant's central claim: after randomised Hadamard the distribution is
-# universal, so per-group scale metadata is unnecessary.  The savings in scale
-# bits (16 bits / 128 weights = 0.125 bpw) can instead be spent on a larger
-# codebook or on a QJL correction sketch.
+# TurboQuant's scale efficiency: after randomised Hadamard the distribution shape
+# is universal, so one scale per output row suffices.  For a 4096-dim layer the
+# overhead is 16/4096 ≈ 0.004 bpw vs 16/128 = 0.125 bpw for per-group.
 #
-# Compare three rows at ~3.125 effective bpw:
-#   e4b_rms_3bit       -- rms scale, 3 bits/code, g=128  (3.125 bpw)
-#   e4b_tq_3bit        -- turboquant scale, 3 bits/code   (3.000 bpw -- 0.125 saved)
-#   e4b_tq_3bit_sketch -- turboquant scale + QJL sketch k=64 (+ sketch overhead)
+# Compare against (separate configs):
+#   e4_scale_group.yaml -- rms per-group scale, 3 bits, g=128 (3.125 bpw control)
+#   e3b_turboquant_bias.yaml -- turboquant + QJL sketch k=64
 experiment: E4b
 run_id: e4b_turboquant_vs_rms
 

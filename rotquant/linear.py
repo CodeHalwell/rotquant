@@ -15,6 +15,7 @@ the patcher can build the deliberately-broken "mismatched" mode for E7.
 """
 from __future__ import annotations
 
+import math
 from typing import Optional
 
 import torch
@@ -43,6 +44,11 @@ class QuantLinear(nn.Module):
         else:
             self.bias = None
         self._fp_cache: Optional[torch.Tensor] = None
+        # Non-persistent caches for QJL sketch inference.  Populated lazily on the first
+        # forward pass; invalidated automatically when device or dtype changes.
+        self.register_buffer("_sketch_G", None, persistent=False)
+        self.register_buffer("_sketch_mat", None, persistent=False)
+        self.register_buffer("_sketch_norms", None, persistent=False)
         if fallback:
             logger.warning(
                 "QuantLinear in FALLBACK mode: materialising fp16 weight "
@@ -51,6 +57,23 @@ class QuantLinear(nn.Module):
                 self.out_features, self.in_features,
             )
             self._fp_cache = self.qweight.dequantize()
+
+    def _ensure_sketch_cache(self, xr: torch.Tensor) -> None:
+        """Materialise G, ±1 sketch matrix, and row norms; rebuild when device/dtype changes."""
+        qw = self.qweight
+        if (self._sketch_G is None
+                or self._sketch_G.device != xr.device
+                or self._sketch_G.dtype != xr.dtype):
+            k = qw.sketch_k
+            self._sketch_G = _generate_sketch_matrix(
+                self.in_features, k, qw.sketch_seed, xr.device,
+            ).to(xr.dtype)
+            self._sketch_mat = (
+                unpack_indices(qw.sketch)
+                .reshape(self.out_features, k)
+                .to(device=xr.device, dtype=xr.dtype)
+            ) * 2 - 1   # {0, 1} -> {-1, +1}
+            self._sketch_norms = qw.sketch_row_norms.to(device=xr.device, dtype=xr.dtype)
 
     def _weight(self) -> torch.Tensor:
         if self.fallback:
@@ -61,18 +84,17 @@ class QuantLinear(nn.Module):
         xr = self.act_rotation.rotate_activation(x)
         base_out = F.linear(xr, self._weight().to(xr.dtype), self.bias)
         if self.qweight.sketch is not None:
-            k = self.qweight.sketch_k
-            G = _generate_sketch_matrix(
-                self.in_features, k, self.qweight.sketch_seed, xr.device,
-            ).to(xr.dtype)
-            xr_proj = torch.sign(xr @ G)                          # [..., k]
-            sketch = (
-                unpack_indices(self.qweight.sketch)
-                .reshape(self.out_features, k)
-                .to(xr.dtype)
-            ) * 2 - 1                                              # {0,1} -> {-1,+1}
-            row_norms = self.qweight.sketch_row_norms.to(xr.dtype)  # [out]
-            correction = (xr_proj @ sketch.T) * (row_norms / k)
+            self._ensure_sketch_cache(xr)
+            xr_proj = torch.sign(xr @ self._sketch_G)             # [..., k]
+            xr_norm = xr.norm(dim=-1, keepdim=True)               # [..., 1]
+            # Unbiased QJL inner-product estimator:
+            #   E[(π/2) ‖xr‖ ‖r_i‖ (1/k) sign(xr·G) · sign(r_i·G)] = xr · r_i
+            correction = (
+                (xr_proj @ self._sketch_mat.T)                     # [..., out]
+                * (self._sketch_norms / self.qweight.sketch_k)     # [out]
+                * xr_norm                                           # [..., 1]
+                * (math.pi / 2)
+            )
             return base_out + correction
         return base_out
 

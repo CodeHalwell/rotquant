@@ -71,7 +71,7 @@ class QuantConfig:
 @dataclass
 class QuantizedWeight:
     packed: PackedTensor
-    scales: Optional[torch.Tensor]       # [out, n_groups]; None for TurboQuant (no per-group metadata)
+    scales: Optional[torch.Tensor]       # [out, n_groups]; [out, 1] for TurboQuant per-row
     codebook: ScalarCodebook
     group_size: int
     out_features: int
@@ -84,15 +84,20 @@ class QuantizedWeight:
     sketch_row_norms: Optional[torch.Tensor] = None  # [out_features] fp16
     sketch_k: int = 0
     sketch_seed: int = 0
+    # Effective group size for scale metadata (None → same as group_size).
+    # TurboQuant uses scale_group_size=in_features (one scale per output row), which
+    # gives (scale_bits / in_features) bpw overhead instead of (scale_bits / group_size).
+    scale_group_size: Optional[int] = None
 
     def dequantize(self) -> torch.Tensor:
         idx = unpack_indices(self.packed).reshape(self.out_features, self.in_features)
         centroids = self.codebook.centroids.to(idx.device)
         q = centroids[idx]
         if self.scales is not None:
-            w = q * _expand_scales(self.scales, self.group_size, self.in_features)
+            sgs = self.scale_group_size if self.scale_group_size is not None else self.group_size
+            w = q * _expand_scales(self.scales, sgs, self.in_features)
         else:
-            w = q  # TurboQuant: codebook applied directly, rotation handled normalisation
+            w = q
         if self.residual_packed is not None:
             ridx = unpack_indices(self.residual_packed).reshape(
                 self.out_features, self.in_features)
@@ -107,10 +112,23 @@ class QuantizedWeight:
         if self.residual_packed is not None:
             extra_code_bits = self.residual_packed.bits
             extra_scale_bits = self.scale_bits_residual
-        main_scale = 0.0 if self.scales is None else self.scale_bits_main
+        sgs = self.scale_group_size if self.scale_group_size is not None else self.group_size
+        if self.scales is None:
+            main_scale = 0.0
+        else:
+            # Amortise scale cost over the code group.  For per-row TurboQuant scales
+            # sgs = in_features, so the per-code-group cost is scale_bits * group / in_features.
+            main_scale = self.scale_bits_main * self.group_size / sgs
+        # Sketch overhead: sketch_k 1-bit projections + 1 fp16 row norm per output row,
+        # amortised over (out * in_features) weights → (sketch_k + 16) * group / in_features
+        # bits per code group.
+        sketch_overhead = 0.0
+        if self.sketch is not None:
+            sketch_overhead = (self.sketch_k + 16) * self.group_size / self.in_features
         return BitBudget(levels=2 ** self.packed.bits, group_size=self.group_size,
                          scale_bits=(main_scale + extra_scale_bits
-                                     + extra_code_bits * self.group_size))
+                                     + extra_code_bits * self.group_size
+                                     + sketch_overhead))
 
     # bookkeeping for accounting
     scale_bits_main: float = 16.0
@@ -165,7 +183,11 @@ class Quantizer:
     # ------------------------------------------------------------------ #
     def _select_scales(self, w: torch.Tensor) -> Optional[torch.Tensor]:
         if self.cfg.scale == "turboquant":
-            return None  # Hadamard rotation normalises the distribution; no per-group metadata
+            # Per-row RMS: one scale per output neuron, amortised over in_features weights.
+            # After Hadamard rotation the distribution *shape* is universal (Gaussian) but
+            # the *scale* varies per layer; a per-row scale is necessary for correctness.
+            # Overhead: scale_bits/in_features bpw vs scale_bits/group_size for per-group.
+            return _group_scales_rms(w, w.shape[1])  # [out, 1]
         rms = _group_scales_rms(w, self.cfg.group_size)
         if self.cfg.scale == "rms":
             return rms
@@ -207,20 +229,24 @@ class Quantizer:
         scales = self._select_scales(w)
 
         if self.cfg.error_comp == "gptq":
-            if scales is None:
+            if self.cfg.scale == "turboquant":
                 raise ValueError(
-                    "GPTQ requires per-group scales; set scale='rms' or 'mse_search' "
-                    "when error_comp='gptq'."
+                    "GPTQ requires per-group scales with group_size < in_features; "
+                    "set scale='rms' or 'mse_search' when error_comp='gptq'."
                 )
             q_w, idx = self._gptq(w, scales, H)
         else:
             q_w, idx = _quantize_groups(w, scales, self.codebook, self.cfg.group_size)
 
         packed = pack_indices(idx.reshape(-1), self.cfg.bits)
+        # TurboQuant uses one scale per output row; pass scale_group_size=in_features
+        # so dequantize() and bit_budget() use the right expansion factor.
+        scale_group_size = inf if self.cfg.scale == "turboquant" else None
         qw = QuantizedWeight(
             packed=packed, scales=scales, codebook=self.codebook,
             group_size=self.cfg.group_size, out_features=out, in_features=inf,
-            scale_bits_main=self.cfg.scale_bits if scales is not None else 0.0,
+            scale_group_size=scale_group_size,
+            scale_bits_main=self.cfg.scale_bits,
         )
 
         if self.cfg.error_comp in ("residual", "qjl"):

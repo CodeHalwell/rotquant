@@ -1,15 +1,14 @@
-# E3b: TurboQuant Stage-2 QJL correction vs plain 3-bit (no residual) and vs
-# deterministic residual (E3), all at equal total bits after Hadamard rotation.
+# E3b: TurboQuant Stage-2 QJL correction (this row).
 #
-# scale=turboquant: no per-group scale metadata; codebook applied directly to
-# rotated weights (universal distribution after FWHT).  error_comp=turboquant:
-# Stage-2 QJL sketch (sketch_k=64 sign-projections of the residual) stored at
-# pack time and applied as an inner-product bias correction at inference.
+# scale=turboquant: per-row RMS scale (one per output neuron), much lower metadata
+# overhead than per-group (scale_bits/in_features vs scale_bits/group_size bpw).
+# error_comp=turboquant: Stage-2 QJL sketch (sketch_k=64 sign-projections of the
+# residual) stored at pack time; applied as an unbiased inner-product correction
+# at inference via (π/2)‖xr‖(sign(xr@G)·sketch^T)(row_norms/k).
 #
-# Compare three rows:
-#   e3b_tq_baseline  -- turboquant scale, no correction   (3.000 bpw)
-#   e3b_tq_sketch64  -- turboquant scale + QJL sketch k=64
-#   e3b_residual     -- rms scale + deterministic 1-bit residual  (E3 control)
+# Compare against (separate configs):
+#   e3b_tq_baseline  -- turboquant scale, error_comp=none
+#   e3_qjl.yaml      -- rms scale + deterministic 1-bit residual (E3 control)
 experiment: E3b
 run_id: e3b_turboquant_bias
 

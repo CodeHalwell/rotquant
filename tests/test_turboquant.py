@@ -82,29 +82,40 @@ class TestGenerateSketchMatrix:
 
 
 # --------------------------------------------------------------------------- #
-# scale="turboquant" produces None scales
+# scale="turboquant" produces per-row scales [out, 1] (not None)
 # --------------------------------------------------------------------------- #
 class TestTurboQuantScale:
-    def _make_qw(self, **kw) -> QuantizedWeight:
+    def _make_qw(self, out=32, inf=512, **kw) -> QuantizedWeight:
         cfg = QuantConfig(bits=3, codebook="gaussian", scale="turboquant",
                           group_size=128, error_comp="none", **kw)
-        w = torch.randn(32, 128)
+        w = torch.randn(out, inf)
         return Quantizer(cfg).quantize_weight(w)
 
-    def test_scales_is_none(self):
+    def test_scales_is_per_row(self):
+        # TurboQuant uses per-row RMS (one scale per output neuron), not None
         qw = self._make_qw()
-        assert qw.scales is None
+        assert qw.scales is not None
+        assert qw.scales.shape == (32, 1)  # [out, 1]
+
+    def test_scale_group_size_equals_in_features(self):
+        qw = self._make_qw(inf=512)
+        assert qw.scale_group_size == 512
 
     def test_dequantize_shape(self):
         qw = self._make_qw()
         w = qw.dequantize()
-        assert w.shape == (32, 128)
+        assert w.shape == (32, 512)
 
-    def test_bit_budget_zero_scale_overhead(self):
-        qw = self._make_qw()
+    def test_bit_budget_low_scale_overhead(self):
+        # Per-row scale overhead = scale_bits * group_size / in_features
+        qw = self._make_qw(out=32, inf=512)  # group_size=128, in=512
         bb = qw.bit_budget()
-        # scale_bits = 0 → effective bpw = log2(levels) exactly
-        assert abs(bb.bits_per_weight - math.log2(2 ** 3)) < 1e-9
+        code_bits = math.log2(2 ** 3)
+        # main_scale = 16 * 128 / 512 = 4 bits per code group → 4/128 = 0.03125 bpw
+        expected = code_bits + 16.0 * 128 / 512 / 128
+        assert abs(bb.bits_per_weight - expected) < 1e-9
+        # Must be strictly less overhead than per-group (16/128 = 0.125 bpw added)
+        assert bb.bits_per_weight < code_bits + 16.0 / 128
 
     def test_sketch_fields_absent(self):
         qw = self._make_qw()
@@ -191,6 +202,20 @@ class TestQuantLinearForward:
         # Correction should shift the output (not all-zero difference)
         assert not torch.allclose(out_tq, out_no)
 
+    def test_correction_scales_with_activation_norm(self):
+        """Output must be positively homogeneous: forward(2x) = 2·forward(x).
+
+        The QJL correction estimates xr·r^T which scales linearly with xr; the
+        π/2·‖xr‖ factor in the formula ensures that invariance holds.
+        """
+        ql_tq, _ = self._make_linear()
+        torch.manual_seed(42)
+        x = torch.randn(64)
+        out1 = ql_tq(x)
+        out2 = ql_tq(x * 2.0)
+        # With no bias and a correctly scaled correction, doubling xr must double output
+        assert torch.allclose(out2, out1 * 2.0, atol=1e-5)
+
     def test_no_sketch_path_unchanged(self):
         # Without sketch the forward should still match the base dequantize path
         cfg = QuantConfig(bits=3, codebook="gaussian", scale="turboquant",
@@ -204,19 +229,18 @@ class TestQuantLinearForward:
 
 
 # --------------------------------------------------------------------------- #
-# packed_state_bytes: sketch bytes counted, scales=None not counted
+# packed_state_bytes: sketch bytes counted, per-row scales counted
 # --------------------------------------------------------------------------- #
 class TestPackedStateBytes:
-    def test_no_sketch_no_scales(self):
+    def test_turboquant_per_row_scales_counted(self):
         cfg = QuantConfig(bits=3, codebook="gaussian", scale="turboquant",
                           error_comp="none")
         linear = torch.nn.Linear(128, 32, bias=False)
-        from rotquant.rotate import Identity
         ql = QuantLinear.from_linear(linear, cfg)
         b = ql.packed_state_bytes()
-        # Only the packed codes: ceil(32*128*3 / 32) * 4 bytes
         from rotquant.pack import packed_bytes
-        assert b == packed_bytes(ql.qweight.packed)
+        # Per-row scales [32, 1] stored as fp16
+        assert b == packed_bytes(ql.qweight.packed) + ql.qweight.scales.numel() * 2
 
     def test_sketch_bytes_counted(self):
         cfg = QuantConfig(bits=3, codebook="gaussian", scale="turboquant",
@@ -225,10 +249,23 @@ class TestPackedStateBytes:
         ql = QuantLinear.from_linear(linear, cfg)
         b = ql.packed_state_bytes()
         from rotquant.pack import packed_bytes
+        code_b = packed_bytes(ql.qweight.packed)
+        scale_b = ql.qweight.scales.numel() * 2   # [32, 1] fp16 per-row scales
         sketch_b = packed_bytes(ql.qweight.sketch)
         norms_b = ql.qweight.sketch_row_norms.numel() * 2
-        code_b = packed_bytes(ql.qweight.packed)
-        assert b == code_b + sketch_b + norms_b
+        assert b == code_b + scale_b + sketch_b + norms_b
+
+    def test_bit_budget_includes_sketch_overhead(self):
+        out, inf, k = 16, 512, 32
+        cfg = QuantConfig(bits=3, codebook="gaussian", scale="turboquant",
+                          group_size=128, error_comp="turboquant", sketch_k=k)
+        w = torch.randn(out, inf)
+        qw = Quantizer(cfg).quantize_weight(w)
+        bb = qw.bit_budget()
+        # main_scale = 16 * 128 / 512 = 4;  sketch_overhead = (32+16) * 128 / 512 = 12
+        expected_scale_bits = 16.0 * 128 / inf + (k + 16) * 128 / inf
+        expected_bpw = 3.0 + expected_scale_bits / 128
+        assert abs(bb.bits_per_weight - expected_bpw) < 1e-9
 
     def test_rms_scales_still_counted(self):
         cfg = QuantConfig(bits=3, codebook="gaussian", scale="rms",
@@ -243,12 +280,12 @@ class TestPackedStateBytes:
 
 
 # --------------------------------------------------------------------------- #
-# Combining turboquant scale with rms as comparison: dequantize correctness
+# dequantize correctness with per-row turboquant scales
 # --------------------------------------------------------------------------- #
-class TestDequantizeScalesNone:
+class TestDequantizePerRowScales:
     def test_roundtrip_near_gaussian(self):
-        """After Hadamard rotation the distribution is Gaussian; 3-bit Lloyd-Max
-        should quantise with low MSE even without per-group scaling."""
+        """After Hadamard rotation, 3-bit Lloyd-Max + per-row scale should achieve
+        low MSE; the per-row scale handles the overall weight magnitude."""
         torch.manual_seed(0)
         rot = RandomizedHadamard(128, seed=1)
         w_orig = torch.randn(32, 128)
@@ -257,8 +294,20 @@ class TestDequantizeScalesNone:
         cfg = QuantConfig(bits=3, codebook="gaussian", scale="turboquant",
                           group_size=128, error_comp="none")
         qw = Quantizer(cfg).quantize_weight(w_rot)
+        assert qw.scale_group_size == 128  # in_features
         w_deq = qw.dequantize()
         mse = (w_rot - w_deq).pow(2).mean().item()
         # Theoretical bound from turboquant_mse_bound(3) ≈ 0.0136; practical
         # MSE should be well below 0.1 for a unit-Gaussian source.
         assert mse < 0.1, f"MSE too high: {mse:.4f}"
+
+    def test_scales_not_none_for_real_weights(self):
+        """Scales must be non-None to handle real model weights whose magnitude != 1."""
+        w_small = torch.randn(16, 128) * 0.02  # typical OPT/LLaMA weight std
+        cfg = QuantConfig(bits=3, codebook="gaussian", scale="turboquant",
+                          group_size=128, error_comp="none")
+        qw = Quantizer(cfg).quantize_weight(w_small)
+        assert qw.scales is not None
+        w_deq = qw.dequantize()
+        # Without correct per-row scale, dequantized values would be ~50x too large
+        assert w_deq.abs().max().item() < 0.5, "scale mismatch: dequantized weights too large"
