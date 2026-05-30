@@ -33,11 +33,26 @@ results/       JSON per run + generated tables/figures
 ## Install
 
 ```bash
-conda create -n rotquant python=3.11 -y && conda activate rotquant
-pip install -r requirements.txt
-# GPU rotation kernel (CPU falls back to a pure-torch FWHT automatically):
-pip install fast-hadamard-transform
+# Core + dev deps (CPU, no GPU required):
+uv sync --extra dev
+
+# Add GPU eval stack (transformers, datasets, lm-eval, fast-hadamard-transform, …):
+uv sync --extra eval
+
+# Add baseline comparison packages (gptqmodel, autoawq, aqlm, flute-kernel):
+uv sync --extra baselines
 ```
+
+Run commands inside the managed venv with `uv run <cmd>`, or activate it first:
+
+```bash
+source .venv/bin/activate
+```
+
+> **GPU / CUDA PyTorch:** `uv sync` installs the default (CPU) torch wheel. For a
+> CUDA-enabled build, follow the [PyTorch install selector](https://pytorch.org/get-started/locally/)
+> and either use `uv pip install` with the appropriate `--extra-index-url`, or add a
+> `[tool.uv.sources]` override in `pyproject.toml` pointing at the CUDA wheel index.
 
 The **core foundation + correctness tests run on CPU with just `torch`, `numpy`,
 `scipy`** — no GPU, model download, or CUDA kernel needed.
