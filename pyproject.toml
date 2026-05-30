@@ -31,6 +31,13 @@ eval = [
     # is prohibitively slow at typical model dimensions on GPU.
     "fast-hadamard-transform",
 ]
+# Install lazily as needed for comparison runs.
+baselines = [
+    "gptqmodel",   # GPTQ (auto-gptq successor)
+    "autoawq",     # AWQ
+    "aqlm[gpu]",   # AQLM 2-bit vector codebooks
+    "flute-kernel", # runtime for HIGGS (rotation + MSE-optimal grid)
+]
 dev = ["pytest"]
 
 [tool.setuptools]
