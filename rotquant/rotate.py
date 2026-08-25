@@ -213,7 +213,7 @@ class LearnedRotation(Rotation):
         # Registered (non-persistent) so device moves carry the indices along
         # with theta -- indexing a CUDA tensor with CPU indices is an error.
         self.register_buffer("_tril_idx",
-                             torch.tril_indices(dim, dim, offset=-1).to(device),
+                             torch.tril_indices(dim, dim, offset=-1, device=device),
                              persistent=False)
         n = self._tril_idx.shape[1]
         init = 1e-3 * torch.randn(n, generator=gen, dtype=torch.float32)

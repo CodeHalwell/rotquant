@@ -84,4 +84,4 @@ def train_layer_rotation(rotation: LearnedRotation, weight: torch.Tensor,
     rotation.eval()
     rotation.matrix()  # warm the eval-mode cache with the trained theta
     return {"initial_mse": initial, "final_mse": current_mse(),
-            "steps": float(cfg.steps)}
+            "steps": int(cfg.steps)}

@@ -154,6 +154,23 @@ def _group_counts(in_features: int, group_size: int, device) -> torch.Tensor:
     return counts
 
 
+def _storage_scales(scales: Optional[torch.Tensor],
+                    scale_bits: float) -> Optional[torch.Tensor]:
+    """Round scales to the precision the bit accounting claims.
+
+    The protocol charges ``scale_bits`` (default 16) per scale, so the stored
+    tensor must actually be fp16 -- and quantisation must run against the
+    *rounded* values so pack-time indices and dequant agree. Floored at the
+    smallest normal fp16 so the fp32 ``1e-12`` clamp on all-zero groups does not
+    underflow to zero and divide out to NaN. Non-16-bit budgets keep fp32 (and
+    are charged their true element size by ``packed_state_bytes``).
+    """
+    if scales is None or scale_bits != 16.0:
+        return scales
+    return scales.to(torch.float16).clamp_min(
+        torch.finfo(torch.float16).smallest_normal)
+
+
 def _group_scales_rms(w: torch.Tensor, group_size: int) -> torch.Tensor:
     out, inf = w.shape
     ng = (inf + group_size - 1) // group_size
@@ -245,7 +262,7 @@ class Quantizer:
                         H: Optional[torch.Tensor] = None) -> QuantizedWeight:
         w = weight.detach().to(torch.float32)
         out, inf = w.shape
-        scales = self._select_scales(w)
+        scales = _storage_scales(self._select_scales(w), self.cfg.scale_bits)
 
         if self.cfg.error_comp == "gptq":
             if self.cfg.scale == "turboquant":
@@ -356,7 +373,8 @@ class Quantizer:
     def _add_residual(self, qw: QuantizedWeight, w: torch.Tensor,
                       q_w: torch.Tensor) -> None:
         r = w - q_w
-        rscales = _group_scales_rms(r, self.cfg.group_size)
+        rscales = _storage_scales(_group_scales_rms(r, self.cfg.group_size),
+                                  self.cfg.scale_bits)
         if self.cfg.error_comp == "residual":
             rcb = build_scalar_codebook(self.cfg.residual_codebook,
                                         2 ** self.cfg.residual_bits)

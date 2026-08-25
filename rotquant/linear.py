@@ -146,14 +146,20 @@ class QuantLinear(nn.Module):
         return cls(qw, act_rotation=act_rotation, bias=bias, fallback=fallback)
 
     def packed_state_bytes(self) -> int:
-        """Persistent storage in packed mode (codes + scales + sketch), in bytes."""
-        b = packed_bytes(self.qweight.packed)
-        if self.qweight.scales is not None:
-            b += self.qweight.scales.numel() * 2  # fp16 per-group scales
-        if self.qweight.residual_packed is not None:
-            b += packed_bytes(self.qweight.residual_packed)
-            b += self.qweight.residual_scales.numel() * 2
-        if self.qweight.sketch is not None:
-            b += packed_bytes(self.qweight.sketch)
-            b += self.qweight.sketch_row_norms.numel() * 2  # fp16 row norms
+        """Persistent storage in packed mode (codes + scales + sketch), in bytes.
+
+        Scale/norm tensors are charged at their actual element size -- with the
+        default 16-bit scale budget they are stored fp16, so this matches the
+        bits/weight accounting instead of assuming it.
+        """
+        qw = self.qweight
+        b = packed_bytes(qw.packed)
+        if qw.scales is not None:
+            b += qw.scales.numel() * qw.scales.element_size()
+        if qw.residual_packed is not None:
+            b += packed_bytes(qw.residual_packed)
+            b += qw.residual_scales.numel() * qw.residual_scales.element_size()
+        if qw.sketch is not None:
+            b += packed_bytes(qw.sketch)
+            b += qw.sketch_row_norms.numel() * qw.sketch_row_norms.element_size()
         return b

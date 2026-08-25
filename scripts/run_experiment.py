@@ -154,6 +154,7 @@ def footprint_metrics(model: torch.nn.Module, cfg_model: Dict[str, Any]) -> Dict
     from rotquant.linear import QuantLinear
     metrics: Dict[str, Any] = {}
     bpws, packed_bytes, fp16_bytes = [], 0, 0
+    total_bits, total_weights = 0.0, 0
     claimed = cfg_model.get("claimed_bpw")
     tol = float(cfg_model.get("claimed_bpw_tol", 1e-6))
     for name, mod in model.named_modules():
@@ -162,12 +163,19 @@ def footprint_metrics(model: torch.nn.Module, cfg_model: Dict[str, Any]) -> Dict
         budget = mod.qweight.bit_budget()
         if claimed is not None:
             budget.assert_matches(float(claimed), tol=tol)
+        n_weights = mod.out_features * mod.in_features
         bpws.append(budget.bits_per_weight)
+        total_bits += budget.bits_per_weight * n_weights
+        total_weights += n_weights
         packed_bytes += mod.packed_state_bytes()
-        fp16_bytes += mod.out_features * mod.in_features * 2
+        fp16_bytes += n_weights * 2
     if bpws:
         metrics["n_quant_layers"] = len(bpws)
-        metrics["bits_per_weight_mean"] = sum(bpws) / len(bpws)
+        # Size-weighted: total stored bits over total quantised weights, so a
+        # small layer with high per-in_features overhead (e.g. TurboQuant
+        # per-row scales) cannot skew the model-wide rate used for equal-bit
+        # comparisons. min/max stay per-layer extremes.
+        metrics["bits_per_weight_mean"] = total_bits / total_weights
         metrics["bits_per_weight_min"] = min(bpws)
         metrics["bits_per_weight_max"] = max(bpws)
         metrics["packed_weight_bytes"] = packed_bytes

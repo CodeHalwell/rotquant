@@ -14,6 +14,7 @@ import yaml
 from rotquant.patch import PatchConfig, patch_model
 from rotquant.quantize import QuantConfig, Quantizer, _group_scales_rms
 from rotquant.linear import QuantLinear
+from rotquant.rotate import Identity
 
 _ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
@@ -172,6 +173,66 @@ def test_partial_group_quantize_roundtrip():
         assert deq.shape == w.shape
         rel = (w - deq).pow(2).sum() / w.pow(2).sum()
         assert rel < 0.02, f"scale={scale}: partial-group path degraded ({rel:.4f})"
+
+
+# --------------------------------------------------------------------------- #
+# storage accounting matches what is actually stored
+# --------------------------------------------------------------------------- #
+def test_scales_stored_at_claimed_precision():
+    """The default budget charges 16 bits per scale, so the stored tensor must
+    actually be fp16 (and quantisation must agree with the rounded values);
+    a non-16-bit budget keeps fp32 and is charged its true element size."""
+    torch.manual_seed(0)
+    w = torch.randn(8, 64)
+    qw16 = Quantizer(QuantConfig(bits=3, scale="rms", group_size=32,
+                                 error_comp="residual")).quantize_weight(w)
+    assert qw16.scales.dtype == torch.float16
+    assert qw16.residual_scales.dtype == torch.float16
+    rel = (w - qw16.dequantize()).pow(2).sum() / w.pow(2).sum()
+    assert rel < 0.02
+
+    qw16p = Quantizer(QuantConfig(bits=3, scale="rms",
+                                  group_size=32)).quantize_weight(w)
+    qw32 = Quantizer(QuantConfig(bits=3, scale="rms", group_size=32,
+                                 scale_bits=32.0)).quantize_weight(w)
+    assert qw32.scales.dtype == torch.float32
+    lin16 = QuantLinear(qw16p, act_rotation=Identity(64))
+    lin32 = QuantLinear(qw32, act_rotation=Identity(64))
+    # fp16 scales charged 2 bytes each; fp32 scales charged their true 4.
+    assert (lin32.packed_state_bytes() - lin16.packed_state_bytes()
+            == 2 * qw32.scales.numel())
+
+
+def test_zero_group_scales_survive_fp16_floor():
+    # An all-zero input group must not underflow the fp16 scale to 0 -> NaN.
+    w = torch.zeros(4, 64)
+    w[:, :32] = torch.randn(4, 32)
+    qw = Quantizer(QuantConfig(bits=3, scale="rms", group_size=32)).quantize_weight(w)
+    deq = qw.dequantize()
+    assert torch.isfinite(deq).all()
+    assert torch.allclose(deq[:, 32:], torch.zeros(4, 32), atol=1e-3)
+
+
+def test_footprint_bpw_is_size_weighted():
+    """bits_per_weight_mean must be total bits / total weights, not a per-layer
+    average -- TurboQuant per-row overhead depends on in_features, so small
+    layers would otherwise skew the model-wide rate."""
+    class Toy(nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.fc1 = nn.Linear(64, 32)   # bpw = 3 + 16/64  = 3.25
+            self.fc2 = nn.Linear(128, 32)  # bpw = 3 + 16/128 = 3.125
+
+    m = Toy()
+    qcfg = QuantConfig(bits=3, codebook="gaussian", scale="turboquant",
+                       group_size=64)
+    patch_model(m, PatchConfig(quant=qcfg, rotation="fwht", block=64, seed=0))
+    metrics = run_experiment.footprint_metrics(m, {})
+    weighted = (3.25 * 64 * 32 + 3.125 * 128 * 32) / (64 * 32 + 128 * 32)
+    assert abs(metrics["bits_per_weight_mean"] - weighted) < 1e-9
+    assert abs(metrics["bits_per_weight_mean"] - (3.25 + 3.125) / 2) > 1e-3
+    assert metrics["bits_per_weight_min"] == 3.125
+    assert metrics["bits_per_weight_max"] == 3.25
 
 
 # --------------------------------------------------------------------------- #
