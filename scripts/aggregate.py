@@ -29,6 +29,22 @@ def _key(run: Dict[str, Any]) -> str:
     return f"{cfg.get('experiment', '?')}|{cfg.get('model', '?')}|{cfg.get('label', run.get('run_id'))}"
 
 
+def _flat_metrics(metrics: Dict[str, Any]) -> Dict[str, float]:
+    """Numeric metrics, with one level of nesting flattened as ``parent.child``
+    (so the zero-shot per-task dict and ``bundle_mean`` make it into the table)."""
+    flat: Dict[str, float] = {}
+    for m, v in metrics.items():
+        if isinstance(v, bool):
+            continue
+        if isinstance(v, (int, float)):
+            flat[m] = v
+        elif isinstance(v, dict):
+            for k2, v2 in v.items():
+                if not isinstance(v2, bool) and isinstance(v2, (int, float)):
+                    flat[f"{m}.{k2}"] = v2
+    return flat
+
+
 def aggregate(runs: List[Dict[str, Any]]) -> Dict[str, Dict[str, Any]]:
     groups: Dict[str, List[Dict[str, Any]]] = defaultdict(list)
     for r in runs:
@@ -37,14 +53,12 @@ def aggregate(runs: List[Dict[str, Any]]) -> Dict[str, Dict[str, Any]]:
     table: Dict[str, Dict[str, Any]] = {}
     for key, group in groups.items():
         agg: Dict[str, Any] = {"n_seeds": len(group)}
+        flats = [_flat_metrics(r.get("metrics", {})) for r in group]
         metric_names = set()
-        for r in group:
-            for m, v in r.get("metrics", {}).items():
-                if isinstance(v, (int, float)):
-                    metric_names.add(m)
-        for m in metric_names:
-            vals = [r["metrics"][m] for r in group if isinstance(
-                r["metrics"].get(m), (int, float))]
+        for f in flats:
+            metric_names.update(f)
+        for m in sorted(metric_names):
+            vals = [f[m] for f in flats if m in f]
             if vals:
                 agg[m] = {"mean": mean(vals),
                           "std": pstdev(vals) if len(vals) > 1 else 0.0}

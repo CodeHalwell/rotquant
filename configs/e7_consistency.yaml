@@ -5,4 +5,6 @@ experiment: E7
 label: e7_mismatched
 quant: {bits: 3, codebook: gaussian, scale: mse_search, group_size: 128, error_comp: none}
 patch: {rotation: fwht, block: 128, mode: mismatched}
-eval: {perplexity: true, ppl_datasets: [wikitext2, c4]}
+# layer_mse captures per-linear output drift (fp vs quantised, same batch) --
+# the depth-wise cosine trace is the E7 signal, written under metrics.layer_mse.
+eval: {perplexity: true, ppl_datasets: [wikitext2, c4], layer_mse: true}

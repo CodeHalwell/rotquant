@@ -12,10 +12,12 @@ dependencies = [
     "torch>=2.4",
     "numpy",
     "scipy",
+    "pyyaml",  # scripts/run_experiment.py reads the experiment YAMLs
 ]
 
 [project.optional-dependencies]
-# Heavier deps only needed for the GPU eval / baseline paths.
+# Heavier deps only needed for the eval / baseline paths. Everything here is
+# pure-python-installable so the full pipeline can be smoke-tested on CPU.
 eval = [
     "transformers",
     "datasets",
@@ -24,11 +26,14 @@ eval = [
     "sentencepiece",
     "pandas",
     "matplotlib",
-    "pyyaml",
     "lm-eval",
-    # CUDA rotation kernel (QuaRot/QuIP# FWHT primitive); rotquant.rotate falls
-    # back to a pure-torch FWHT on CPU if this isn't installed, but that path
-    # is prohibitively slow at typical model dimensions on GPU.
+]
+# CUDA rotation kernel (QuaRot/QuIP# FWHT primitive); rotquant.rotate falls
+# back to a pure-torch FWHT if this isn't installed, but that path is
+# prohibitively slow at typical model dimensions on GPU. Source-build only
+# (needs nvcc + torch at build time), so it lives in its own extra:
+#   uv pip install fast-hadamard-transform --no-build-isolation
+kernels = [
     "fast-hadamard-transform",
 ]
 # Install lazily as needed for comparison runs.

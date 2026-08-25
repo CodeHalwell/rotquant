@@ -15,13 +15,14 @@ device: cuda
 dtype: float16
 seed: 42
 
+# Note: no scale_bits override -- the per-row fp16 scale is real stored metadata
+# and must be counted (it amortises to 16/in_features bpw automatically).
 quant:
   bits: 3
   codebook: gaussian
   scale: turboquant
   group_size: 128
   error_comp: none
-  scale_bits: 0.0
 
 patch:
   rotation: fwht

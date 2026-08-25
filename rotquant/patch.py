@@ -15,7 +15,6 @@ patch modes are exposed for E7:
 """
 from __future__ import annotations
 
-import copy
 from dataclasses import dataclass
 from typing import Dict, Optional, Sequence
 
@@ -39,6 +38,11 @@ class PatchConfig:
     block: int = 128
     mode: str = "consistent"          # see PATCH_MODES
     include: Optional[Sequence[str]] = None
+    # Substrings of layer names to leave in fp16. The default keeps the output
+    # head (and its tied embedding) unquantised -- the convention every baseline
+    # (GPTQ/AWQ/QuIP#/AQLM) follows, so results stay comparable. Pass () to
+    # quantise everything.
+    exclude: Sequence[str] = ("lm_head", "embed_out")
     fallback: bool = False
     seed: int = 0
 
@@ -60,8 +64,6 @@ def _make_rotations(in_features: int, cfg: PatchConfig, layer_seed: int):
     elif cfg.mode == "mismatched":
         # Deliberately break it: rotate the weight but leave activations un-rotated.
         act_rot = Identity(in_features)
-        logger.warning("patch mode 'mismatched' active -- consistency invariant "
-                       "intentionally violated (E7 only)")
     else:
         raise ValueError(f"unknown patch mode: {cfg.mode}; pick from {PATCH_MODES}")
     return weight_rot, act_rot
@@ -72,17 +74,33 @@ def patch_model(model: nn.Module, cfg: PatchConfig,
     """Replace targeted ``nn.Linear`` layers with ``QuantLinear`` in-place."""
     if cfg.mode not in PATCH_MODES:
         raise ValueError(f"unknown patch mode: {cfg.mode}")
+    if cfg.mode == "mismatched":
+        logger.warning("patch mode 'mismatched' active -- consistency invariant "
+                       "intentionally violated (E7 only)")
     hessians = hessians or {}
 
     include_terms = tuple(cfg.include) if cfg.include is not None else None
+    exclude_terms = tuple(cfg.exclude or ())
     targets = [(n, m) for n, m in model.named_modules()
                if isinstance(m, nn.Linear)
-               and (include_terms is None or any(k in n for k in include_terms))]
+               and (include_terms is None or any(k in n for k in include_terms))
+               and not any(k in n for k in exclude_terms)]
+    if not targets:
+        logger.warning(
+            "patch_model found NO nn.Linear layers to quantise (include=%s, "
+            "exclude=%s). GPT-2-style models use transformers Conv1D, which is "
+            "not supported -- the model is still full-precision!",
+            include_terms, exclude_terms)
+        return model
 
     for i, (name, linear) in enumerate(targets):
         weight_rot, act_rot = _make_rotations(linear.in_features, cfg,
                                                layer_seed=cfg.seed + i)
         H = hessians.get(name)
+        if H is not None:
+            # Hessians may have been offloaded to CPU by collect_hessians;
+            # bring them back next to the weight for the rotation + GPTQ solve.
+            H = H.to(linear.weight.device)
         if H is not None and cfg.rotation not in ("none", "identity"):
             # Rotate the Hessian into the same basis as the rotated weight:
             # H' = R H R^T so GPTQ sees the consistent input statistics.

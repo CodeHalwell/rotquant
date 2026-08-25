@@ -26,7 +26,8 @@ class PPLConfig:
 def _load_text(dataset: str) -> str:
     from datasets import load_dataset
     if dataset == "wikitext2":
-        ds = load_dataset("wikitext", "wikitext-2-raw-v1", split="test")
+        # Bare "wikitext" ids are rejected by current huggingface_hub.
+        ds = load_dataset("Salesforce/wikitext", "wikitext-2-raw-v1", split="test")
         return "\n\n".join(ds["text"])
     if dataset == "c4":
         ds = load_dataset("allenai/c4", "en", split="validation",

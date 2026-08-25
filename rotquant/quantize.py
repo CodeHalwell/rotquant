@@ -144,13 +144,26 @@ def _expand_scales(scales: torch.Tensor, group_size: int, in_features: int) -> t
     return rep[:, :in_features]
 
 
+def _group_counts(in_features: int, group_size: int, device) -> torch.Tensor:
+    """Number of *real* (non-padded) weights in each group, shape [ng]."""
+    ng = (in_features + group_size - 1) // group_size
+    counts = torch.full((ng,), group_size, dtype=torch.float32, device=device)
+    rem = in_features - (ng - 1) * group_size
+    counts[-1] = rem
+    return counts
+
+
 def _group_scales_rms(w: torch.Tensor, group_size: int) -> torch.Tensor:
     out, inf = w.shape
     ng = (inf + group_size - 1) // group_size
     pad = ng * group_size - inf
     wp = torch.nn.functional.pad(w, (0, pad))
     wg = wp.reshape(out, ng, group_size)
-    rms = wg.pow(2).mean(dim=-1).clamp_min(1e-12).sqrt()
+    # Divide by the number of real elements per group, not group_size: averaging
+    # over the zero padding would shrink the last group's scale by
+    # sqrt(real/group_size) and clip its weights.
+    counts = _group_counts(inf, group_size, w.device)
+    rms = (wg.pow(2).sum(dim=-1) / counts).clamp_min(1e-12).sqrt()
     return rms  # [out, ng]
 
 
@@ -202,6 +215,11 @@ class Quantizer:
         ng = rms.shape[1]
         pad = ng * gs - inf
         wg = torch.nn.functional.pad(w, (0, pad)).reshape(out, ng, gs)
+        # Padded slots must not vote: their (0 - q)^2 error varies with the
+        # candidate scale and would bias the search for the last partial group.
+        valid = torch.ones(ng, gs, dtype=torch.bool, device=w.device)
+        if pad:
+            valid[-1, gs - pad:] = False
         cand = torch.linspace(self.cfg.mse_search_lo, self.cfg.mse_search_hi,
                               self.cfg.mse_search_grid, device=w.device)
         best_scales = rms.clone()
@@ -213,7 +231,7 @@ class Quantizer:
             normed = wg / sc
             idx = torch.bucketize(normed, bounds)
             q = centroids[idx] * sc
-            err = (wg - q).pow(2).sum(dim=-1)               # [out, ng]
+            err = ((wg - q).pow(2) * valid).sum(dim=-1)     # [out, ng]
             better = err < best_err
             best_err = torch.where(better, err, best_err)
             best_scales = torch.where(better, (rms * c), best_scales)
