@@ -14,6 +14,7 @@ from .quantize import Quantizer, QuantConfig, QuantizedWeight
 from .linear import QuantLinear
 from .calibrate import collect_hessians, HessianAccumulator
 from .patch import patch_model, PatchConfig, PATCH_MODES
+from .train_rotation import train_layer_rotation, RotationTrainConfig
 
 __all__ = [
     "BitBudget", "set_seed", "environment_record", "get_logger",
@@ -27,4 +28,5 @@ __all__ = [
     "QuantLinear",
     "collect_hessians", "HessianAccumulator",
     "patch_model", "PatchConfig", "PATCH_MODES",
+    "train_layer_rotation", "RotationTrainConfig",
 ]

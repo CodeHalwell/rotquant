@@ -241,10 +241,12 @@ def run(config_path: str, output_dir: str = "results",
         fp_capture = capture_outputs(model, drift_batch, device)
 
     reset_peak_vram()
+    patch_stats: Dict[str, Any] = {}
     with Timer() as t:
-        patch_model(model, pcfg, hessians=hessians)
+        patch_model(model, pcfg, hessians=hessians, stats_out=patch_stats)
     metrics["patch_seconds"] = t.elapsed
     metrics["peak_vram_bytes_patch"] = peak_vram_bytes()
+    metrics.update(patch_stats)
     metrics.update(footprint_metrics(model, cfg))
 
     # Evaluation -----------------------------------------------------------

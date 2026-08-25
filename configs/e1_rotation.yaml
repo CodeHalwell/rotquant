@@ -1,5 +1,9 @@
 # E1: rotation transfers; FWHT ~= dense (weight-only).
-# Sweep `patch.rotation` over [none, dense, fwht, learned] at >=3 seeds.
+# Sweep `patch.rotation` over [none, dense, fwht, learned] at >=3 seeds:
+#   --set patch.rotation=dense
+#   --set patch.rotation=learned --set 'patch.train_rotation={steps: 200}'
+# The learned arm REQUIRES train_rotation (data-free per-layer theta training);
+# without it theta stays at ~identity and the arm is a no-rotation control.
 # Expect: FWHT ~= dense, both >> none; learned ~= FWHT for weight-only.
 experiment: E1
 label: e1_fwht_3bit

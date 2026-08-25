@@ -21,7 +21,7 @@ a set of findings about rotation-based weight-only quantisation:
 ## Layout
 
 ```
-rotquant/      core library  (rotate, codebooks, quantize, pack, linear, calibrate, patch, utils)
+rotquant/      core library  (rotate, codebooks, quantize, pack, linear, calibrate, patch, train_rotation, utils)
 eval/          fixed eval protocol (perplexity, zeroshot, layer_mse)
 baselines/     wrappers around GPTQ/AWQ/AQLM/QuIP#/QTIP/HIGGS through the same harness
 tests/         correctness tests that must pass before trusting any experiment
@@ -100,9 +100,14 @@ python scripts/run_experiment.py configs/e1_rotation.yaml --model meta-llama/Lla
 
 # Any dotted config key is sweepable with --set (YAML-typed values), so the
 # sweeps described in the config comments are one-liners:
-for r in none dense fwht learned; do
+for r in none dense fwht; do
   python scripts/run_experiment.py configs/e1_rotation.yaml --set patch.rotation=$r
 done
+# The E1 learned arm needs its per-layer theta training enabled (data-free
+# alternating minimisation of rotated-domain quant MSE via the Cayley map;
+# without it, theta stays at ~identity and the arm is a no-rotation control):
+python scripts/run_experiment.py configs/e1_rotation.yaml \
+  --set patch.rotation=learned --set 'patch.train_rotation={steps: 200, lr: 0.001}'
 python scripts/run_experiment.py configs/e4_scale_group.yaml --set quant.group_size=64
 python scripts/run_experiment.py configs/e8_footprint.yaml --set patch.fallback=true
 ```
@@ -125,6 +130,11 @@ style models (transformers `Conv1D`) are not supported and are flagged loudly.
 > quantised linear *on the GPU* (~25 GB extra for Llama-2-7B, all layers).
 > Finalised Hessians are offloaded to CPU before patching, but plan VRAM for the
 > accumulation phase or restrict `patch: {include: [...]}`.
+
+> **Learned-rotation cost note:** each training step solves the O(d³) Cayley map
+> per layer, so `train_rotation: {steps: 200}` on a 7B model is roughly an hour
+> of GPU time on top of patching. Per-run training aggregates land under
+> `metrics.rotation_train` (mean rotated-domain quant-MSE before/after).
 
 ### Baselines
 
@@ -154,7 +164,8 @@ A finding is **confirmed** when it holds across ≥3 seeds, on at least Llama-2-
 ## Status
 
 Fully implemented and CPU-tested: `rotate`, `codebooks`, `pack`, `quantize`,
-`linear`, `calibrate`, `patch`, and the correctness suites (`pytest tests/`).
+`linear`, `calibrate`, `patch`, `train_rotation` (the E1 learned arm), and the
+correctness suites (`pytest tests/`).
 The full `run_experiment.py` pipeline — config merge, quantise, patch, GPTQ
 calibration on streamed C4, layer-MSE drift, perplexity, result JSON,
 aggregation — is smoke-tested end-to-end on CPU via `configs/smoke_cpu.yaml`.
