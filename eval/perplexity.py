@@ -26,7 +26,8 @@ class PPLConfig:
 def _load_text(dataset: str) -> str:
     from datasets import load_dataset
     if dataset == "wikitext2":
-        ds = load_dataset("wikitext", "wikitext-2-raw-v1", split="test")
+        # Bare "wikitext" ids are rejected by current huggingface_hub.
+        ds = load_dataset("Salesforce/wikitext", "wikitext-2-raw-v1", split="test")
         return "\n\n".join(ds["text"])
     if dataset == "c4":
         ds = load_dataset("allenai/c4", "en", split="validation",
@@ -64,8 +65,13 @@ def perplexity(model, tokenizer, dataset: str = "wikitext2",
         target_ids = input_ids.clone()
         target_ids[:, :-trg_len] = -100  # only score the new tokens
         out = model(input_ids, labels=target_ids)
-        # out.loss is mean over scored tokens; rescale to a token sum.
-        n_scored = (target_ids != -100).sum().item()
+        # out.loss is mean over scored tokens; rescale to a token sum. The HF
+        # causal-LM loss shifts labels by one, so position 0 is never scored --
+        # count the post-shift labels, not the raw mask.
+        n_scored = (target_ids[:, 1:] != -100).sum().item()
+        if n_scored == 0:
+            prev_end = end
+            continue
         nlls.append(out.loss.float() * n_scored)
         total += n_scored
         prev_end = end

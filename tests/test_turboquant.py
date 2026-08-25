@@ -206,7 +206,8 @@ class TestQuantLinearForward:
         """Output must be positively homogeneous: forward(2x) = 2·forward(x).
 
         The QJL correction estimates xr·r^T which scales linearly with xr; the
-        π/2·‖xr‖ factor in the formula ensures that invariance holds.
+        asymmetric estimator keeps the full projection xr@G (only the stored
+        residual side is sign-quantised), so it is linear in xr by construction.
         """
         ql_tq, _ = self._make_linear()
         torch.manual_seed(42)
@@ -215,6 +216,57 @@ class TestQuantLinearForward:
         out2 = ql_tq(x * 2.0)
         # With no bias and a correctly scaled correction, doubling xr must double output
         assert torch.allclose(out2, out1 * 2.0, atol=1e-5)
+
+    def test_correction_estimator_unbiased(self):
+        """The asymmetric QJL estimator sqrt(pi/2)/sqrt(k)·||r||·(x@G)·sign(r@G)
+        must be unbiased for x·r -- averaged over independent G it converges to
+        the true inner product at any angle (the sign-sign variant does not)."""
+        torch.manual_seed(0)
+        d, k, n_trials = 64, 64, 400
+        x = torch.randn(d)
+        r = torch.randn(d) + 0.5 * x  # deliberately non-orthogonal
+        true_ip = float(x @ r)
+        ests = []
+        for s in range(n_trials):
+            G = _generate_sketch_matrix(d, k, seed=s, device="cpu")
+            est = (math.sqrt(math.pi / 2) / math.sqrt(k)) * r.norm() * (
+                (x @ G) @ torch.sign(r @ G))
+            ests.append(float(est))
+        est_mean = sum(ests) / n_trials
+        # std of the mean ~ ||x||·||r||/sqrt(k·n_trials); allow 4 sigma
+        tol = 4 * float(x.norm() * r.norm()) / math.sqrt(k * n_trials)
+        assert abs(est_mean - true_ip) < tol, \
+            f"estimator biased: mean {est_mean:.3f} vs true {true_ip:.3f} (tol {tol:.3f})"
+
+    def test_correction_reduces_layer_error_when_k_large_enough(self):
+        """Applying the QJL correction must move the quantised layer's output
+        closer to the exact output -- in the regime where it can.
+
+        The estimator is unbiased with variance ~ (pi/2)/k * ||xr||^2 ||r_i||^2,
+        while the uncorrected error power is ~ ||xr||^2 ||r_i||^2 / d for
+        near-isotropic residuals, so the correction only net-helps when
+        k > (pi/2) * in_features. Test with k = 4d (expect ~60% error reduction);
+        below the break-even the correction is variance-dominated by design.
+        """
+        torch.manual_seed(3)
+        inf, out, k = 64, 16, 256
+        gains = []
+        with torch.no_grad():
+            linear = torch.nn.Linear(inf, out, bias=False)
+            rot = RandomizedHadamard(inf, seed=0)
+            x = torch.randn(8, inf)
+            for seed in range(8):
+                cfg_tq = QuantConfig(bits=3, codebook="gaussian", scale="turboquant",
+                                     error_comp="turboquant", sketch_k=k, seed=seed)
+                cfg_no = QuantConfig(bits=3, codebook="gaussian", scale="turboquant",
+                                     error_comp="none", seed=seed)
+                ql_tq = QuantLinear.from_linear(linear, cfg_tq, weight_rotation=rot)
+                ql_no = QuantLinear.from_linear(linear, cfg_no, weight_rotation=rot)
+                ref = linear(x)
+                gains.append(float((ql_no(x) - ref).pow(2).mean()
+                                   - (ql_tq(x) - ref).pow(2).mean()))
+        assert sum(gains) / len(gains) > 0, \
+            f"QJL correction increased mean output error (gains={gains})"
 
     def test_no_sketch_path_unchanged(self):
         # Without sketch the forward should still match the base dequantize path

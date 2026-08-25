@@ -145,16 +145,21 @@ class RandomizedHadamard(Rotation):
         tb = fwht(tb, normalize=True)
         return tb.reshape(*lead, d)
 
+    def _signs(self, ref: torch.Tensor) -> torch.Tensor:
+        # Follow the input's device as well as dtype: during patching the weight
+        # lives on the GPU before the rotation module has been moved anywhere.
+        return self.signs.to(device=ref.device, dtype=ref.dtype)
+
     def rotate_activation(self, x: torch.Tensor) -> torch.Tensor:
         # x @ R^T = FWHT_norm(x * s)
-        return self._blocked_fwht(x * self.signs.to(x.dtype))
+        return self._blocked_fwht(x * self._signs(x))
 
     def rotate_weight(self, weight: torch.Tensor) -> torch.Tensor:
-        return self._blocked_fwht(weight * self.signs.to(weight.dtype))
+        return self._blocked_fwht(weight * self._signs(weight))
 
     def inverse_activation(self, x: torch.Tensor) -> torch.Tensor:
         # x @ R = FWHT_norm(x) * s
-        return self._blocked_fwht(x) * self.signs.to(x.dtype)
+        return self._blocked_fwht(x) * self._signs(x)
 
 
 class DenseOrthogonal(Rotation):
@@ -166,20 +171,27 @@ class DenseOrthogonal(Rotation):
         gen = torch.Generator(device="cpu")
         if seed is not None:
             gen.manual_seed(seed)
+        # Sample on CPU for seed reproducibility, but run the O(d^3) QR on the
+        # target device -- CPU QR at 11008 dims costs minutes per layer.
         a = torch.randn(dim, dim, generator=gen, dtype=torch.float64)
+        if device is not None:
+            a = a.to(device)
         q, r = torch.linalg.qr(a)
         # Make the decomposition unique / sign-stable.
         q = q * torch.sign(torch.diagonal(r)).unsqueeze(0)
         self.register_buffer("R", q.to(device=device, dtype=dtype))
 
+    def _r(self, ref: torch.Tensor) -> torch.Tensor:
+        return self.R.to(device=ref.device, dtype=ref.dtype)
+
     def rotate_activation(self, x: torch.Tensor) -> torch.Tensor:
-        return x @ self.R.to(x.dtype).T
+        return x @ self._r(x).T
 
     def rotate_weight(self, weight: torch.Tensor) -> torch.Tensor:
-        return weight @ self.R.to(weight.dtype).T
+        return weight @ self._r(weight).T
 
     def inverse_activation(self, x: torch.Tensor) -> torch.Tensor:
-        return x @ self.R.to(x.dtype)
+        return x @ self._r(x)
 
 
 class LearnedRotation(Rotation):
@@ -198,7 +210,11 @@ class LearnedRotation(Rotation):
         if seed is not None:
             gen.manual_seed(seed)
         # Free parameters = strictly-lower-triangular entries of the skew matrix.
-        self._tril_idx = torch.tril_indices(dim, dim, offset=-1)
+        # Registered (non-persistent) so device moves carry the indices along
+        # with theta -- indexing a CUDA tensor with CPU indices is an error.
+        self.register_buffer("_tril_idx",
+                             torch.tril_indices(dim, dim, offset=-1, device=device),
+                             persistent=False)
         n = self._tril_idx.shape[1]
         init = 1e-3 * torch.randn(n, generator=gen, dtype=torch.float32)
         self.theta = nn.Parameter(init.to(device=device, dtype=torch.float32))
@@ -241,15 +257,15 @@ class LearnedRotation(Rotation):
         return r
 
     def rotate_activation(self, x: torch.Tensor) -> torch.Tensor:
-        r = self.matrix().to(x.dtype)
+        r = self.matrix().to(device=x.device, dtype=x.dtype)
         return x @ r.T
 
     def rotate_weight(self, weight: torch.Tensor) -> torch.Tensor:
-        r = self.matrix().to(weight.dtype)
+        r = self.matrix().to(device=weight.device, dtype=weight.dtype)
         return weight @ r.T
 
     def inverse_activation(self, x: torch.Tensor) -> torch.Tensor:
-        r = self.matrix().to(x.dtype)
+        r = self.matrix().to(device=x.device, dtype=x.dtype)
         return x @ r
 
 

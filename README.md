@@ -21,7 +21,7 @@ a set of findings about rotation-based weight-only quantisation:
 ## Layout
 
 ```
-rotquant/      core library  (rotate, codebooks, quantize, pack, linear, calibrate, patch, utils)
+rotquant/      core library  (rotate, codebooks, quantize, pack, linear, calibrate, patch, train_rotation, utils)
 eval/          fixed eval protocol (perplexity, zeroshot, layer_mse)
 baselines/     wrappers around GPTQ/AWQ/AQLM/QuIP#/QTIP/HIGGS through the same harness
 tests/         correctness tests that must pass before trusting any experiment
@@ -36,8 +36,12 @@ results/       JSON per run + generated tables/figures
 # Core + dev deps (CPU, no GPU required):
 uv sync --extra dev
 
-# Add GPU eval stack (transformers, datasets, lm-eval, fast-hadamard-transform, …):
+# Add the eval stack (transformers, datasets, lm-eval, …) — installs on CPU too:
 uv sync --extra eval
+
+# On the GPU box only: the CUDA FWHT kernel (source build, needs nvcc; the
+# pure-torch fallback is used automatically when it's absent):
+uv pip install fast-hadamard-transform --no-build-isolation
 
 # Add baseline comparison packages (gptqmodel, autoawq, aqlm, flute-kernel):
 uv sync --extra baselines
@@ -76,17 +80,69 @@ pytest tests/ -q
 ## Running an experiment
 
 ```bash
+# Plumbing smoke test first (tiny random model, CPU, <1 min):
+python scripts/run_experiment.py configs/smoke_cpu.yaml
+
 python scripts/run_experiment.py configs/e5_gptq.yaml --output-dir results
 python scripts/aggregate.py --results-dir results --out results/summary.md
 ```
 
+Each experiment YAML is deep-merged on top of `configs/_base.yaml` (experiment
+keys win), so per-experiment files only state what they change. `--model`,
+`--seed` and `--device` override the merged config from the CLI — seed and model
+sweeps never require editing YAML:
+
+```bash
+for s in 0 1 2; do
+  python scripts/run_experiment.py configs/e1_rotation.yaml --seed $s
+done
+python scripts/run_experiment.py configs/e1_rotation.yaml --model meta-llama/Llama-2-13b-hf
+
+# Any dotted config key is sweepable with --set (YAML-typed values), so the
+# sweeps described in the config comments are one-liners:
+for r in none dense fwht; do
+  python scripts/run_experiment.py configs/e1_rotation.yaml --set patch.rotation=$r
+done
+# The E1 learned arm needs its per-layer theta training enabled (data-free
+# alternating minimisation of rotated-domain quant MSE via the Cayley map;
+# without it, theta stays at ~identity and the arm is a no-rotation control):
+python scripts/run_experiment.py configs/e1_rotation.yaml \
+  --set patch.rotation=learned --set 'patch.train_rotation={steps: 200, lr: 0.001}'
+python scripts/run_experiment.py configs/e4_scale_group.yaml --set quant.group_size=64
+python scripts/run_experiment.py configs/e8_footprint.yaml --set patch.fallback=true
+```
+
 Each run writes `results/<run_id>.json` with the config, git SHA, library
-versions, GPU, all metrics, and wall-clock (`rotquant.utils.environment_record`).
+versions, GPU, all metrics (including true bits/weight and packed-vs-fp16
+footprint for every run; `eval: {throughput: ...}` adds greedy-decode tokens/s
+and peak generation VRAM for E8), and wall-clock
+(`rotquant.utils.environment_record`). Derived run ids get a `_s<seed>` suffix
+and CLI-overridden runs get the overridden values appended, so neither seed nor
+`--model`/`--set` sweeps ever overwrite each other; an explicit `run_id:` in the
+YAML is used verbatim when no CLI override modifies the run. `aggregate.py`
+emits both the markdown table and a tidy CSV next to it.
+
+Quantisation targets every `nn.Linear` **except** `lm_head`/`embed_out` (the
+convention all baselines follow); override with `patch: {exclude: []}`. GPT-2
+style models (transformers `Conv1D`) are not supported and are flagged loudly.
+
+> **GPTQ memory note:** calibration accumulates one fp32 `[in, in]` Hessian per
+> quantised linear *on the GPU* (~25 GB extra for Llama-2-7B, all layers).
+> Finalised Hessians are offloaded to CPU before patching, but plan VRAM for the
+> accumulation phase or restrict `patch: {include: [...]}`.
+
+> **Learned-rotation cost note:** each training step solves the O(d³) Cayley map
+> per layer, so `train_rotation: {steps: 200}` on a 7B model is roughly an hour
+> of GPU time on top of patching. Per-run training aggregates land under
+> `metrics.rotation_train` (mean rotated-domain quant-MSE before/after).
 
 ### Baselines
 
 ```bash
+# gptq/awq quantise the model here (C4 calibration):
 python baselines/run_baseline.py --backend gptq --model meta-llama/Llama-2-7b-hf --bits 4 --zeroshot
+# aqlm (and pre-quantised gptq/awq checkpoints) load as-is:
+python baselines/run_baseline.py --backend aqlm --model ISTA-DASLab/Llama-2-7b-AQLM-2Bit-1x16-hf --bits 2 --prequantized
 ```
 
 Baselines go through the **identical** perplexity/zero-shot harness so a finding
@@ -108,6 +164,10 @@ A finding is **confirmed** when it holds across ≥3 seeds, on at least Llama-2-
 ## Status
 
 Fully implemented and CPU-tested: `rotate`, `codebooks`, `pack`, `quantize`,
-`linear`, `calibrate`, `patch`, and the three correctness suites. The eval/baseline
-layers and `run_experiment.py` are implemented to spec and require a GPU + model
-download + the CUDA-only packages to execute.
+`linear`, `calibrate`, `patch`, `train_rotation` (the E1 learned arm), and the
+correctness suites (`pytest tests/`).
+The full `run_experiment.py` pipeline — config merge, quantise, patch, GPTQ
+calibration on streamed C4, layer-MSE drift, perplexity, result JSON,
+aggregation — is smoke-tested end-to-end on CPU via `configs/smoke_cpu.yaml`.
+A GPU (+ HF access for gated models) is needed for real-model numbers, the
+zero-shot bundle at scale, and the CUDA FWHT kernel.

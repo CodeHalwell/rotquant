@@ -52,22 +52,39 @@ class CalibrationResult:
     n_samples: Dict[str, int] = field(default_factory=dict)
 
 
-def _iter_linears(model: nn.Module, include: Optional[Sequence[str]] = None):
+def _iter_linears(model: nn.Module, include: Optional[Sequence[str]] = None,
+                  exclude: Optional[Sequence[str]] = None):
     for name, mod in model.named_modules():
         if isinstance(mod, nn.Linear):
-            if include is None or any(k in name for k in include):
-                yield name, mod
+            if include is not None and not any(k in name for k in include):
+                continue
+            if exclude and any(k in name for k in exclude):
+                continue
+            yield name, mod
 
 
 @torch.no_grad()
 def collect_hessians(model: nn.Module, dataloader: Iterable, device,
                      include: Optional[Sequence[str]] = None,
+                     exclude: Optional[Sequence[str]] = None,
                      max_batches: Optional[int] = None,
-                     damp_frac: float = 0.01) -> CalibrationResult:
+                     damp_frac: float = 0.01,
+                     offload_device: Optional[str] = "cpu") -> CalibrationResult:
     """Run the model over calibration batches, capturing per-linear input Hessians.
 
     ``dataloader`` yields tensors / dicts suitable for ``model(**batch)`` or
     ``model(batch)``. Use 128-512 sequences of the model's context length.
+
+    ``include``/``exclude`` are substring filters over layer names; pass the same
+    values as :class:`~rotquant.patch.PatchConfig` so Hessians are only collected
+    for layers that will actually be quantised.
+
+    Finalised Hessians are moved to ``offload_device`` (default CPU) so they do
+    not pile up in VRAM before patching -- for a 7B model, keeping every fp32
+    ``[in, in]`` Hessian on-GPU costs ~25 GB on top of the model. The patcher
+    moves each one back next to its weight when it is consumed. Note the
+    *accumulators* still live on the GPU during the calibration forward passes;
+    restrict ``include`` if that exceeds your VRAM.
     """
     accums: Dict[str, HessianAccumulator] = {}
     handles: List[torch.utils.hooks.RemovableHandle] = []
@@ -81,7 +98,8 @@ def collect_hessians(model: nn.Module, dataloader: Iterable, device,
         return hook
 
     include_terms = tuple(include) if include is not None else None
-    for name, mod in _iter_linears(model, include_terms):
+    exclude_terms = tuple(exclude) if exclude is not None else None
+    for name, mod in _iter_linears(model, include_terms, exclude_terms):
         handles.append(mod.register_forward_hook(make_hook(name, mod.in_features)))
 
     model.eval()
@@ -103,7 +121,8 @@ def collect_hessians(model: nn.Module, dataloader: Iterable, device,
 
     result = CalibrationResult()
     for name, acc in accums.items():
-        result.hessians[name] = acc.finalize(damp_frac=damp_frac)
+        H = acc.finalize(damp_frac=damp_frac)
+        result.hessians[name] = H.to(offload_device) if offload_device else H
         result.n_samples[name] = acc.n_samples
     logger.info("Collected Hessians for %d linear layers", len(result.hessians))
     return result

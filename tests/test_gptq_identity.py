@@ -26,6 +26,41 @@ def test_gptq_identity_equals_rounding():
         f"GPTQ(H=I) != rounding, max diff {(q_gptq - q_plain).abs().max()}"
 
 
+def test_gptq_blocked_matches_column_at_a_time():
+    """The lazy-batch blocked update must reproduce the naive column-at-a-time
+    GPTQ (same maths, reorganised): compare against an inline reference."""
+    torch.manual_seed(1)
+    out, d = 16, 96
+    W = torch.randn(out, d)
+    X = torch.randn(256, d)
+    H = X.T @ X
+
+    cfg = QuantConfig(bits=3, codebook="gaussian", scale="rms", group_size=32,
+                      gptq_block=16)  # several blocks over d=96
+    qz = Quantizer(cfg)
+    scales = qz._select_scales(W)
+    Q_blocked, Idx_blocked = qz._gptq(W.clone(), scales, H.clone())
+
+    # Naive reference: identical setup, full-width rank-1 update per column.
+    Hd = H.to(torch.float32).clone()
+    Hinv = qz._stable_hinv(Hd)
+    Wc = W.clone()
+    Q_ref = torch.zeros_like(Wc)
+    centroids = qz.codebook.centroids
+    bounds = (centroids[:-1] + centroids[1:]) / 2.0
+    for i in range(d):
+        sc = scales[:, i // cfg.group_size].clamp_min(1e-12)
+        idx = torch.bucketize(Wc[:, i] / sc, bounds)
+        q = centroids[idx] * sc
+        Q_ref[:, i] = q
+        err = (Wc[:, i] - q) / Hinv[i, i]
+        if i + 1 < d:
+            Wc[:, i + 1:] -= err.unsqueeze(1) * Hinv[i, i + 1:].unsqueeze(0)
+
+    assert torch.allclose(Q_blocked, Q_ref, atol=1e-4), \
+        f"blocked GPTQ diverges from reference, max diff {(Q_blocked - Q_ref).abs().max()}"
+
+
 def test_gptq_reduces_error_with_real_hessian():
     """With a non-trivial Hessian, GPTQ should not increase weighted error."""
     torch.manual_seed(0)

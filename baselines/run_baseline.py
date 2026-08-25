@@ -42,27 +42,65 @@ def _require(module: str, backend: str):
         ) from exc
 
 
+def _calib_texts(n: int = 256, min_chars: int = 2048) -> list:
+    """Raw C4 texts for backends that quantise here (gptq/awq)."""
+    from datasets import load_dataset
+    ds = load_dataset("allenai/c4", "en", split="train", streaming=True)
+    texts = []
+    for row in ds:
+        if len(row["text"]) < min_chars:
+            continue
+        texts.append(row["text"])
+        if len(texts) >= n:
+            break
+    return texts
+
+
 def load_baseline(backend: str, model_name: str, bits: int, device: str,
-                  **kwargs):
-    """Return (model, tokenizer) quantised by the requested external method."""
+                  prequantized: bool = False, **kwargs):
+    """Return (model, tokenizer) quantised by the requested external method.
+
+    With ``prequantized`` the model id must point at an already-quantised
+    checkpoint (e.g. a ``*-AWQ`` / ``*-GPTQ`` / ISTA-DASLab AQLM repo) and is
+    loaded as-is; otherwise gptq/awq quantise ``model_name`` on the fly with a
+    C4 calibration set. AQLM quantisation takes GPU-days, so that backend
+    *requires* ``prequantized``.
+    """
     backend = backend.lower()
     if backend == "gptq":
         _require("gptqmodel", backend)
         from gptqmodel import GPTQModel, QuantizeConfig
         from transformers import AutoTokenizer
         tok = AutoTokenizer.from_pretrained(model_name, use_fast=True)
-        qcfg = QuantizeConfig(bits=bits, group_size=kwargs.get("group_size", 128))
-        model = GPTQModel.load(model_name, qcfg)
-        return model, tok
+        if prequantized:
+            model = GPTQModel.load(model_name, device=device)
+        else:
+            qcfg = QuantizeConfig(bits=bits, group_size=kwargs.get("group_size", 128))
+            model = GPTQModel.load(model_name, qcfg)
+            logger.info("gptq: quantising %s at %d bits on C4 calibration data",
+                        model_name, bits)
+            model.quantize(_calib_texts())
+        return getattr(model, "model", model), tok
     if backend == "awq":
         _require("awq", backend)
         from awq import AutoAWQForCausalLM
         from transformers import AutoTokenizer
         tok = AutoTokenizer.from_pretrained(model_name, use_fast=True)
-        model = AutoAWQForCausalLM.from_quantized(model_name)
-        return model, tok
+        if prequantized:
+            model = AutoAWQForCausalLM.from_quantized(model_name)
+        else:
+            model = AutoAWQForCausalLM.from_pretrained(model_name)
+            logger.info("awq: quantising %s at %d bits", model_name, bits)
+            model.quantize(tok, quant_config={
+                "w_bit": bits, "q_group_size": kwargs.get("group_size", 128),
+                "zero_point": True, "version": "GEMM"})
+        return getattr(model, "model", model), tok
     if backend == "aqlm":
         _require("aqlm", backend)
+        if not prequantized:
+            raise ValueError(
+                "AQLM quantisation takes GPU-days; pass --prequantized with an "
+                "AQLM checkpoint id (e.g. ISTA-DASLab/Llama-2-7b-AQLM-2Bit-1x16-hf).")
         from transformers import AutoModelForCausalLM, AutoTokenizer
         tok = AutoTokenizer.from_pretrained(model_name, use_fast=True)
         model = AutoModelForCausalLM.from_pretrained(model_name).to(device)
@@ -84,10 +122,15 @@ def main() -> None:
     ap.add_argument("--device", default="cuda" if torch.cuda.is_available() else "cpu")
     ap.add_argument("--output-dir", default="results")
     ap.add_argument("--zeroshot", action="store_true")
+    ap.add_argument("--prequantized", action="store_true",
+                    help="--model is an already-quantised checkpoint; load as-is "
+                         "instead of quantising here (required for aqlm)")
     args = ap.parse_args()
 
     model, tok = load_baseline(args.backend, args.model, args.bits, args.device,
+                               prequantized=args.prequantized,
                                group_size=args.group_size)
+    model.eval()
 
     from eval.perplexity import perplexity, PPLConfig
     metrics: Dict[str, Any] = {}
@@ -97,7 +140,8 @@ def main() -> None:
         from eval.zeroshot import zeroshot
         metrics["zeroshot"] = zeroshot(model, tok, device=args.device)
 
-    run_id = f"baseline_{args.backend}_{args.bits}bit"
+    model_slug = args.model.rstrip("/").split("/")[-1]
+    run_id = f"baseline_{args.backend}_{model_slug}_{args.bits}bit"
     write_result(os.path.join(args.output_dir, f"{run_id}.json"), {
         "run_id": run_id,
         "config": {"experiment": "baseline", "backend": args.backend,

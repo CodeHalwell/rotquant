@@ -60,6 +60,7 @@ class QuantConfig:
     residual_bits: int = 1              # bits for residual / qjl pass
     residual_codebook: str = "gaussian"
     percdamp: float = 0.01              # Hessian damping (1% of mean diagonal)
+    gptq_block: int = 128               # lazy-update block width for GPTQ
     mse_search_grid: int = 41           # candidate scales for mse_search
     mse_search_lo: float = 0.5
     mse_search_hi: float = 1.5
@@ -144,13 +145,43 @@ def _expand_scales(scales: torch.Tensor, group_size: int, in_features: int) -> t
     return rep[:, :in_features]
 
 
+def _group_counts(in_features: int, group_size: int, device) -> torch.Tensor:
+    """Number of *real* (non-padded) weights in each group, shape [ng]."""
+    ng = (in_features + group_size - 1) // group_size
+    counts = torch.full((ng,), group_size, dtype=torch.float32, device=device)
+    rem = in_features - (ng - 1) * group_size
+    counts[-1] = rem
+    return counts
+
+
+def _storage_scales(scales: Optional[torch.Tensor],
+                    scale_bits: float) -> Optional[torch.Tensor]:
+    """Round scales to the precision the bit accounting claims.
+
+    The protocol charges ``scale_bits`` (default 16) per scale, so the stored
+    tensor must actually be fp16 -- and quantisation must run against the
+    *rounded* values so pack-time indices and dequant agree. Floored at the
+    smallest normal fp16 so the fp32 ``1e-12`` clamp on all-zero groups does not
+    underflow to zero and divide out to NaN. Non-16-bit budgets keep fp32 (and
+    are charged their true element size by ``packed_state_bytes``).
+    """
+    if scales is None or scale_bits != 16.0:
+        return scales
+    return scales.to(torch.float16).clamp_min(
+        torch.finfo(torch.float16).smallest_normal)
+
+
 def _group_scales_rms(w: torch.Tensor, group_size: int) -> torch.Tensor:
     out, inf = w.shape
     ng = (inf + group_size - 1) // group_size
     pad = ng * group_size - inf
     wp = torch.nn.functional.pad(w, (0, pad))
     wg = wp.reshape(out, ng, group_size)
-    rms = wg.pow(2).mean(dim=-1).clamp_min(1e-12).sqrt()
+    # Divide by the number of real elements per group, not group_size: averaging
+    # over the zero padding would shrink the last group's scale by
+    # sqrt(real/group_size) and clip its weights.
+    counts = _group_counts(inf, group_size, w.device)
+    rms = (wg.pow(2).sum(dim=-1) / counts).clamp_min(1e-12).sqrt()
     return rms  # [out, ng]
 
 
@@ -202,6 +233,11 @@ class Quantizer:
         ng = rms.shape[1]
         pad = ng * gs - inf
         wg = torch.nn.functional.pad(w, (0, pad)).reshape(out, ng, gs)
+        # Padded slots must not vote: their (0 - q)^2 error varies with the
+        # candidate scale and would bias the search for the last partial group.
+        valid = torch.ones(ng, gs, dtype=torch.bool, device=w.device)
+        if pad:
+            valid[-1, gs - pad:] = False
         cand = torch.linspace(self.cfg.mse_search_lo, self.cfg.mse_search_hi,
                               self.cfg.mse_search_grid, device=w.device)
         best_scales = rms.clone()
@@ -213,7 +249,7 @@ class Quantizer:
             normed = wg / sc
             idx = torch.bucketize(normed, bounds)
             q = centroids[idx] * sc
-            err = (wg - q).pow(2).sum(dim=-1)               # [out, ng]
+            err = ((wg - q).pow(2) * valid).sum(dim=-1)     # [out, ng]
             better = err < best_err
             best_err = torch.where(better, err, best_err)
             best_scales = torch.where(better, (rms * c), best_scales)
@@ -226,7 +262,7 @@ class Quantizer:
                         H: Optional[torch.Tensor] = None) -> QuantizedWeight:
         w = weight.detach().to(torch.float32)
         out, inf = w.shape
-        scales = self._select_scales(w)
+        scales = _storage_scales(self._select_scales(w), self.cfg.scale_bits)
 
         if self.cfg.error_comp == "gptq":
             if self.cfg.scale == "turboquant":
@@ -260,6 +296,16 @@ class Quantizer:
     # ------------------------------------------------------------------ #
     def _gptq(self, w: torch.Tensor, scales: torch.Tensor,
               H: Optional[torch.Tensor]) -> Tuple[torch.Tensor, torch.Tensor]:
+        """Blocked GPTQ (lazy batch updates, as in the reference implementation).
+
+        Columns inside a ``gptq_block``-wide block are processed sequentially with
+        immediate rank-1 updates *within the block only*; the propagation to all
+        later columns is deferred and applied once per block as a single matmul
+        ``W[:, i2:] -= Err @ Hinv[i1:i2, i2:]``. Mathematically identical to the
+        column-at-a-time loop (the update is linear in the errors), but turns
+        O(in_features) full-width rank-1 kernels into O(in_features/block)
+        matmuls -- the difference between minutes and hours on a 7B model.
+        """
         out, inf = w.shape
         if H is None:
             logger.warning(
@@ -269,6 +315,7 @@ class Quantizer:
             H = torch.eye(inf, device=w.device, dtype=torch.float32)
         H = H.to(torch.float32).clone()
         gs = self.cfg.group_size
+        bs = max(1, int(self.cfg.gptq_block))
 
         # Dead columns -> identity diagonal so Cholesky stays well-posed.
         dead = torch.diag(H) == 0
@@ -282,17 +329,23 @@ class Quantizer:
         centroids = self.codebook.centroids.to(w.device)
         bounds = (centroids[:-1] + centroids[1:]) / 2.0
 
-        for i in range(inf):
-            d = Hinv[i, i]
-            col = W[:, i]
-            sc = scales[:, i // gs].clamp_min(1e-12)
-            idx = torch.bucketize(col / sc, bounds)
-            q = centroids[idx] * sc
-            Q[:, i] = q
-            Idx[:, i] = idx
-            err = (col - q) / d
-            if i + 1 < inf:
-                W[:, i + 1:] -= err.unsqueeze(1) * Hinv[i, i + 1:].unsqueeze(0)
+        for i1 in range(0, inf, bs):
+            i2 = min(i1 + bs, inf)
+            Err = torch.zeros(out, i2 - i1, device=W.device, dtype=W.dtype)
+            for i in range(i1, i2):
+                d = Hinv[i, i]
+                col = W[:, i]
+                sc = scales[:, i // gs].clamp_min(1e-12)
+                idx = torch.bucketize(col / sc, bounds)
+                q = centroids[idx] * sc
+                Q[:, i] = q
+                Idx[:, i] = idx
+                err = (col - q) / d
+                Err[:, i - i1] = err
+                if i + 1 < i2:
+                    W[:, i + 1:i2] -= err.unsqueeze(1) * Hinv[i, i + 1:i2].unsqueeze(0)
+            if i2 < inf:
+                W[:, i2:] -= Err @ Hinv[i1:i2, i2:]
         return Q, Idx
 
     def _stable_hinv(self, H: torch.Tensor) -> torch.Tensor:
@@ -320,7 +373,8 @@ class Quantizer:
     def _add_residual(self, qw: QuantizedWeight, w: torch.Tensor,
                       q_w: torch.Tensor) -> None:
         r = w - q_w
-        rscales = _group_scales_rms(r, self.cfg.group_size)
+        rscales = _storage_scales(_group_scales_rms(r, self.cfg.group_size),
+                                  self.cfg.scale_bits)
         if self.cfg.error_comp == "residual":
             rcb = build_scalar_codebook(self.cfg.residual_codebook,
                                         2 ** self.cfg.residual_bits)
@@ -351,8 +405,15 @@ class Quantizer:
 
         At pack time: compute ``sign(r @ G)`` where ``G`` is a random Gaussian
         ``[in, k]`` matrix.  Stores the 1-bit packed sketch and the per-row L2
-        norm of ``r`` so the forward pass can apply an unbiased inner-product
-        correction ``(sign(xr @ G) @ sketch^T) * (row_norms / k)``.
+        norm of ``r``.  Following QJL, only the *stored* side is sign-quantised;
+        the activation side keeps its full projection ``xr @ G`` at inference,
+        giving the exactly unbiased inner-product estimator
+
+            sqrt(pi/2)/sqrt(k) * ||r_i|| * (xr @ G) . sign(r_i @ G)
+
+        (E[sign(g.a)(g.b)] = sqrt(2/pi) (a.b)/||a|| for Gaussian ``g``, at any
+        angle -- unlike the sign-sign variant, whose pi/2-scaled estimate is only
+        first-order correct near orthogonality).
         """
         k = self.cfg.sketch_k
         G = _generate_sketch_matrix(r.shape[1], k, self.cfg.seed, r.device)

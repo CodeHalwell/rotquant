@@ -1,0 +1,18 @@
+# End-to-end pipeline smoke test: tiny random model, CPU, no GPU or auth needed.
+# Proves config-merge -> load -> quantise -> patch -> perplexity -> JSON before
+# spending GPU time on a real model. PPL numbers are meaningless (random weights);
+# only the plumbing is under test. Runs in <1 min:
+#   python scripts/run_experiment.py configs/smoke_cpu.yaml
+experiment: SMOKE
+label: smoke_cpu
+model: hf-internal-testing/tiny-random-LlamaForCausalLM
+device: cpu
+dtype: float32
+seed: 0
+quant: {bits: 3, codebook: gaussian, scale: mse_search, group_size: 8, error_comp: none}
+patch: {rotation: fwht, block: 8, mode: consistent}
+eval:
+  perplexity: true
+  ppl_datasets: [wikitext2]
+  ppl: {seq_len: 128, max_samples: 4}
+  zeroshot: false
