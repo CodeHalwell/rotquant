@@ -75,6 +75,31 @@ def test_run_id_seed_suffix_and_explicit():
                                         "x.yaml") == "fixed"
 
 
+def test_run_id_reflects_cli_overrides():
+    # --seed on a config with an explicit run_id must not overwrite the default run
+    assert run_experiment.derive_run_id(
+        {"run_id": "e3b", "seed": 1}, "x.yaml", seed_overridden=True) == "e3b_s1"
+    # --model / --set slugs keep sweep results apart
+    slug = run_experiment.override_slug("meta-llama/Llama-2-7b-hf",
+                                        [("patch.rotation", "dense")])
+    assert slug == "Llama-2-7b-hf_patch.rotation=dense"
+    rid = run_experiment.derive_run_id({"label": "e1", "seed": 0}, "x.yaml",
+                                       slug=slug)
+    assert rid == "e1_Llama-2-7b-hf_patch.rotation=dense_s0"
+
+
+def test_apply_set_overrides_types_and_nesting():
+    cfg = {"quant": {"bits": 3}, "eval": {"perplexity": True}}
+    run_experiment.apply_set_overrides(cfg, [
+        ("quant.bits", 4),            # already parsed by the CLI via yaml
+        ("patch.rotation", "dense"),  # creates the missing patch block
+        ("eval.zeroshot", True),
+    ])
+    assert cfg["quant"]["bits"] == 4
+    assert cfg["patch"] == {"rotation": "dense"}
+    assert cfg["eval"] == {"perplexity": True, "zeroshot": True}
+
+
 def test_device_fallback_without_cuda():
     if torch.cuda.is_available():
         pytest.skip("CPU-only fallback behaviour")
@@ -150,6 +175,47 @@ def test_partial_group_quantize_roundtrip():
 
 
 # --------------------------------------------------------------------------- #
+# module moves / caching
+# --------------------------------------------------------------------------- #
+def test_quantlinear_survives_dtype_moves():
+    """model.half()/float() after patching must keep forward working: _apply has
+    to carry the packed dataclass tensors (int32 codes stay int32) and caches."""
+    torch.manual_seed(0)
+    m = _ToyLM()
+    patch_model(m, PatchConfig(quant=QuantConfig(bits=3, scale="rms", group_size=32,
+                                                 error_comp="residual"),
+                               rotation="fwht", block=64, seed=0))
+    x = torch.randn(2, 64)
+    y32 = m(x)
+    m.half()
+    assert m.q_proj.qweight.packed.data.dtype == torch.int32
+    assert m.q_proj.qweight.scales.dtype == torch.float16
+    y16 = m(x.half())
+    assert y16.shape == y32.shape and torch.isfinite(y16).all()
+    m.float()
+    y32b = m(x)
+    assert torch.allclose(y32, y32b, atol=2e-2), "float->half->float round trip drifted"
+
+
+def test_fallback_cache_follows_dtype_moves():
+    m = _ToyLM()
+    patch_model(m, PatchConfig(quant=_qcfg(), rotation="fwht", block=64,
+                               seed=0, fallback=True))
+    m.half()
+    assert m.q_proj._fp_cache.dtype == torch.float16
+    y = m(torch.randn(2, 64).half())
+    assert torch.isfinite(y).all()
+
+
+def test_codebook_cache_shared():
+    from rotquant.codebooks import build_scalar_codebook
+    a = build_scalar_codebook("gaussian", 8)
+    b = build_scalar_codebook("gaussian", 8)
+    assert a is b, "codebooks must be cached (Lloyd-Max is expensive per layer)"
+    assert build_scalar_codebook("gaussian", 16) is not a
+
+
+# --------------------------------------------------------------------------- #
 # aggregation
 # --------------------------------------------------------------------------- #
 def test_aggregate_flattens_zeroshot():
@@ -166,3 +232,20 @@ def test_aggregate_flattens_zeroshot():
     assert abs(agg["ppl_wikitext2"]["mean"] - 6.5) < 1e-9
     assert abs(agg["zeroshot.boolq"]["mean"] - 0.605) < 1e-9
     assert "zeroshot.bundle_mean" in agg
+
+
+def test_aggregate_keeps_sweep_variants_apart():
+    """Seeds of one cell merge; --set variants (baked into run_id) must not be
+    averaged together even though they share the config label."""
+    def mk(rid, ppl):
+        return {"run_id": rid,
+                "config": {"experiment": "E1", "model": "m", "label": "e1"},
+                "metrics": {"ppl_wikitext2": ppl}}
+    runs = [mk("e1_s0", 6.0), mk("e1_s1", 7.0),
+            mk("e1_quant.bits=4_s0", 5.0), mk("e1_quant.bits=4_s1", 5.5)]
+    table = aggregate_mod.aggregate(runs)
+    assert len(table) == 2
+    base = table["E1|m|e1"]
+    swept = table["E1|m|e1_quant.bits=4"]
+    assert base["n_seeds"] == 2 and abs(base["ppl_wikitext2"]["mean"] - 6.5) < 1e-9
+    assert swept["n_seeds"] == 2 and abs(swept["ppl_wikitext2"]["mean"] - 5.25) < 1e-9

@@ -1,7 +1,10 @@
 # E8: footprint & speed. Best 3-bit config, packed (QuantLinear) vs fp16 fallback.
 # Report peak VRAM and tokens/s. Expect packed ~5x smaller; fallback OOMs on 7B+.
+# Fallback arm:  run_experiment.py configs/e8_footprint.yaml --set patch.fallback=true
+# (packed_weight_bytes / compression_ratio are recorded for every run; throughput
+# adds greedy-decode tokens/s + peak generation VRAM under metrics.throughput.)
 experiment: E8
 label: e8_packed_3bit
 quant: {bits: 3, codebook: gaussian, scale: mse_search, group_size: 128, error_comp: none}
 patch: {rotation: fwht, block: 128, mode: consistent, fallback: false}
-eval: {perplexity: true, ppl_datasets: [wikitext2]}
+eval: {perplexity: true, ppl_datasets: [wikitext2], throughput: {prompt_len: 64, new_tokens: 128}}

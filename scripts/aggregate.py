@@ -8,9 +8,11 @@ with mean +/- std across seeds, so a finding only counts once it holds across
 from __future__ import annotations
 
 import argparse
+import csv
 import glob
 import json
 import os
+import re
 from collections import defaultdict
 from statistics import mean, pstdev
 from typing import Any, Dict, List
@@ -26,7 +28,12 @@ def load_runs(results_dir: str) -> List[Dict[str, Any]]:
 
 def _key(run: Dict[str, Any]) -> str:
     cfg = run.get("config", {})
-    return f"{cfg.get('experiment', '?')}|{cfg.get('model', '?')}|{cfg.get('label', run.get('run_id'))}"
+    # Group by run_id with the seed suffix stripped: seeds of one cell merge,
+    # while --set sweep variants (whose overrides are baked into the run_id)
+    # stay separate instead of being averaged across different configs.
+    rid = str(run.get("run_id") or cfg.get("label") or "?")
+    cell = re.sub(r"_s\d+$", "", rid)
+    return f"{cfg.get('experiment', '?')}|{cfg.get('model', '?')}|{cell}"
 
 
 def _flat_metrics(metrics: Dict[str, Any]) -> Dict[str, float]:
@@ -76,16 +83,29 @@ def to_markdown(table: Dict[str, Dict[str, Any]]) -> str:
     return "\n".join(lines)
 
 
+def to_csv(table: Dict[str, Dict[str, Any]], path: str) -> None:
+    with open(path, "w", newline="") as f:
+        w = csv.writer(f)
+        w.writerow(["run", "seeds", "metric", "mean", "std"])
+        for key, agg in sorted(table.items()):
+            for m, v in agg.items():
+                if isinstance(v, dict):
+                    w.writerow([key, agg["n_seeds"], m, v["mean"], v["std"]])
+
+
 def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("--results-dir", default="results")
     ap.add_argument("--out", default="results/summary.md")
+    ap.add_argument("--csv", default=None,
+                    help="tidy CSV path (default: --out with a .csv suffix)")
     args = ap.parse_args()
     runs = load_runs(args.results_dir)
     table = aggregate(runs)
     md = to_markdown(table)
     with open(args.out, "w") as f:
         f.write(md + "\n")
+    to_csv(table, args.csv or os.path.splitext(args.out)[0] + ".csv")
     print(md)
 
 

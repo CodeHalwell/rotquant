@@ -97,13 +97,25 @@ for s in 0 1 2; do
   python scripts/run_experiment.py configs/e1_rotation.yaml --seed $s
 done
 python scripts/run_experiment.py configs/e1_rotation.yaml --model meta-llama/Llama-2-13b-hf
+
+# Any dotted config key is sweepable with --set (YAML-typed values), so the
+# sweeps described in the config comments are one-liners:
+for r in none dense fwht learned; do
+  python scripts/run_experiment.py configs/e1_rotation.yaml --set patch.rotation=$r
+done
+python scripts/run_experiment.py configs/e4_scale_group.yaml --set quant.group_size=64
+python scripts/run_experiment.py configs/e8_footprint.yaml --set patch.fallback=true
 ```
 
 Each run writes `results/<run_id>.json` with the config, git SHA, library
 versions, GPU, all metrics (including true bits/weight and packed-vs-fp16
-footprint for every run), and wall-clock (`rotquant.utils.environment_record`).
-Derived run ids get a `_s<seed>` suffix so seed sweeps never overwrite each
-other; an explicit `run_id:` in the YAML is used verbatim.
+footprint for every run; `eval: {throughput: ...}` adds greedy-decode tokens/s
+and peak generation VRAM for E8), and wall-clock
+(`rotquant.utils.environment_record`). Derived run ids get a `_s<seed>` suffix
+and CLI-overridden runs get the overridden values appended, so neither seed nor
+`--model`/`--set` sweeps ever overwrite each other; an explicit `run_id:` in the
+YAML is used verbatim when no CLI override modifies the run. `aggregate.py`
+emits both the markdown table and a tidy CSV next to it.
 
 Quantisation targets every `nn.Linear` **except** `lm_head`/`embed_out` (the
 convention all baselines follow); override with `patch: {exclude: []}`. GPT-2

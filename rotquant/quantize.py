@@ -60,6 +60,7 @@ class QuantConfig:
     residual_bits: int = 1              # bits for residual / qjl pass
     residual_codebook: str = "gaussian"
     percdamp: float = 0.01              # Hessian damping (1% of mean diagonal)
+    gptq_block: int = 128               # lazy-update block width for GPTQ
     mse_search_grid: int = 41           # candidate scales for mse_search
     mse_search_lo: float = 0.5
     mse_search_hi: float = 1.5
@@ -278,6 +279,16 @@ class Quantizer:
     # ------------------------------------------------------------------ #
     def _gptq(self, w: torch.Tensor, scales: torch.Tensor,
               H: Optional[torch.Tensor]) -> Tuple[torch.Tensor, torch.Tensor]:
+        """Blocked GPTQ (lazy batch updates, as in the reference implementation).
+
+        Columns inside a ``gptq_block``-wide block are processed sequentially with
+        immediate rank-1 updates *within the block only*; the propagation to all
+        later columns is deferred and applied once per block as a single matmul
+        ``W[:, i2:] -= Err @ Hinv[i1:i2, i2:]``. Mathematically identical to the
+        column-at-a-time loop (the update is linear in the errors), but turns
+        O(in_features) full-width rank-1 kernels into O(in_features/block)
+        matmuls -- the difference between minutes and hours on a 7B model.
+        """
         out, inf = w.shape
         if H is None:
             logger.warning(
@@ -287,6 +298,7 @@ class Quantizer:
             H = torch.eye(inf, device=w.device, dtype=torch.float32)
         H = H.to(torch.float32).clone()
         gs = self.cfg.group_size
+        bs = max(1, int(self.cfg.gptq_block))
 
         # Dead columns -> identity diagonal so Cholesky stays well-posed.
         dead = torch.diag(H) == 0
@@ -300,17 +312,23 @@ class Quantizer:
         centroids = self.codebook.centroids.to(w.device)
         bounds = (centroids[:-1] + centroids[1:]) / 2.0
 
-        for i in range(inf):
-            d = Hinv[i, i]
-            col = W[:, i]
-            sc = scales[:, i // gs].clamp_min(1e-12)
-            idx = torch.bucketize(col / sc, bounds)
-            q = centroids[idx] * sc
-            Q[:, i] = q
-            Idx[:, i] = idx
-            err = (col - q) / d
-            if i + 1 < inf:
-                W[:, i + 1:] -= err.unsqueeze(1) * Hinv[i, i + 1:].unsqueeze(0)
+        for i1 in range(0, inf, bs):
+            i2 = min(i1 + bs, inf)
+            Err = torch.zeros(out, i2 - i1, device=W.device, dtype=W.dtype)
+            for i in range(i1, i2):
+                d = Hinv[i, i]
+                col = W[:, i]
+                sc = scales[:, i // gs].clamp_min(1e-12)
+                idx = torch.bucketize(col / sc, bounds)
+                q = centroids[idx] * sc
+                Q[:, i] = q
+                Idx[:, i] = idx
+                err = (col - q) / d
+                Err[:, i - i1] = err
+                if i + 1 < i2:
+                    W[:, i + 1:i2] -= err.unsqueeze(1) * Hinv[i, i + 1:i2].unsqueeze(0)
+            if i2 < inf:
+                W[:, i2:] -= Err @ Hinv[i1:i2, i2:]
         return Q, Idx
 
     def _stable_hinv(self, H: torch.Tensor) -> torch.Tensor:
@@ -369,8 +387,15 @@ class Quantizer:
 
         At pack time: compute ``sign(r @ G)`` where ``G`` is a random Gaussian
         ``[in, k]`` matrix.  Stores the 1-bit packed sketch and the per-row L2
-        norm of ``r`` so the forward pass can apply an unbiased inner-product
-        correction ``(sign(xr @ G) @ sketch^T) * (row_norms / k)``.
+        norm of ``r``.  Following QJL, only the *stored* side is sign-quantised;
+        the activation side keeps its full projection ``xr @ G`` at inference,
+        giving the exactly unbiased inner-product estimator
+
+            sqrt(pi/2)/sqrt(k) * ||r_i|| * (xr @ G) . sign(r_i @ G)
+
+        (E[sign(g.a)(g.b)] = sqrt(2/pi) (a.b)/||a|| for Gaussian ``g``, at any
+        angle -- unlike the sign-sign variant, whose pi/2-scaled estimate is only
+        first-order correct near orthogonality).
         """
         k = self.cfg.sketch_k
         G = _generate_sketch_matrix(r.shape[1], k, self.cfg.seed, r.device)

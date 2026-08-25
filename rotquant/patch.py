@@ -77,6 +77,11 @@ def patch_model(model: nn.Module, cfg: PatchConfig,
     if cfg.mode == "mismatched":
         logger.warning("patch mode 'mismatched' active -- consistency invariant "
                        "intentionally violated (E7 only)")
+    if cfg.rotation in ("learned", "cayley", "stiefel"):
+        logger.warning(
+            "rotation='learned' starts at ~identity (theta init 1e-3): without a "
+            "training step on theta this arm measures a no-rotation control, not "
+            "a learned rotation.")
     hessians = hessians or {}
 
     include_terms = tuple(cfg.include) if cfg.include is not None else None
@@ -112,6 +117,8 @@ def patch_model(model: nn.Module, cfg: PatchConfig,
                                        fallback=cfg.fallback)
         parent, attr = _get_parent(model, name)
         setattr(parent, attr, qlin)
+        if (i + 1) % 32 == 0:
+            logger.info("patched %d/%d layers (last: %s)", i + 1, len(targets), name)
 
     logger.info("Patched %d linear layers (rotation=%s, mode=%s)",
                 len(targets), cfg.rotation, cfg.mode)

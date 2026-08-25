@@ -75,6 +75,31 @@ class QuantLinear(nn.Module):
             ) * 2 - 1   # {0, 1} -> {-1, +1}
             self._sketch_norms = qw.sketch_row_norms.to(device=xr.device, dtype=xr.dtype)
 
+    def _apply(self, fn, recurse: bool = True):
+        """Keep the packed dataclass tensors in step with ``.to()``/``.cuda()``/
+        ``.half()`` -- they are not registered buffers (state_dict round-tripping
+        of packed weights is unsupported), so ``nn.Module`` would otherwise leave
+        them behind and the first forward after a device move would fail.
+
+        ``fn`` is the standard ``Module.to`` convert closure: it only changes the
+        dtype of floating-point tensors, so the int32 code buffers are device-moved
+        untouched. Sketch caches are rebuilt lazily via their device/dtype check.
+        """
+        super()._apply(fn, recurse)
+        qw = self.qweight
+        qw.packed.data = fn(qw.packed.data)
+        if qw.scales is not None:
+            qw.scales = fn(qw.scales)
+        if qw.residual_packed is not None:
+            qw.residual_packed.data = fn(qw.residual_packed.data)
+            qw.residual_scales = fn(qw.residual_scales)
+        if qw.sketch is not None:
+            qw.sketch.data = fn(qw.sketch.data)
+            qw.sketch_row_norms = fn(qw.sketch_row_norms)
+        if self._fp_cache is not None:
+            self._fp_cache = fn(self._fp_cache)
+        return self
+
     def _weight(self) -> torch.Tensor:
         if self.fallback:
             return self._fp_cache
@@ -85,15 +110,18 @@ class QuantLinear(nn.Module):
         base_out = F.linear(xr, self._weight().to(xr.dtype), self.bias)
         if self.qweight.sketch is not None:
             self._ensure_sketch_cache(xr)
-            xr_proj = torch.sign(xr @ self._sketch_G)             # [..., k]
-            xr_norm = xr.norm(dim=-1, keepdim=True)               # [..., 1]
-            # Unbiased QJL inner-product estimator:
-            #   E[(π/2) ‖xr‖ ‖r_i‖ (1/k) sign(xr·G) · sign(r_i·G)] = xr · r_i
+            # Asymmetric QJL inner-product estimator (only the stored residual is
+            # sign-quantised; the activation keeps its full projection). Exactly
+            # unbiased for Gaussian G at any angle, and linear in xr:
+            #   E[sqrt(pi/2)/sqrt(k) * ||r_i|| * (xr@G) . sign(r_i@G)] = xr . r_i
+            # (G's columns already carry the 1/sqrt(k) JL normalisation, which
+            # the sqrt(k) in the constant folds against.)
+            xr_proj = xr @ self._sketch_G                          # [..., k]
+            k = self.qweight.sketch_k
             correction = (
                 (xr_proj @ self._sketch_mat.T)                     # [..., out]
-                * (self._sketch_norms / self.qweight.sketch_k)     # [out]
-                * xr_norm                                           # [..., 1]
-                * (math.pi / 2)
+                * (self._sketch_norms * (math.sqrt(math.pi / 2)
+                                         / math.sqrt(k)))          # [out]
             )
             return base_out + correction
         return base_out

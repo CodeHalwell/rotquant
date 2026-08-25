@@ -16,6 +16,7 @@ Vector grids:
 """
 from __future__ import annotations
 
+import functools
 import math
 from dataclasses import dataclass
 from typing import Optional, Tuple
@@ -175,7 +176,15 @@ class ScalarCodebook:
         return out
 
 
+@functools.lru_cache(maxsize=None)
 def build_scalar_codebook(kind: str, levels: int) -> ScalarCodebook:
+    """Build (or return the cached) codebook for ``(kind, levels)``.
+
+    Cached because Lloyd-Max solves a 200k-point Lloyd iteration -- re-running it
+    for every one of a model's hundreds of linears wastes minutes per run. The
+    returned object is shared, which is safe because :meth:`ScalarCodebook.to`
+    is non-mutating and nothing else writes to a built codebook.
+    """
     kind = kind.lower()
     if kind in ("gaussian", "lloyd", "lloyd_max", "mse"):
         return ScalarCodebook(lloyd_max_gaussian(levels), name="gaussian")
