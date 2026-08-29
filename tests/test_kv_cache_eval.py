@@ -128,6 +128,40 @@ def test_dynamic_cache_allocator_uses_disjoint_selection_and_exact_budget():
     assert metrics["evaluated_tokens"] == 2
 
 
+def test_uniform_and_dynamic_use_same_explicit_held_out_batches():
+    batches = [
+        {"input_ids": (torch.arange(offset, offset + 24).reshape(1, -1) % 31)}
+        for offset in (1, 7)
+    ]
+    common = {
+        "bits": 4,
+        "group_size": 4,
+        "rotation_block": 8,
+        "batches": 1,
+        "eval_offset_batches": 1,
+        "prompt_len": 8,
+        "continuation_len": 2,
+        "skip": 0,
+    }
+    uniform = evaluate_kv_cache(
+        _CacheModel(), batches, KVCacheEvalConfig(**common), "cpu")
+    dynamic = evaluate_kv_cache(
+        _CacheModel(), batches,
+        KVCacheEvalConfig(**common, dynamic={
+            "candidate_bits": [4],
+            "target_bpv": 8.0,
+            "selection_batches": 1,
+        }),
+        "cpu",
+    )
+
+    assert dynamic["dynamic"]["recipe"] == [
+        {"layer": 0, "key_bits": 4, "value_bits": 4}]
+    assert dynamic["mean_teacher_kl"] == uniform["mean_teacher_kl"]
+    assert dynamic["nll_delta"] == uniform["nll_delta"]
+    assert dynamic["top1_agreement"] == uniform["top1_agreement"]
+
+
 def test_dynamic_cache_config_rejects_invalid_candidate_subset():
     try:
         KVDynamicConfig(candidate_bits=(3, 4), key_candidate_bits=(8,))

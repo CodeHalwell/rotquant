@@ -149,6 +149,23 @@ the experiment was moved to the CUDA matrix notebook because repeating broad
 cache trials after separate MPS weight rebuilds wastes time and does not provide
 native packed performance data.
 
+### Qwen3.5-4B seed-0 K/V matrix protocol correction
+
+The first CUDA notebook matrix completed its seed-0 development table, but its
+uniform and dynamic rows were not evaluated on the same C4 calls. Uniform rows
+used the first four loaded batches, while dynamic rows reserved those four for
+recipe selection and reported the following four. The mismatch was exposed by
+the nominally identical 8-bit recipes: uniform K8/V8 reported KL 0.582664 while
+dynamic 8.25 bpv reported KL 0.563029. The apparent seed-0 Pareto frontier of
+dynamic 2.25 and 3.25 bpv is therefore **invalid for cross-profile ranking**.
+
+The run remains useful as a protocol diagnostic and as provisional evidence
+that the allocator reaches exact byte targets. It must not support a quality
+claim. `eval_offset_batches` now reserves the same selection prefix for uniform
+controls, dynamic trials, source controls, and long-context confirmation. A
+regression test requires uniform 8-bit and a dynamic allocator restricted to
+8-bit to produce identical held-out metrics.
+
 ## Native K/V cache benchmark notes
 
 Command family:

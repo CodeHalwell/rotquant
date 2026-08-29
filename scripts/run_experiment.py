@@ -531,9 +531,11 @@ def run(config_path: str, output_dir: str = "results",
             from eval.kv_cache import KVDynamicConfig
             kv_selection_batches = KVDynamicConfig(
                 **kv_cache_config.dynamic).selection_batches
+        kv_eval_offset = max(
+            kv_selection_batches, kv_cache_config.eval_offset_batches)
         kv_cache_batches = build_calib_loader(
             tokenizer,
-            kv_cache_config.batches + kv_selection_batches,
+            kv_cache_config.batches + kv_eval_offset,
             (kv_cache_config.prompt_len
              + kv_cache_config.continuation_len + 1),
             device,

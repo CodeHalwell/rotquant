@@ -37,6 +37,7 @@ class KVCacheEvalConfig:
     codebook: str = "gaussian"
     rotation_block: int = 128
     batches: int = 2
+    eval_offset_batches: int = 0
     prompt_len: int = 128
     continuation_len: int = 8
     skip: int = 384
@@ -49,6 +50,8 @@ class KVCacheEvalConfig:
             raise ValueError("KV-cache evaluation requires batches >= 1")
         if self.prompt_len < 2 or self.continuation_len < 1:
             raise ValueError("KV-cache prompt/continuation lengths are too small")
+        if self.eval_offset_batches < 0:
+            raise ValueError("KV-cache eval_offset_batches must be nonnegative")
         if self.skip < 0 or self.temperature <= 0:
             raise ValueError("KV-cache skip must be nonnegative and temperature positive")
 
@@ -556,17 +559,27 @@ def evaluate_kv_cache(
 ) -> dict[str, Any]:
     """Compare source and packed-cache distributions, optionally allocating bits."""
     if not config.dynamic:
-        return _evaluate_kv_cache(model, batches, config, device)
+        required = config.eval_offset_batches + config.batches
+        if len(batches) < required:
+            raise ValueError(
+                f"KV evaluation requires {required} batches, got {len(batches)}")
+        evaluation = batches[config.eval_offset_batches:required]
+        return _evaluate_kv_cache(
+            model, evaluation,
+            replace(config, eval_offset_batches=0), device)
     dynamic = KVDynamicConfig(**config.dynamic)
-    required = dynamic.selection_batches + config.batches
+    evaluation_offset = max(
+        dynamic.selection_batches, config.eval_offset_batches)
+    required = evaluation_offset + config.batches
     if len(batches) < required:
         raise ValueError(
             f"dynamic KV evaluation requires {required} batches, got {len(batches)}")
     selection = batches[:dynamic.selection_batches]
-    evaluation = batches[dynamic.selection_batches:required]
+    evaluation = batches[evaluation_offset:required]
     recipe, stats = select_dynamic_kv_quantization(
         model, selection, config, device)
     final = _evaluate_kv_cache(
-        model, evaluation, replace(config, dynamic=None), device, recipe)
+        model, evaluation,
+        replace(config, dynamic=None, eval_offset_batches=0), device, recipe)
     final["dynamic"] = stats
     return final

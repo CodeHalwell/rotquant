@@ -30,6 +30,7 @@ eval:
     group_size: 64
     rotation_block: 128
     batches: 4
+    eval_offset_batches: 4
     prompt_len: 256
     continuation_len: 16
     skip: 384
