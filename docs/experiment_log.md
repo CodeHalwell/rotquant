@@ -219,6 +219,29 @@ because each seed selects different held-out calls. Decision: retain dynamic
 3.25 bpv as the K/V candidate and proceed to the pre-registered 1,024-token
 validation before treating it as the final cache profile.
 
+### Qwen3.5-4B 1,024-token K/V confirmation
+
+The completed external matrix is pinned to Git SHA
+`bf94f2045a902beee7940eaf3a29d6e3b31db660` and contains 32 seed-0 profiles,
+seeds 0/1/2 for the promoted candidates, and the long-context confirmation.
+
+The long-context confirmation used four 1,024-token selection calls and four
+disjoint evaluation calls, with 32 continuation tokens. At equal 3.25-bpv
+storage, the dynamically allocated cache reduced held-out KL from 1.540281 for
+uniform K3/V3 to 1.345134, a 12.7% improvement. It also beat uniform K4/V4
+(KL 1.553477) by 13.4% while reducing packed cache storage from 8.913 MB to
+6.816 MB (23.5% fewer bytes). Cosine agreement improved from 0.873417 to
+0.879871 and top-1 agreement from 0.492188 to 0.500000 relative to K3/V3.
+
+The long-context allocator selected mean K3.375/V2.625, whereas the seed-0
+256-token allocator selected mean K2.875/V3.125. This reversal is evidence that
+key/value sensitivity changes with context length. It is also an important
+protocol distinction: this long run recalibrated the allocation on disjoint
+long-context selection data, so it validates the allocation method at long
+context but does not yet prove that one frozen 256-token recipe transfers to
+1,024 tokens. A frozen-recipe cross-context trial is required before choosing a
+single deployment map.
+
 ## Native K/V cache benchmark notes
 
 Command family:
