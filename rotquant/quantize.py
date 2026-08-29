@@ -7,10 +7,11 @@ Pluggable along four axes, matching the experiment matrix:
 * **group size**     -- per-group scales along the input dimension
 * **error comp**     -- ``none`` | ``gptq`` | ``residual`` | ``qjl`` | ``turboquant``
 
-``scale="turboquant"`` skips per-group scale metadata entirely: after a randomised
-Hadamard pre-rotation the weight distribution is universal (concentrated Gaussian),
-so the Lloyd-Max codebook centroids are applied directly without rescaling.  This
-saves ``scale_bits / group_size`` bits/weight overhead.
+``scale="turboquant"`` replaces per-group scales with one fp16 RMS scale per output
+row. After a randomised Hadamard pre-rotation the weight distribution shape is close
+to universal (concentrated Gaussian), while the row scale retains the layer's actual
+magnitude. This reduces overhead from ``scale_bits / group_size`` to
+``scale_bits / in_features`` bits/weight.
 
 ``error_comp="turboquant"`` applies the TurboQuant Stage-2 QJL correction: a
 1-bit random-projection sketch ``sign(r @ G)`` of the quantisation residual is
@@ -67,6 +68,50 @@ class QuantConfig:
     seed: int = 0
     scale_bits: float = 16.0
     sketch_k: int = 64                  # QJL projection dimension (error_comp="turboquant")
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.bits, int) or not 1 <= self.bits <= 16:
+            raise ValueError("bits must be an integer in [1, 16]")
+        if not isinstance(self.residual_bits, int) or not 1 <= self.residual_bits <= 16:
+            raise ValueError("residual_bits must be an integer in [1, 16]")
+        if self.group_size < 1:
+            raise ValueError("group_size must be >= 1")
+        if self.codebook.lower() not in {
+            "gaussian", "lloyd", "lloyd_max", "mse",
+            "uniform", "nf", "normalfloat", "normal_float",
+        }:
+            raise ValueError(f"unknown scalar codebook kind: {self.codebook}")
+        if self.scale not in {"rms", "mse_search", "turboquant"}:
+            raise ValueError(f"unknown scale strategy: {self.scale}")
+        if self.error_comp not in {"none", "gptq", "residual", "qjl", "turboquant"}:
+            raise ValueError(f"unknown error compensation strategy: {self.error_comp}")
+        if self.error_comp == "qjl" and self.residual_bits != 1:
+            raise ValueError("error_comp='qjl' requires residual_bits=1")
+        if self.error_comp == "gptq" and self.scale == "turboquant":
+            raise ValueError("error_comp='gptq' requires scale='rms' or 'mse_search'")
+        if self.error_comp == "residual":
+            # Validate lazily-used residual codebook names at config construction,
+            # before an expensive model has been loaded or calibrated.
+            valid = {
+                "gaussian", "lloyd", "lloyd_max", "mse",
+                "uniform", "nf", "normalfloat", "normal_float",
+            }
+            if self.residual_codebook.lower() not in valid:
+                raise ValueError(
+                    f"unknown residual scalar codebook kind: {self.residual_codebook}")
+        if self.scale_bits not in (16.0, 32.0):
+            raise ValueError(
+                "scale_bits must be 16 or 32; lower-bit scale encoding is not implemented")
+        if self.percdamp < 0:
+            raise ValueError("percdamp must be >= 0")
+        if self.gptq_block < 1:
+            raise ValueError("gptq_block must be >= 1")
+        if self.mse_search_grid < 1:
+            raise ValueError("mse_search_grid must be >= 1")
+        if self.mse_search_lo <= 0 or self.mse_search_hi < self.mse_search_lo:
+            raise ValueError("mse_search bounds must satisfy 0 < lo <= hi")
+        if self.error_comp == "turboquant" and self.sketch_k < 1:
+            raise ValueError("sketch_k must be >= 1 for TurboQuant correction")
 
 
 @dataclass
@@ -126,10 +171,27 @@ class QuantizedWeight:
         sketch_overhead = 0.0
         if self.sketch is not None:
             sketch_overhead = (self.sketch_k + 16) * self.group_size / self.in_features
-        return BitBudget(levels=2 ** self.packed.bits, group_size=self.group_size,
-                         scale_bits=(main_scale + extra_scale_bits
-                                     + extra_code_bits * self.group_size
-                                     + sketch_overhead))
+        stored_bits = self.packed.data.numel() * self.packed.data.element_size() * 8
+        if self.scales is not None:
+            stored_bits += self.scales.numel() * self.scales.element_size() * 8
+        if self.residual_packed is not None:
+            stored_bits += (self.residual_packed.data.numel()
+                            * self.residual_packed.data.element_size() * 8)
+            stored_bits += (self.residual_scales.numel()
+                            * self.residual_scales.element_size() * 8)
+        if self.sketch is not None:
+            stored_bits += self.sketch.data.numel() * self.sketch.data.element_size() * 8
+            stored_bits += (self.sketch_row_norms.numel()
+                            * self.sketch_row_norms.element_size() * 8)
+        return BitBudget(
+            levels=2 ** self.packed.bits,
+            group_size=self.group_size,
+            scale_bits=(main_scale + extra_scale_bits
+                        + extra_code_bits * self.group_size
+                        + sketch_overhead),
+            stored_bits=float(stored_bits),
+            stored_weights=self.out_features * self.in_features,
+        )
 
     # bookkeeping for accounting
     scale_bits_main: float = 16.0
@@ -162,10 +224,11 @@ def _storage_scales(scales: Optional[torch.Tensor],
     tensor must actually be fp16 -- and quantisation must run against the
     *rounded* values so pack-time indices and dequant agree. Floored at the
     smallest normal fp16 so the fp32 ``1e-12`` clamp on all-zero groups does not
-    underflow to zero and divide out to NaN. Non-16-bit budgets keep fp32 (and
-    are charged their true element size by ``packed_state_bytes``).
+    underflow to zero and divide out to NaN. The only other supported format is
+    fp32 (``scale_bits=32``); lower-bit scale encodings are rejected until a real
+    codec exists.
     """
-    if scales is None or scale_bits != 16.0:
+    if scales is None or scale_bits == 32.0:
         return scales
     return scales.to(torch.float16).clamp_min(
         torch.finfo(torch.float16).smallest_normal)
@@ -259,10 +322,34 @@ class Quantizer:
     # main entry
     # ------------------------------------------------------------------ #
     def quantize_weight(self, weight: torch.Tensor,
-                        H: Optional[torch.Tensor] = None) -> QuantizedWeight:
+                        H: Optional[torch.Tensor] = None,
+                        scales_override: Optional[torch.Tensor] = None,
+                        ) -> QuantizedWeight:
+        """Quantize ``weight``, optionally using explicit deployable scales.
+
+        ``scales_override`` is primarily used by calibration-time learned
+        clipping. It replaces scale selection, but still goes through the same
+        storage-precision rounding and exact index assignment as an ordinary
+        packed weight.
+        """
         w = weight.detach().to(torch.float32)
         out, inf = w.shape
-        scales = _storage_scales(self._select_scales(w), self.cfg.scale_bits)
+        if scales_override is None:
+            selected_scales = self._select_scales(w)
+        else:
+            expected_groups = (1 if self.cfg.scale == "turboquant"
+                               else (inf + self.cfg.group_size - 1)
+                               // self.cfg.group_size)
+            if tuple(scales_override.shape) != (out, expected_groups):
+                raise ValueError(
+                    "scales_override must have shape "
+                    f"{(out, expected_groups)}, got {tuple(scales_override.shape)}")
+            selected_scales = scales_override.detach().to(
+                device=w.device, dtype=torch.float32)
+            if (not torch.isfinite(selected_scales).all()
+                    or (selected_scales <= 0).any()):
+                raise ValueError("scales_override must be finite and positive")
+        scales = _storage_scales(selected_scales, self.cfg.scale_bits)
 
         if self.cfg.error_comp == "gptq":
             if self.cfg.scale == "turboquant":
@@ -363,8 +450,8 @@ class Quantizer:
                 return Hinv
             except torch.linalg.LinAlgError:
                 logger.warning("Cholesky failed; increasing damping %.4f -> %.4f",
-                               damp, damp * 10)
-                damp *= 10
+                               damp, damp * 10 if damp > 0 else 1e-6)
+                damp = damp * 10 if damp > 0 else 1e-6
         raise RuntimeError("GPTQ Cholesky failed even after increasing damping")
 
     # ------------------------------------------------------------------ #

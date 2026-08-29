@@ -1,0 +1,27 @@
+# E1c: joint transformer-block reconstruction.
+# All six butterfly rotations in each OPT decoder block are trained together
+# under fake 3-bit quantisation. Disjoint validation calls choose the best
+# training checkpoint; a third split selects between that checkpoint and its
+# exact seeded-FWHT initialization using the real mse_search quantizer.
+experiment: E1C
+label: e1c_block_butterfly_3bit
+calib_seq_len: 128
+quant: {bits: 3, codebook: gaussian, scale: mse_search, group_size: 128, error_comp: none}
+patch:
+  rotation: butterfly
+  block: 128
+  mode: consistent
+  train_rotation:
+    objective: block
+    steps: 6
+    lr: 0.003
+    train_batches: 1
+    validation_batches: 1
+    selection_batches: 1
+    assignment_scale: rms
+    max_grad_norm: 1.0
+    restore_best: true
+    early_stopping_patience: 4
+    validation_min_improvement: 0.001
+    selection_min_improvement: 0.005
+eval: {perplexity: true, ppl_datasets: [wikitext2, c4], zeroshot: true}

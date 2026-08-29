@@ -17,7 +17,7 @@ def _max_rel(a, b):
 def test_rotation_orthogonal_and_invariant():
     torch.manual_seed(0)
     d = 256
-    for kind in ["none", "fwht", "dense", "learned"]:
+    for kind in ["none", "fwht", "butterfly", "dense", "learned"]:
         R = build_rotation(kind, d, block=128, seed=1)
         M = R.as_matrix(dtype=torch.float64)
         ortho = (M @ M.T - torch.eye(d, dtype=torch.float64)).abs().max().item()

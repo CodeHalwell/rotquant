@@ -52,6 +52,14 @@ class CalibrationResult:
     n_samples: Dict[str, int] = field(default_factory=dict)
 
 
+@dataclass
+class ActivationResult:
+    """Bounded source-model input samples for layerwise reconstruction."""
+
+    activations: Dict[str, torch.Tensor] = field(default_factory=dict)
+    n_samples: Dict[str, int] = field(default_factory=dict)
+
+
 def _iter_linears(model: nn.Module, include: Optional[Sequence[str]] = None,
                   exclude: Optional[Sequence[str]] = None):
     for name, mod in model.named_modules():
@@ -125,4 +133,73 @@ def collect_hessians(model: nn.Module, dataloader: Iterable, device,
         result.hessians[name] = H.to(offload_device) if offload_device else H
         result.n_samples[name] = acc.n_samples
     logger.info("Collected Hessians for %d linear layers", len(result.hessians))
+    return result
+
+
+@torch.no_grad()
+def collect_activations(model: nn.Module, dataloader: Iterable, device,
+                        include: Optional[Sequence[str]] = None,
+                        exclude: Optional[Sequence[str]] = None,
+                        max_tokens: int = 64,
+                        offload_device: Optional[str] = "cpu",
+                        storage_dtype: torch.dtype = torch.float16) -> ActivationResult:
+    """Capture at most ``max_tokens`` source-model inputs per targeted linear.
+
+    Unlike a full ``[in, in]`` Hessian, this bounded sample costs O(tokens * d)
+    storage and permits the rotation trainer to optimise the actual layer-output
+    reconstruction loss. Samples are offloaded immediately (CPU fp16 by default)
+    and promoted to fp32 next to a layer only while that layer is trained.
+    """
+    if max_tokens < 1:
+        raise ValueError("max_tokens must be >= 1")
+    chunks: Dict[str, List[torch.Tensor]] = {}
+    counts: Dict[str, int] = {}
+    handles: List[torch.utils.hooks.RemovableHandle] = []
+
+    def make_hook(name: str, in_features: int):
+        def hook(_module, inputs, _output):
+            used = counts.get(name, 0)
+            remaining = max_tokens - used
+            if remaining <= 0:
+                return
+            x = inputs[0].detach().reshape(-1, in_features)[:remaining]
+            if x.numel() == 0:
+                return
+            if offload_device is not None:
+                x = x.to(device=offload_device, dtype=storage_dtype)
+            else:
+                x = x.to(dtype=storage_dtype)
+            chunks.setdefault(name, []).append(x)
+            counts[name] = used + x.shape[0]
+        return hook
+
+    include_terms = tuple(include) if include is not None else None
+    exclude_terms = tuple(exclude) if exclude is not None else None
+    targets = list(_iter_linears(model, include_terms, exclude_terms))
+    for name, mod in targets:
+        handles.append(mod.register_forward_hook(make_hook(name, mod.in_features)))
+
+    model.eval()
+    try:
+        for batch in dataloader:
+            if isinstance(batch, dict):
+                batch = {k: (v.to(device) if torch.is_tensor(v) else v)
+                         for k, v in batch.items()}
+                model(**batch)
+            elif isinstance(batch, (list, tuple)):
+                model(*[b.to(device) if torch.is_tensor(b) else b for b in batch])
+            else:
+                model(batch.to(device))
+            if targets and all(counts.get(name, 0) >= max_tokens
+                               for name, _ in targets):
+                break
+    finally:
+        for handle in handles:
+            handle.remove()
+
+    result = ActivationResult(n_samples=dict(counts))
+    result.activations = {name: torch.cat(parts, dim=0)
+                          for name, parts in chunks.items()}
+    logger.info("Collected up to %d activation tokens for %d linear layers",
+                max_tokens, len(result.activations))
     return result

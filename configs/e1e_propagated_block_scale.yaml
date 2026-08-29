@@ -1,0 +1,31 @@
+# E1e: propagation-aware block rotation and scale/clipping calibration.
+# After each block is selected and exactly packed, its real quantized outputs
+# become the inputs used to train the next block. Full-precision outputs at each
+# depth remain the teacher targets, allowing later blocks to compensate for
+# accumulated upstream quantization error.
+experiment: E1E
+label: e1e_propagated_block_butterfly_scale_3bit
+calib_seq_len: 128
+quant: {bits: 3, codebook: gaussian, scale: mse_search, group_size: 128, error_comp: none}
+patch:
+  rotation: butterfly
+  block: 128
+  mode: consistent
+  train_rotation:
+    objective: block
+    steps: 12
+    lr: 0.0015
+    train_batches: 2
+    validation_batches: 2
+    selection_batches: 2
+    learn_scales: true
+    scale_lr: 0.01
+    scale_multiplier_min: 0.5
+    scale_multiplier_max: 1.5
+    propagate_quantized_inputs: true
+    max_grad_norm: 1.0
+    restore_best: true
+    early_stopping_patience: 4
+    validation_min_improvement: 0.001
+    selection_min_improvement: 0.005
+eval: {perplexity: true, ppl_datasets: [wikitext2, c4], zeroshot: true}

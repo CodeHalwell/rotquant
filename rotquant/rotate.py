@@ -13,6 +13,8 @@ Implemented rotations:
 
 * :class:`RandomizedHadamard` -- a fixed random sign flip followed by the
   (block-wise) fast Walsh-Hadamard transform. This is the QuaRot / QuIP# primitive.
+* :class:`ButterflyRotation`  -- a trainable, exactly-orthogonal butterfly
+  initialised to the same randomised Hadamard transform.
 * :class:`DenseOrthogonal`   -- a dense random orthogonal matrix from the QR of a
   Gaussian (the E1 "dense" comparison).
 * :class:`LearnedRotation`   -- an orthogonal matrix parametrised on the Stiefel
@@ -162,6 +164,113 @@ class RandomizedHadamard(Rotation):
         return self._blocked_fwht(x) * self._signs(x)
 
 
+class ButterflyRotation(Rotation):
+    """Trainable structured rotation initialised exactly as randomised FWHT.
+
+    Each Hadamard stage is replaced by independent two-coordinate orthogonal
+    transforms
+
+        [[cos(theta),  sin(theta)],
+         [sin(theta), -cos(theta)]].
+
+    At ``theta = pi/4`` these are the normalised Hadamard butterflies, so a new
+    instance is numerically equivalent to :class:`RandomizedHadamard` with the
+    same block and seed. Training changes ``d/2 * log2(block)`` angles while
+    preserving exact orthogonality and O(d log(block)) application cost. The
+    fixed random signs retain the useful FWHT starting point.
+    """
+
+    def __init__(self, dim: int, block: int = 128, seed: Optional[int] = None,
+                 device=None, dtype=torch.float32):
+        super().__init__(dim)
+        if dim % block != 0:
+            block = RandomizedHadamard._largest_pow2_divisor(dim)
+        if not _is_pow2(block):
+            raise ValueError(f"Butterfly block must be a power of two, got {block}")
+        self.block = block
+        self.n_blocks = dim // block
+        self.n_stages = int(math.log2(block))
+
+        gen = torch.Generator(device="cpu")
+        if seed is not None:
+            gen.manual_seed(seed)
+        signs = torch.randint(0, 2, (dim,), generator=gen,
+                              dtype=torch.float32) * 2 - 1
+        self.register_buffer("signs", signs.to(device=device, dtype=dtype))
+        angles = torch.full((self.n_blocks, self.n_stages, block // 2),
+                            math.pi / 4, dtype=torch.float32, device=device)
+        self.theta = nn.Parameter(angles)
+        self.register_buffer("_cached_cos", None, persistent=False)
+        self.register_buffer("_cached_sin", None, persistent=False)
+        self._cached_theta_version: Optional[int] = None
+
+    def _invalidate_cache(self) -> None:
+        self._cached_cos = None
+        self._cached_sin = None
+        self._cached_theta_version = None
+
+    def train(self, mode: bool = True):
+        if self.training != mode:
+            self._invalidate_cache()
+        return super().train(mode)
+
+    def _apply(self, fn, recurse: bool = True):
+        result = super()._apply(fn, recurse)
+        self._invalidate_cache()
+        return result
+
+    def _load_from_state_dict(self, *args, **kwargs):
+        self._invalidate_cache()
+        return super()._load_from_state_dict(*args, **kwargs)
+
+    def _trig(self):
+        if (not self.training
+                and self._cached_cos is not None
+                and self._cached_cos.device == self.theta.device
+                and self._cached_theta_version == self.theta._version):
+            return self._cached_cos, self._cached_sin
+        cos, sin = self.theta.cos(), self.theta.sin()
+        if not self.training:
+            self._cached_cos = cos.detach()
+            self._cached_sin = sin.detach()
+            self._cached_theta_version = self.theta._version
+            return self._cached_cos, self._cached_sin
+        return cos, sin
+
+    def _apply_stages(self, x: torch.Tensor, *, inverse: bool) -> torch.Tensor:
+        original_shape = x.shape
+        h = x.reshape(-1, self.n_blocks, self.block)
+        cos, sin = self._trig()
+        stages = range(self.n_stages - 1, -1, -1) if inverse \
+            else range(self.n_stages)
+        for stage in stages:
+            step = 1 << stage
+            groups = self.block // (2 * step)
+            paired = h.reshape(-1, self.n_blocks, groups, 2, step)
+            a, b = paired[:, :, :, 0, :], paired[:, :, :, 1, :]
+            c = cos[:, stage].reshape(1, self.n_blocks, groups, step).to(
+                device=x.device, dtype=x.dtype)
+            s = sin[:, stage].reshape(1, self.n_blocks, groups, step).to(
+                device=x.device, dtype=x.dtype)
+            h = torch.stack((c * a + s * b, s * a - c * b), dim=3)
+            h = h.reshape(-1, self.n_blocks, self.block)
+        return h.reshape(original_shape)
+
+    def _signs(self, ref: torch.Tensor) -> torch.Tensor:
+        return self.signs.to(device=ref.device, dtype=ref.dtype)
+
+    def rotate_activation(self, x: torch.Tensor) -> torch.Tensor:
+        # R^T = D_s B_0 ... B_k; at initialisation this is D_s H.
+        return self._apply_stages(x * self._signs(x), inverse=False)
+
+    def rotate_weight(self, weight: torch.Tensor) -> torch.Tensor:
+        return self.rotate_activation(weight)
+
+    def inverse_activation(self, x: torch.Tensor) -> torch.Tensor:
+        # R = B_k ... B_0 D_s. Each butterfly stage is its own inverse.
+        return self._apply_stages(x, inverse=True) * self._signs(x)
+
+
 class DenseOrthogonal(Rotation):
     """Dense random orthogonal rotation from the QR of a Gaussian matrix."""
 
@@ -223,13 +332,28 @@ class LearnedRotation(Rotation):
         # (PyTorch's _apply propagates registered buffers) but is not saved to
         # state_dict so it never carries stale values across checkpoints.
         self.register_buffer("_cached_R", None, persistent=False)
+        self._cached_theta_version: Optional[int] = None
 
     def train(self, mode: bool = True):
         if self.training != mode:
             # Only invalidate when the mode actually changes; a repeated .eval()
             # call otherwise evicts the cache and forces an O(d^3) recompute.
             self._cached_R = None
+            self._cached_theta_version = None
         return super().train(mode)
+
+    def _apply(self, fn, recurse: bool = True):
+        result = super()._apply(fn, recurse)
+        # A cached matrix converted independently from theta can have the wrong
+        # precision after .half()/.float(), even when it remains on the same device.
+        self._cached_R = None
+        self._cached_theta_version = None
+        return result
+
+    def _load_from_state_dict(self, *args, **kwargs):
+        self._cached_R = None
+        self._cached_theta_version = None
+        return super()._load_from_state_dict(*args, **kwargs)
 
     def _skew(self) -> torch.Tensor:
         a = torch.zeros(self.dim, self.dim, device=self.theta.device,
@@ -246,13 +370,15 @@ class LearnedRotation(Rotation):
         # that the cached tensor is on the same device as theta.
         if (not self.training
                 and self._cached_R is not None
-                and self._cached_R.device == self.theta.device):
+                and self._cached_R.device == self.theta.device
+                and self._cached_theta_version == self.theta._version):
             return self._cached_R
         a = self._skew()
         eye = torch.eye(self.dim, device=a.device, dtype=a.dtype)
         r = torch.linalg.solve(eye + a, eye - a)
         if not self.training:
             self._cached_R = r.detach()
+            self._cached_theta_version = self.theta._version
             return self._cached_R
         return r
 
@@ -277,6 +403,8 @@ def build_rotation(kind: str, dim: int, *, block: int = 128,
         return Identity(dim)
     if kind in ("fwht", "hadamard", "randomized_hadamard", "rht"):
         return RandomizedHadamard(dim, block=block, seed=seed, device=device, dtype=dtype)
+    if kind in ("butterfly", "learned_butterfly", "structured"):
+        return ButterflyRotation(dim, block=block, seed=seed, device=device, dtype=dtype)
     if kind in ("dense", "dense_qr", "orthogonal"):
         return DenseOrthogonal(dim, seed=seed, device=device, dtype=dtype)
     if kind in ("learned", "cayley", "stiefel"):

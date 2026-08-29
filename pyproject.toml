@@ -41,7 +41,6 @@ baselines = [
     "gptqmodel",   # GPTQ (auto-gptq successor)
     "autoawq",     # AWQ
     "aqlm[gpu]",   # AQLM 2-bit vector codebooks
-    "flute-kernel", # runtime for HIGGS (rotation + MSE-optimal grid)
 ]
 dev = ["pytest"]
 

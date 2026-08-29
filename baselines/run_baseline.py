@@ -32,6 +32,18 @@ INSTALL_HINTS = {
     "qtip": "git clone https://github.com/Cornell-RelaxML/qtip",
 }
 
+IMPLEMENTED_BACKENDS = ("gptq", "awq", "aqlm")
+
+
+def baseline_run_id(backend: str, model: str, bits: int, group_size: int,
+                    prequantized: bool, device: str) -> str:
+    """Build an artifact id from every CLI option that can change the result."""
+    model_slug = model.rstrip("/").split("/")[-1]
+    source = "prequantized" if prequantized else "quantized"
+    device_slug = device.replace(":", "-").replace("/", "-")
+    return (f"baseline_{backend}_{model_slug}_{bits}bit_"
+            f"g{group_size}_{source}_{device_slug}")
+
 
 def _require(module: str, backend: str):
     try:
@@ -106,16 +118,16 @@ def load_baseline(backend: str, model_name: str, bits: int, device: str,
         model = AutoModelForCausalLM.from_pretrained(model_name).to(device)
         return model, tok
     if backend in ("quip", "qtip", "higgs"):
-        _require({"quip": "quip", "qtip": "qtip", "higgs": "flute"}[backend], backend)
         raise NotImplementedError(
-            f"{backend} requires its repo's loader; wire it here once cloned.")
+            f"baseline '{backend}' is not integrated yet; installing its package "
+            "alone is insufficient because this harness has no checkpoint loader for it")
     raise ValueError(f"unknown baseline backend: {backend}")
 
 
 def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("--backend", required=True,
-                    choices=list(INSTALL_HINTS.keys()))
+                    choices=IMPLEMENTED_BACKENDS)
     ap.add_argument("--model", required=True)
     ap.add_argument("--bits", type=int, default=4)
     ap.add_argument("--group-size", type=int, default=128)
@@ -140,12 +152,15 @@ def main() -> None:
         from eval.zeroshot import zeroshot
         metrics["zeroshot"] = zeroshot(model, tok, device=args.device)
 
-    model_slug = args.model.rstrip("/").split("/")[-1]
-    run_id = f"baseline_{args.backend}_{model_slug}_{args.bits}bit"
+    run_id = baseline_run_id(args.backend, args.model, args.bits, args.group_size,
+                             args.prequantized, args.device)
     write_result(os.path.join(args.output_dir, f"{run_id}.json"), {
         "run_id": run_id,
         "config": {"experiment": "baseline", "backend": args.backend,
-                   "model": args.model, "bits": args.bits, "label": run_id},
+                   "model": args.model, "bits": args.bits,
+                   "group_size": args.group_size,
+                   "prequantized": args.prequantized,
+                   "device": args.device, "label": run_id},
         "metrics": metrics,
         "environment": environment_record(),
     })

@@ -2,6 +2,7 @@
 # Sweep `patch.rotation` over [none, dense, fwht, learned] at >=3 seeds:
 #   --set patch.rotation=dense
 #   --set patch.rotation=learned --set 'patch.train_rotation={steps: 200}'
+# Source-model reference (no quantisation): --set patch.enabled=false
 # The learned arm REQUIRES train_rotation (data-free per-layer theta training);
 # without it theta stays at ~identity and the arm is a no-rotation control.
 # Expect: FWHT ~= dense, both >> none; learned ~= FWHT for weight-only.

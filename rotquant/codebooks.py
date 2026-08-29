@@ -9,8 +9,8 @@ Scalar grids (fully implemented and unit-tested on a unit Gaussian):
 
 Vector grids:
 
-* :class:`E8LatticeCodebook` -- exact nearest-point quantiser for the E8 lattice
-  (Conway & Sloane), the self-contained vector baseline.
+* :class:`E8LatticeCodebook` -- exact nearest-point primitive for the E8 lattice
+  (Conway & Sloane). It is not a finite-rate encoder or a packed baseline.
 * :class:`TrellisCodebook`   -- bridge to QTIP's trellis-coded quantiser; raises an
   informative error if the QTIP repo is not importable (we do not re-derive it).
 """
@@ -225,11 +225,11 @@ def nearest_e8(x: torch.Tensor) -> torch.Tensor:
 
 
 class E8LatticeCodebook:
-    """Vector quantiser snapping scaled blocks of 8 to the nearest E8 lattice point.
+    """Nearest-lattice quantiser snapping scaled blocks of 8 to an E8 point.
 
-    A self-contained vector baseline (no external repo needed). The lattice scale
-    controls the effective rate; pick it so the per-weight bit budget matches the
-    scalar comparison in E6.
+    This is a geometric primitive, not a finite-rate compression format: the E8
+    lattice is infinite and this class does not encode or pack point indices.
+    Consequently it must not be used as an equal-bits E6 baseline by itself.
     """
 
     dim = 8

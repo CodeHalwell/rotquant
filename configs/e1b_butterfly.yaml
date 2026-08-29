@@ -1,0 +1,28 @@
+# E1b: activation-aware structured rotation training.
+# Butterfly angles start exactly at the seeded block-FWHT, then train layer by
+# layer against source-model activations while weights remain frozen. RMS scale
+# assignments keep optimiser steps practical; final packing still uses the E1
+# mse_search quantizer below.
+# Experimental: a better held-out layer reconstruction score does not guarantee
+# better model perplexity. Require this cell to beat a matched FWHT control on a
+# small model before scaling it up.
+experiment: E1B
+label: e1b_butterfly_3bit
+calib_seq_len: 256
+rotation_n_calib: 1
+quant: {bits: 3, codebook: gaussian, scale: mse_search, group_size: 128, error_comp: none}
+patch:
+  rotation: butterfly
+  block: 128
+  mode: consistent
+  train_rotation:
+    steps: 20
+    lr: 0.01
+    objective: activation
+    max_tokens: 64
+    selection_tokens: 64
+    assignment_scale: rms
+    max_grad_norm: 1.0
+    restore_best: true
+    selection_min_improvement: 0.005
+eval: {perplexity: true, ppl_datasets: [wikitext2, c4], zeroshot: true}

@@ -1,19 +1,24 @@
 # rotquant-eval
 
-A full, GPU-grade assessment harness for **TurboQuant-style rotation + weight
-compression**. The goal is to confirm or refute, on real models with real metrics,
-a set of findings about rotation-based weight-only quantisation:
+A GPU-oriented assessment harness for **TurboQuant-style rotation + weight
+compression**. The implemented experiment cells test the following hypotheses on
+real models with fixed metrics:
 
 1. **Rotation transfers** to weight-only quant; FWHT ≈ dense random-orthogonal for
    weight-only, while learned rotations only pull ahead once activations are also
    quantised (W4A4). *(E1)*
+   **E1b** trains an exactly-orthogonal butterfly initialized from FWHT against
+   bounded source-model activation samples, then freezes and packs it.
+   **E1c** jointly trains every butterfly inside a transformer block against the
+   complete FP block output and accepts it on a disjoint calibration sequence.
 2. **QJL must go** — a deterministic residual pass beats the stochastic 1-bit QJL
    residual at equal bits. *(E3)*
 3. **Gaussian MSE-optimal grid > uniform** at the same bit budget. *(E2)*
 4. **Data-free scale-search** is a free win over RMS scales at identical bits. *(E4)*
 5. **GPTQ helps — with real activations.** *(E5)*
-6. **Scalar has a hard ceiling** (~2× the rate-distortion bound at 3-bit); a
-   vector/trellis residual is required to approach 2-bit usability. *(E6)*
+6. **Scalar has a hard ceiling** at low bit rates. The scalar 2-bit control is
+   implemented; a fixed-rate vector/trellis arm is still required before drawing
+   the vector-comparison conclusion. *(E6, incomplete)*
 7. **The consistency trap** — rotating weights without the matching activation
    basis change causes cross-layer drift. *(E7)*
 8. **Footprint & speed** — packed `QuantLinear` vs fp16 fallback. *(E8)*
@@ -23,7 +28,7 @@ a set of findings about rotation-based weight-only quantisation:
 ```
 rotquant/      core library  (rotate, codebooks, quantize, pack, linear, calibrate, patch, train_rotation, utils)
 eval/          fixed eval protocol (perplexity, zeroshot, layer_mse)
-baselines/     wrappers around GPTQ/AWQ/AQLM/QuIP#/QTIP/HIGGS through the same harness
+baselines/     working GPTQ/AWQ/AQLM wrappers through the same evaluation harness
 tests/         correctness tests that must pass before trusting any experiment
 scripts/       run_experiment.py (config -> quantise -> eval -> JSON), aggregate.py
 configs/        one YAML per experiment cell (E1..E8)
@@ -43,7 +48,7 @@ uv sync --extra eval
 # pure-torch fallback is used automatically when it's absent):
 uv pip install fast-hadamard-transform --no-build-isolation
 
-# Add baseline comparison packages (gptqmodel, autoawq, aqlm, flute-kernel):
+# Add implemented baseline packages (gptqmodel, autoawq, aqlm):
 uv sync --extra baselines
 ```
 
@@ -103,23 +108,70 @@ python scripts/run_experiment.py configs/e1_rotation.yaml --model meta-llama/Lla
 for r in none dense fwht; do
   python scripts/run_experiment.py configs/e1_rotation.yaml --set patch.rotation=$r
 done
+# A true source-model reference: unlike rotation=none, this skips quantisation.
+python scripts/run_experiment.py configs/e1_rotation.yaml --set patch.enabled=false
 # The E1 learned arm needs its per-layer theta training enabled (data-free
 # alternating minimisation of rotated-domain quant MSE via the Cayley map;
 # without it, theta stays at ~identity and the arm is a no-rotation control):
 python scripts/run_experiment.py configs/e1_rotation.yaml \
   --set patch.rotation=learned --set 'patch.train_rotation={steps: 200, lr: 0.001}'
+# Practical activation-aware structured training (starts exactly from FWHT):
+python scripts/run_experiment.py configs/e1b_butterfly.yaml
+# Stronger joint transformer-block reconstruction. Training, validation-based
+# checkpoint choice, and the exact packed-vs-FWHT gate use disjoint calls:
+python scripts/run_experiment.py configs/e1c_block_butterfly.yaml
+# Joint block rotation plus learned deployable group scales/clipping:
+python scripts/run_experiment.py configs/e1d_block_scale.yaml
+# Propagation-aware joint rotation/scale training:
+python scripts/run_experiment.py configs/e1e_propagated_block_scale.yaml
+# End-to-end teacher-logit/LM-loss tuning of the packed model:
+python scripts/run_experiment.py configs/e1f_end_to_end_distill.yaml
+# Quantization-aware rank-4 LoRA recovery with exact adapter accounting:
+python scripts/run_experiment.py configs/e1g_lora_qat.yaml
 python scripts/run_experiment.py configs/e4_scale_group.yaml --set quant.group_size=64
 python scripts/run_experiment.py configs/e8_footprint.yaml --set patch.fallback=true
 ```
+
+### Qwen3.5-4B on Apple Silicon
+
+`unsloth/Qwen3.5-4B` is a unified image/text checkpoint rather than a plain
+`AutoModelForCausalLM`. The dedicated config selects Transformers'
+multimodal loader but deliberately evaluates and quantises the language path
+only. It leaves the vision tower and the small linear-attention state gates at
+source precision:
+
+```bash
+# Matched source-model reference (short text-only sanity check):
+uv run python scripts/run_experiment.py configs/qwen35_4b_mps.yaml \
+  --set patch.enabled=false
+
+# Matched FWHT 3-bit language-backbone trial:
+uv run python scripts/run_experiment.py configs/qwen35_4b_mps.yaml
+```
+
+MPS automatically uses the fp16 fallback described below, so these are quality
+runs rather than compressed-memory or throughput measurements. Vision serving
+will additionally require the checkpoint's `AutoProcessor`; WikiText/C4 text
+perplexity uses its tokenizer directly.
+
+For CUDA LoRA-QAT quality recovery, open
+[`notebooks/qwen35_4b_lora_qat_colab.ipynb`](notebooks/qwen35_4b_lora_qat_colab.ipynb)
+in Colab. It checks the GPU, establishes a matched CUDA source baseline, runs a
+bounded smoke trial, then exposes the full 4-bit rank-4 recovery experiment from
+`configs/qwen35_4b_lora_qat_cuda.yaml`. The CUDA config deliberately enables the
+cached fp16 fallback to accelerate training on high-memory GPUs; its peak VRAM
+is not the packed deployment footprint.
 
 Each run writes `results/<run_id>.json` with the config, git SHA, library
 versions, GPU, all metrics (including true bits/weight and packed-vs-fp16
 footprint for every run; `eval: {throughput: ...}` adds greedy-decode tokens/s
 and peak generation VRAM for E8), and wall-clock
 (`rotquant.utils.environment_record`). Derived run ids get a `_s<seed>` suffix
-and CLI-overridden runs get the overridden values appended, so neither seed nor
-`--model`/`--set` sweeps ever overwrite each other; an explicit `run_id:` in the
-YAML is used verbatim when no CLI override modifies the run. `aggregate.py`
+and CLI-overridden runs get the overridden values appended, so seed, device,
+`--model`, and `--set` sweeps do not overwrite each other; an explicit `run_id:` in the
+YAML is used verbatim when no CLI override modifies the run. Overlong IDs are
+deterministically shortened with a digest while retaining the seed suffix.
+`aggregate.py`
 emits both the markdown table and a tidy CSV next to it.
 
 Quantisation targets every `nn.Linear` **except** `lm_head`/`embed_out` (the
@@ -136,6 +188,58 @@ style models (transformers `Conv1D`) are not supported and are flagged loudly.
 > of GPU time on top of patching. Per-run training aggregates land under
 > `metrics.rotation_train` (mean rotated-domain quant-MSE before/after).
 
+> **Structured-training note:** `rotation: butterfly` replaces the dense Cayley
+> map with `d/2 * log2(block)` trainable angles. It begins exactly at the seeded
+> block-FWHT, remains orthogonal, and applies in O(d log(block)). With
+> `objective: activation`, the runner captures at most `max_tokens` source-model
+> inputs per linear for optimization and `selection_tokens` disjoint inputs for
+> exact final-quantizer checkpoint selection.
+> The best calibration checkpoint is restored, so a short run cannot knowingly
+> finish worse than its FWHT initialization. Packed results separately report
+> rotation-parameter bytes and effective bits/weight. This gate is layer-local,
+> so a run must still beat matched FWHT perplexity before being scaled up.
+
+> **Block-training note:** `objective: block` replays captured transformer-block
+> calls and jointly trains all structured rotations inside each block. Its
+> `train_batches`, `validation_batches`, and `selection_batches` are disjoint:
+> validation chooses and can early-stop the proxy checkpoint, while selection
+> performs the one-time exact packed-candidate versus FWHT gate. Rejected blocks
+> are emitted as parameter-free FWHT; accepted blocks retain only their trained
+> butterfly angles. This captures attention, residual, norm, and MLP interactions
+> that independent linear reconstruction misses.
+
+> **Learned-scale note:** `learn_scales: true` initializes every group at the
+> configured exact scale-search result, then jointly optimizes bounded scale
+> multipliers and butterfly angles. Accepted candidates write those values into
+> the same fp16 scale slots already charged by the quantizer, so learning scales
+> adds no packed storage. The untouched final gate still compares against an
+> independently packed FWHT + `mse_search` reference.
+
+> **Propagation-aware note:** `propagate_quantized_inputs: true` trains block 0
+> normally, exactly packs the selected candidate, and replays its real outputs
+> as block 1 inputs. This repeats through the network while full-precision
+> outputs remain the teacher targets. Reported input-drift metrics make the
+> accumulated-error signal explicit.
+
+> **End-to-end distillation note:** `distill_steps > 0` keeps packed 3-bit code
+> indices fixed and tunes only retained butterfly angles and existing group
+> scales against source-model logits plus optional next-token loss. Distillation
+> has separate train, validation, and final-gate sequences. Scale changes are
+> rounded and committed into the original fp16 slots, so this stage adds no
+> deployment tensors or bits.
+
+> **LoRA-QAT note:** `distill_lora_rank > 0` adds zero-output adapters in each
+> packed linear's deployed rotated basis. The global held-out gate either retains
+> all adapters as fp16 parameters or removes them completely. Result JSONs report
+> `adapter_parameter_bytes`; effective bpw and compression include those bytes.
+
+> **Apple MPS note:** this project has no fused packed MPS matmul. MPS runs
+> automatically enable `patch.fallback=true`, perform integer packing on CPU, and
+> cache dequantized fp16 weights for quality evaluation. Their reported packed-byte
+> accounting remains useful, but do not use MPS runs for packed throughput or peak
+> memory comparisons. Unquantized `patch.enabled=false` reference runs do not need
+> or enable this fallback.
+
 ### Baselines
 
 ```bash
@@ -145,15 +249,18 @@ python baselines/run_baseline.py --backend gptq --model meta-llama/Llama-2-7b-hf
 python baselines/run_baseline.py --backend aqlm --model ISTA-DASLab/Llama-2-7b-AQLM-2Bit-1x16-hf --bits 2 --prequantized
 ```
 
-Baselines go through the **identical** perplexity/zero-shot harness so a finding
-is only counted once placed next to GPTQ/AWQ at 3–4 bit and QuIP#/AQLM/QTIP at 2 bit.
+These implemented baselines go through the **identical** perplexity/zero-shot
+harness. QuIP#/QTIP/HIGGS are not exposed as runnable choices until their
+checkpoint loaders and rate accounting are integrated.
 
 ## Methodology rigour
 
 * **Seeds & repeats.** Run E1/E5/E6 with ≥3 seeds; report mean ± std (random
   rotations alone can swing zero-shot by double digits).
-* **Equal-bits discipline.** Compare at matched *true* bits/weight (scales +
-  metadata included); `BitBudget.assert_matches` enforces this for every config.
+* **Equal-bits discipline.** Compare at matched *true* bits/weight. Reported bpw
+  comes from retained code, scale, residual, norm, and sketch buffers, including
+  partial groups and int32 word padding. A config can additionally set
+  `claimed_bpw` to make `BitBudget.assert_matches` enforce an expected rate.
 * **One variable at a time.** Each matrix row changes a single factor vs a fixed base.
 * **Separate quality from footprint.** Use the fp16 `fallback` path for fast quality
   sweeps on small models; report all memory/throughput numbers from the packed path.
@@ -163,7 +270,7 @@ A finding is **confirmed** when it holds across ≥3 seeds, on at least Llama-2-
 
 ## Status
 
-Fully implemented and CPU-tested: `rotate`, `codebooks`, `pack`, `quantize`,
+Fully implemented and CPU-tested: `rotate`, scalar `codebooks`, `pack`, `quantize`,
 `linear`, `calibrate`, `patch`, `train_rotation` (the E1 learned arm), and the
 correctness suites (`pytest tests/`).
 The full `run_experiment.py` pipeline — config merge, quantise, patch, GPTQ
@@ -171,3 +278,7 @@ calibration on streamed C4, layer-MSE drift, perplexity, result JSON,
 aggregation — is smoke-tested end-to-end on CPU via `configs/smoke_cpu.yaml`.
 A GPU (+ HF access for gated models) is needed for real-model numbers, the
 zero-shot bundle at scale, and the CUDA FWHT kernel.
+
+E6 currently provides the scalar 2-bit GPTQ control only. `nearest_e8` is a
+tested lattice nearest-point primitive, not a finite-rate packed codec; no E8,
+QuIP#, QTIP, or HIGGS result should be reported from this repository yet.

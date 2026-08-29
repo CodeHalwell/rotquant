@@ -125,6 +125,12 @@ class BitBudget:
     scale_bits: float = 16.0
     sign_bits: float = 0.0
     extra_metadata_bits: float = 0.0
+    # Optional exact storage override.  The nominal group formula above is useful
+    # when designing a format, but an instantiated packed tensor can have a partial
+    # final group and up to 31 padding bits in its final int32 word.  Supplying
+    # these fields makes ``bits_per_weight`` describe the bytes actually retained.
+    stored_bits: Optional[float] = None
+    stored_weights: Optional[int] = None
 
     @property
     def code_bits(self) -> float:
@@ -132,6 +138,10 @@ class BitBudget:
 
     @property
     def bits_per_weight(self) -> float:
+        if self.stored_bits is not None:
+            if not self.stored_weights:
+                raise ValueError("stored_weights must be positive when stored_bits is set")
+            return self.stored_bits / self.stored_weights
         meta = self.scale_bits + self.sign_bits + self.extra_metadata_bits
         return (self.group_size * self.code_bits + meta) / self.group_size
 
@@ -141,7 +151,8 @@ class BitBudget:
             raise AssertionError(
                 f"bits/weight mismatch: claimed {claimed_bpw}, actual {actual:.6f} "
                 f"(levels={self.levels}, group={self.group_size}, "
-                f"scale_bits={self.scale_bits}, sign_bits={self.sign_bits})"
+                f"scale_bits={self.scale_bits}, sign_bits={self.sign_bits}, "
+                f"stored_bits={self.stored_bits}, stored_weights={self.stored_weights})"
             )
 
 

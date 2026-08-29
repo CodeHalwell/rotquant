@@ -35,8 +35,13 @@ def pack_indices(idx: torch.Tensor, bits: int) -> PackedTensor:
     """
     if bits < 1 or bits > 16:
         raise ValueError("bits must be in [1, 16]")
-    flat = idx.reshape(-1).to(torch.int64)
-    device = flat.device  # keep every working buffer on the input's device (CPU or CUDA)
+    output_device = idx.device
+    # MPS executes int64 shifts/scatter_add pathologically slowly for model-sized
+    # tensors. Packing is a one-time serialization step, so do its integer work on
+    # CPU and copy only the compact int32 result back to the source device.
+    work_device = torch.device("cpu") if output_device.type == "mps" else output_device
+    flat = idx.reshape(-1).to(device=work_device, dtype=torch.int64)
+    device = flat.device
     if flat.numel() and (flat.min() < 0 or flat.max() >= (1 << bits)):
         raise ValueError("index out of range for given bits")
     n = flat.numel()
@@ -57,15 +62,20 @@ def pack_indices(idx: torch.Tensor, bits: int) -> PackedTensor:
     # Store as genuine 32-bit words so the in-memory footprint (4 bytes/word)
     # matches the bits/weight accounting. Values >= 2^31 wrap to negative int32,
     # which is fine: unpack reads each word back as unsigned.
-    return PackedTensor(data=out.to(torch.int32), shape=tuple(idx.shape),
+    data = out.to(torch.int32)
+    if data.device != output_device:
+        data = data.to(output_device)
+    return PackedTensor(data=data, shape=tuple(idx.shape),
                         bits=bits, numel=n)
 
 
 def unpack_indices(packed: PackedTensor) -> torch.Tensor:
     """Inverse of :func:`pack_indices`."""
     n, bits = packed.numel, packed.bits
+    output_device = packed.data.device
+    source = packed.data.cpu() if output_device.type == "mps" else packed.data
     # Read the stored int32 words back as unsigned 32-bit values.
-    data = packed.data.to(torch.int64) & 0xFFFFFFFF
+    data = source.to(torch.int64) & 0xFFFFFFFF
     device = data.device
     bit_positions = torch.arange(n, dtype=torch.int64, device=device) * bits
     word_idx = bit_positions // 32
@@ -76,7 +86,8 @@ def unpack_indices(packed: PackedTensor) -> torch.Tensor:
     if spill.any():
         hi = (data[word_idx[spill] + 1] << (32 - offset[spill])) & mask
         low[spill] = (low[spill] | hi) & mask
-    return low.reshape(packed.shape)
+    result = low.reshape(packed.shape)
+    return result.to(output_device) if result.device != output_device else result
 
 
 def packed_bytes(packed: PackedTensor) -> int:

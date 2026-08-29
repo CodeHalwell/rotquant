@@ -5,13 +5,15 @@ aggregator seeing nested (zero-shot) metrics.
 """
 import importlib.util
 import os
+from types import SimpleNamespace
 
 import pytest
 import torch
 import torch.nn as nn
 import yaml
 
-from rotquant.patch import PatchConfig, patch_model
+from rotquant.patch import PatchConfig, patch_model, _cpu_staging_linear
+from rotquant.calibrate import collect_activations
 from rotquant.quantize import QuantConfig, Quantizer, _group_scales_rms
 from rotquant.linear import QuantLinear
 from rotquant.rotate import Identity
@@ -29,6 +31,10 @@ def _load_script(name):
 
 run_experiment = _load_script("run_experiment")
 aggregate_mod = _load_script("aggregate")
+_baseline_spec = importlib.util.spec_from_file_location(
+    "run_baseline", os.path.join(_ROOT, "baselines", "run_baseline.py"))
+baseline_mod = importlib.util.module_from_spec(_baseline_spec)
+_baseline_spec.loader.exec_module(baseline_mod)
 
 
 # --------------------------------------------------------------------------- #
@@ -88,6 +94,39 @@ def test_run_id_reflects_cli_overrides():
                                        slug=slug)
     assert rid == "e1_Llama-2-7b-hf_patch.rotation=dense_s0"
 
+    # Device changes affect dtype fallback, numerical results, and throughput.
+    cpu_slug = run_experiment.override_slug(None, [], device="cpu")
+    cuda_slug = run_experiment.override_slug(None, [], device="cuda:1")
+    assert cpu_slug == "device=cpu"
+    assert cuda_slug == "device=cuda-1"
+    assert cpu_slug != cuda_slug
+
+
+def test_long_run_id_is_bounded_hashed_and_keeps_seed_suffix():
+    long_slug = "override=" + "x" * 400
+    rid0 = run_experiment.derive_run_id(
+        {"label": "experiment", "seed": 0}, "x.yaml", slug=long_slug)
+    rid1 = run_experiment.derive_run_id(
+        {"label": "experiment", "seed": 1}, "x.yaml", slug=long_slug)
+    assert len(rid0.encode()) <= run_experiment.MAX_RUN_ID_LENGTH
+    assert rid0.endswith("_s0") and rid1.endswith("_s1")
+    assert rid0[:-3] == rid1[:-3]
+    assert aggregate_mod._key({
+        "run_id": rid0, "config": {"experiment": "E", "model": "m"}
+    }).endswith(rid0[:-3])
+
+
+def test_baseline_run_id_includes_quantization_options():
+    base = baseline_mod.baseline_run_id("gptq", "org/model", 4, 128, False, "cuda:0")
+    assert base == "baseline_gptq_model_4bit_g128_quantized_cuda-0"
+    assert baseline_mod.baseline_run_id(
+        "gptq", "org/model", 4, 64, False, "cuda:0") != base
+    assert baseline_mod.baseline_run_id(
+        "gptq", "org/model", 4, 128, True, "cuda:0") != base
+    assert baseline_mod.baseline_run_id(
+        "gptq", "org/model", 4, 128, False, "cpu") != base
+    assert baseline_mod.IMPLEMENTED_BACKENDS == ("gptq", "awq", "aqlm")
+
 
 def test_apply_set_overrides_types_and_nesting():
     cfg = {"quant": {"bits": 3}, "eval": {"perplexity": True}}
@@ -108,6 +147,54 @@ def test_device_fallback_without_cuda():
         {"device": "cuda", "dtype": "float16"})
     assert device == "cpu"
     assert dtype == torch.float32
+
+
+def test_mps_quality_runs_enable_cached_fallback():
+    cfg = {"patch": {"rotation": "fwht", "fallback": False}}
+    changed = run_experiment.apply_device_defaults(cfg, torch.device("mps"))
+    assert changed is True
+    assert cfg["patch"]["fallback"] is True
+    assert run_experiment.apply_device_defaults(cfg, torch.device("mps")) is False
+
+    cpu_cfg = {"patch": {"rotation": "fwht", "fallback": False}}
+    assert run_experiment.apply_device_defaults(cpu_cfg, torch.device("cpu")) is False
+    assert cpu_cfg["patch"]["fallback"] is False
+
+    baseline_cfg = {"patch": {"enabled": False}}
+    assert run_experiment.apply_device_defaults(
+        baseline_cfg, torch.device("mps")) is False
+    assert "fallback" not in baseline_cfg["patch"]
+
+
+def test_model_loader_auto_detects_unified_multimodal_configs():
+    text = SimpleNamespace(vision_config=None)
+    vision_text = SimpleNamespace(vision_config=SimpleNamespace())
+    assert run_experiment.resolve_model_loader(text) == "causal_lm"
+    assert run_experiment.resolve_model_loader(vision_text) == "multimodal_lm"
+    assert run_experiment.resolve_model_loader(
+        vision_text, "causal_lm") == "causal_lm"
+    with pytest.raises(ValueError, match="unknown model_loader"):
+        run_experiment.resolve_model_loader(vision_text, "fast_vision")
+
+
+def test_cpu_staging_linear_preserves_half_source_values_in_fp32():
+    source = nn.Linear(32, 16).half()
+    staged = _cpu_staging_linear(source)
+    assert staged.weight.device.type == "cpu"
+    assert staged.weight.dtype == torch.float32
+    assert torch.equal(staged.weight, source.weight.float())
+    assert torch.equal(staged.bias, source.bias.float())
+
+
+def test_activation_collection_is_bounded_and_removes_hooks():
+    model = _ToyLM(d=16, vocab=8)
+    batches = [torch.randn(2, 5, 16), torch.randn(2, 5, 16)]
+    result = collect_activations(model, batches, "cpu", max_tokens=7,
+                                 storage_dtype=torch.float32)
+    assert set(result.activations) == {"q_proj", "mlp", "lm_head"}
+    assert all(x.shape[0] == 7 for x in result.activations.values())
+    assert all(x.dtype == torch.float32 for x in result.activations.values())
+    assert all(not module._forward_hooks for module in model.modules())
 
 
 # --------------------------------------------------------------------------- #
@@ -152,6 +239,18 @@ def test_zero_targets_warns(caplog):
     assert any("NO nn.Linear" in r.message for r in caplog.records)
 
 
+def test_disabled_patch_is_a_true_source_model_baseline():
+    model = _ToyLM()
+    original_layers = {name: layer for name, layer in model.named_modules()
+                       if isinstance(layer, nn.Linear)}
+    returned = patch_model(
+        model, PatchConfig(quant=_qcfg(), enabled=False, rotation="fwht"))
+    assert returned is model
+    assert all(dict(model.named_modules())[name] is layer
+               for name, layer in original_layers.items())
+    assert not any(isinstance(layer, QuantLinear) for layer in model.modules())
+
+
 # --------------------------------------------------------------------------- #
 # partial-group scales
 # --------------------------------------------------------------------------- #
@@ -173,6 +272,15 @@ def test_partial_group_quantize_roundtrip():
         assert deq.shape == w.shape
         rel = (w - deq).pow(2).sum() / w.pow(2).sum()
         assert rel < 0.02, f"scale={scale}: partial-group path degraded ({rel:.4f})"
+
+
+def test_partial_group_bit_budget_matches_stored_bytes():
+    torch.manual_seed(0)
+    w = torch.randn(3, 130)  # two scale groups, with a 2-weight final group
+    qw = Quantizer(QuantConfig(bits=3, scale="rms", group_size=128)).quantize_weight(w)
+    qlin = QuantLinear(qw, act_rotation=Identity(130))
+    assert qw.bit_budget().bits_per_weight == \
+        qlin.packed_state_bytes() * 8 / w.numel()
 
 
 # --------------------------------------------------------------------------- #
@@ -203,6 +311,17 @@ def test_scales_stored_at_claimed_precision():
             == 2 * qw32.scales.numel())
 
 
+def test_unimplemented_scale_precision_is_rejected():
+    with pytest.raises(ValueError, match="scale_bits must be 16 or 32"):
+        QuantConfig(scale_bits=8.0)
+
+
+@pytest.mark.parametrize("value", ["gptqq", "Residual", ""])
+def test_unknown_error_comp_is_rejected(value):
+    with pytest.raises(ValueError, match="unknown error compensation"):
+        QuantConfig(error_comp=value)
+
+
 def test_zero_group_scales_survive_fp16_floor():
     # An all-zero input group must not underflow the fp16 scale to 0 -> NaN.
     w = torch.zeros(4, 64)
@@ -211,6 +330,80 @@ def test_zero_group_scales_survive_fp16_floor():
     deq = qw.dequantize()
     assert torch.isfinite(deq).all()
     assert torch.allclose(deq[:, 32:], torch.zeros(4, 32), atol=1e-3)
+
+
+def test_explicit_scale_override_is_validated_and_stored_exactly():
+    cfg = QuantConfig(bits=3, group_size=4, scale="rms")
+    weight = torch.randn(3, 7)
+    scales = torch.full((3, 2), 0.375, dtype=torch.float32)
+    qw = Quantizer(cfg).quantize_weight(weight, scales_override=scales)
+    assert torch.equal(qw.scales, scales.to(torch.float16))
+
+    with pytest.raises(ValueError, match="shape"):
+        Quantizer(cfg).quantize_weight(
+            weight, scales_override=torch.ones(3, 1))
+    with pytest.raises(ValueError, match="finite and positive"):
+        Quantizer(cfg).quantize_weight(
+            weight, scales_override=torch.zeros(3, 2))
+
+
+def test_quantlinear_scale_finetuning_commits_without_storage_growth():
+    torch.manual_seed(9)
+    linear = nn.Linear(8, 4)
+    qlinear = QuantLinear.from_linear(
+        linear, QuantConfig(bits=3, group_size=4), fallback=True,
+        fallback_dtype=torch.float32)
+    packed_before = qlinear.qweight.packed.data.clone()
+    bytes_before = qlinear.packed_state_bytes()
+    scales_before = qlinear.qweight.scales.clone()
+
+    parameter = qlinear.enable_scale_finetuning(0.5, 1.5)
+    output = qlinear(torch.randn(2, 8)).pow(2).mean()
+    output.backward()
+    assert parameter.grad is not None and torch.isfinite(parameter.grad).all()
+    with torch.no_grad():
+        parameter.add_(0.1)
+    qlinear.commit_scale_finetuning()
+
+    assert qlinear._log_scale_multiplier is None
+    assert torch.equal(qlinear.qweight.packed.data, packed_before)
+    assert not torch.equal(qlinear.qweight.scales, scales_before)
+    assert qlinear.qweight.scales.dtype == torch.float16
+    assert qlinear.packed_state_bytes() == bytes_before
+    assert torch.isfinite(qlinear(torch.randn(2, 8))).all()
+
+
+def test_quantlinear_lora_is_zero_initialized_and_fully_accounted():
+    torch.manual_seed(10)
+    linear = nn.Linear(8, 4)
+    qlinear = QuantLinear.from_linear(
+        linear, QuantConfig(bits=3, group_size=4), fallback=True,
+        fallback_dtype=torch.float32)
+    inputs = torch.randn(3, 8)
+    baseline = qlinear(inputs).detach()
+    packed_bytes = qlinear.packed_state_bytes()
+    lora_a, lora_b = qlinear.enable_lora(rank=2, alpha=4.0)
+    assert torch.equal(qlinear(inputs), baseline)
+
+    qlinear(inputs).pow(2).mean().backward()
+    assert lora_b.grad is not None and torch.isfinite(lora_b.grad).all()
+    with torch.no_grad():
+        lora_b.add_(0.01)
+    assert not torch.equal(qlinear(inputs), baseline)
+    qlinear.commit_lora()
+
+    expected_adapter_bytes = 2 * (2 * 8 + 4 * 2)
+    assert lora_a.dtype == torch.float16 and lora_b.dtype == torch.float16
+    assert qlinear.adapter_state_bytes() == expected_adapter_bytes
+    assert qlinear.packed_state_bytes() == packed_bytes
+
+    wrapper = nn.Sequential(qlinear)
+    metrics = run_experiment.footprint_metrics(wrapper, {})
+    assert metrics["adapter_parameter_bytes"] == expected_adapter_bytes
+    assert (metrics["packed_plus_auxiliary_bytes"]
+            == metrics["packed_weight_bytes"]
+            + metrics["rotation_parameter_bytes"]
+            + expected_adapter_bytes)
 
 
 def test_footprint_bpw_is_size_weighted():
@@ -266,6 +459,13 @@ def test_fallback_cache_follows_dtype_moves():
     assert m.q_proj._fp_cache.dtype == torch.float16
     y = m(torch.randn(2, 64).half())
     assert torch.isfinite(y).all()
+
+
+def test_fallback_cache_starts_in_source_weight_dtype():
+    linear = nn.Linear(64, 32, bias=False).half()
+    qlin = QuantLinear.from_linear(linear, _qcfg(), fallback=True)
+    assert qlin._fp_cache.dtype == torch.float16
+    assert qlin._fp_cache.element_size() == 2
 
 
 def test_codebook_cache_shared():

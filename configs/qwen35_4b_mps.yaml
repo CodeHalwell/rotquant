@@ -1,0 +1,36 @@
+# Qwen3.5-4B text-backbone quality trial on Apple Silicon.
+#
+# The checkpoint is a unified image/text model, so it must be loaded through
+# AutoModelForMultimodalLM. This first experiment evaluates text perplexity and
+# quantises only decoder-block linears: the vision tower, tied LM head, and the
+# tiny recurrent-state gate projections remain in their source precision.
+#
+# First establish the matched source reference:
+#   uv run python scripts/run_experiment.py configs/qwen35_4b_mps.yaml \
+#     --set patch.enabled=false
+# Then run this file unchanged for the FWHT 3-bit trial. Increase
+# eval.ppl.max_samples only after both paths complete successfully.
+experiment: QWEN35
+label: qwen35_4b_fwht_3bit_mps
+model: unsloth/Qwen3.5-4B
+model_loader: multimodal_lm
+device: mps
+dtype: float16
+seed: 0
+quant:
+  bits: 3
+  codebook: gaussian
+  scale: mse_search
+  group_size: 128
+  error_comp: none
+patch:
+  rotation: fwht
+  block: 128
+  mode: consistent
+  include: [model.language_model.layers.]
+  exclude: [linear_attn.in_proj_a, linear_attn.in_proj_b]
+eval:
+  perplexity: true
+  ppl_datasets: [wikitext2]
+  ppl: {seq_len: 128, max_samples: 4}
+  zeroshot: false

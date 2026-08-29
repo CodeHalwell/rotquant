@@ -1,0 +1,51 @@
+# E1g: quantization-aware low-rank recovery after E1e block calibration.
+# This is matched to E1f except for rank-4 adapters on packed linears. Adapters
+# operate in each layer's deployed rotated basis, begin with exactly zero output,
+# and are retained in fp16 only when the global held-out gate accepts them.
+experiment: E1G
+label: e1g_lora_qat_3bit
+calib_seq_len: 128
+quant: {bits: 3, codebook: gaussian, scale: mse_search, group_size: 128, error_comp: none}
+patch:
+  rotation: butterfly
+  block: 128
+  mode: consistent
+  train_rotation:
+    objective: block
+    steps: 12
+    lr: 0.0015
+    train_batches: 2
+    validation_batches: 2
+    selection_batches: 2
+    learn_scales: true
+    scale_lr: 0.01
+    scale_multiplier_min: 0.5
+    scale_multiplier_max: 1.5
+    propagate_quantized_inputs: true
+    max_grad_norm: 1.0
+    restore_best: true
+    early_stopping_patience: 4
+    validation_min_improvement: 0.001
+    selection_min_improvement: 0.005
+    distill_steps: 12
+    distill_lr: 0.0002
+    distill_scale_lr: 0.005
+    distill_train_batches: 2
+    distill_validation_batches: 1
+    distill_selection_batches: 1
+    distill_temperature: 2.0
+    distill_kl_weight: 1.0
+    distill_ce_weight: 0.1
+    distill_angle_l2: 0.0001
+    distill_max_grad_norm: 1.0
+    distill_early_stopping_patience: 4
+    distill_validation_min_improvement: 0.0
+    distill_selection_min_improvement: 0.001
+    distill_scale_multiplier_min: 0.8
+    distill_scale_multiplier_max: 1.25
+    distill_lora_rank: 4
+    distill_lora_alpha: 8.0
+    distill_lora_lr: 0.001
+    distill_train_rotations: false
+    distill_train_scales: false
+eval: {perplexity: true, ppl_datasets: [wikitext2, c4], zeroshot: true}

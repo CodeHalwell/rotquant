@@ -1,0 +1,72 @@
+# Qwen3.5-4B 4-bit RotQuant + rank-4 LoRA-QAT quality recovery on CUDA.
+#
+# This is the Qwen-specific counterpart of E1g. It keeps the vision tower,
+# tied output head, and the small recurrent-state gate projections in source
+# precision. The cached fallback intentionally spends GPU memory to make the
+# calibration/training loop practical; it is not a packed-memory benchmark.
+experiment: QWEN35_LORA_QAT
+label: qwen35_4b_lora_qat_4bit_cuda
+model: unsloth/Qwen3.5-4B
+model_loader: multimodal_lm
+device: cuda
+dtype: float16
+seed: 0
+calib_seq_len: 128
+quant:
+  bits: 4
+  codebook: gaussian
+  scale: mse_search
+  group_size: 128
+  error_comp: none
+patch:
+  rotation: butterfly
+  block: 128
+  mode: consistent
+  include: [model.language_model.layers.]
+  exclude: [linear_attn.in_proj_a, linear_attn.in_proj_b]
+  # Quality-training acceleration only. QuantLinear retains a dequantized fp16
+  # cache as well as packed codes, so do not interpret peak VRAM as deployment.
+  fallback: true
+  train_rotation:
+    objective: block
+    steps: 12
+    lr: 0.0015
+    train_batches: 2
+    validation_batches: 2
+    selection_batches: 2
+    learn_scales: true
+    scale_lr: 0.01
+    scale_multiplier_min: 0.5
+    scale_multiplier_max: 1.5
+    propagate_quantized_inputs: true
+    max_grad_norm: 1.0
+    restore_best: true
+    early_stopping_patience: 4
+    validation_min_improvement: 0.001
+    selection_min_improvement: 0.005
+    distill_steps: 12
+    distill_lr: 0.0002
+    distill_scale_lr: 0.005
+    distill_train_batches: 2
+    distill_validation_batches: 1
+    distill_selection_batches: 1
+    distill_temperature: 2.0
+    distill_kl_weight: 1.0
+    distill_ce_weight: 0.1
+    distill_angle_l2: 0.0001
+    distill_max_grad_norm: 1.0
+    distill_early_stopping_patience: 4
+    distill_validation_min_improvement: 0.0
+    distill_selection_min_improvement: 0.001
+    distill_scale_multiplier_min: 0.8
+    distill_scale_multiplier_max: 1.25
+    distill_lora_rank: 4
+    distill_lora_alpha: 8.0
+    distill_lora_lr: 0.001
+    distill_train_rotations: false
+    distill_train_scales: false
+eval:
+  perplexity: true
+  ppl_datasets: [wikitext2]
+  ppl: {seq_len: 256, max_samples: 32}
+  zeroshot: false

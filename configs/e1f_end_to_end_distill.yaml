@@ -1,0 +1,47 @@
+# E1f: end-to-end quantized-model distillation after propagation-aware block
+# calibration. The 3-bit code indices stay fixed. Only retained butterfly angles
+# and already-budgeted fp16 group scales are optimized against source-model
+# logits plus a small next-token language-model loss. Three additional disjoint
+# C4 splits handle training, checkpoint validation, and final acceptance.
+experiment: E1F
+label: e1f_end_to_end_distilled_3bit
+calib_seq_len: 128
+quant: {bits: 3, codebook: gaussian, scale: mse_search, group_size: 128, error_comp: none}
+patch:
+  rotation: butterfly
+  block: 128
+  mode: consistent
+  train_rotation:
+    objective: block
+    steps: 12
+    lr: 0.0015
+    train_batches: 2
+    validation_batches: 2
+    selection_batches: 2
+    learn_scales: true
+    scale_lr: 0.01
+    scale_multiplier_min: 0.5
+    scale_multiplier_max: 1.5
+    propagate_quantized_inputs: true
+    max_grad_norm: 1.0
+    restore_best: true
+    early_stopping_patience: 4
+    validation_min_improvement: 0.001
+    selection_min_improvement: 0.005
+    distill_steps: 6
+    distill_lr: 0.0002
+    distill_scale_lr: 0.005
+    distill_train_batches: 2
+    distill_validation_batches: 1
+    distill_selection_batches: 1
+    distill_temperature: 2.0
+    distill_kl_weight: 1.0
+    distill_ce_weight: 0.1
+    distill_angle_l2: 0.0001
+    distill_max_grad_norm: 1.0
+    distill_early_stopping_patience: 3
+    distill_validation_min_improvement: 0.001
+    distill_selection_min_improvement: 0.001
+    distill_scale_multiplier_min: 0.8
+    distill_scale_multiplier_max: 1.25
+eval: {perplexity: true, ppl_datasets: [wikitext2, c4], zeroshot: true}

@@ -52,7 +52,10 @@ def perplexity(model, tokenizer, dataset: str = "wikitext2",
     stride = config.stride or seq_len
 
     text = _load_text(dataset)
-    enc = tokenizer(text, return_tensors="pt").input_ids.to(device)
+    # The full corpus is intentionally tokenized before it is split into model-sized
+    # windows. Suppress the tokenizer's misleading max-length warning: no oversized
+    # sequence is ever passed to the model.
+    enc = tokenizer(text, return_tensors="pt", verbose=False).input_ids.to(device)
     n_tokens = enc.shape[1]
 
     nlls, total = [], 0

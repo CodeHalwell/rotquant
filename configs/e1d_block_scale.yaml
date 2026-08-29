@@ -1,0 +1,30 @@
+# E1d: joint transformer-block rotation and scale/clipping calibration.
+# Group-scale multipliers start at the exact mse_search solution, are optimized
+# with the butterfly angles, and replace the already-budgeted fp16 group scales
+# in accepted packed blocks. Training, checkpoint validation, and the final
+# exact packed-vs-FWHT gate use disjoint C4 sequences.
+experiment: E1D
+label: e1d_block_butterfly_scale_3bit
+calib_seq_len: 128
+quant: {bits: 3, codebook: gaussian, scale: mse_search, group_size: 128, error_comp: none}
+patch:
+  rotation: butterfly
+  block: 128
+  mode: consistent
+  train_rotation:
+    objective: block
+    steps: 12
+    lr: 0.0015
+    train_batches: 2
+    validation_batches: 2
+    selection_batches: 2
+    learn_scales: true
+    scale_lr: 0.01
+    scale_multiplier_min: 0.5
+    scale_multiplier_max: 1.5
+    max_grad_norm: 1.0
+    restore_best: true
+    early_stopping_patience: 4
+    validation_min_improvement: 0.001
+    selection_min_improvement: 0.005
+eval: {perplexity: true, ppl_datasets: [wikitext2, c4], zeroshot: true}

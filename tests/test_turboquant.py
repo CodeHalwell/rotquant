@@ -2,13 +2,13 @@
 
 Covers:
   - turboquant_mse_bound theoretical formula
-  - scale="turboquant" produces scales=None and no per-group metadata
+  - scale="turboquant" produces one scale per output row
   - error_comp="turboquant" populates sketch fields
   - _generate_sketch_matrix is deterministic and has JL norm-preservation property
-  - dequantize() works correctly when scales=None
-  - bit_budget() reports 0 scale overhead when scales=None
+  - dequantize() expands per-row scales correctly
+  - bit_budget() reports reduced per-row scale overhead
   - QuantLinear forward pass applies QJL correction (output changes + shape correct)
-  - packed_state_bytes() counts sketch bytes and skips scales when None
+  - packed_state_bytes() counts sketch and per-row scale bytes
 """
 from __future__ import annotations
 
