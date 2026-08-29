@@ -144,6 +144,7 @@ remain explicitly quality-only.
 | 2026-08-29 | Held-out dynamic K/V rate allocation | Unit suite plus real runner smoke with disjoint selection/eval batches | Passed: exact 6.0 effective bpv target, logical cache 4096 -> 768 bytes, top-1 1.0, KL 1.24e-6 |
 | 2026-08-29 | Direct prefill K/V NMSE and whole-system CUDA matrix | 131 tests; 98 parsed weight/KV configurations; 47-cell nbformat/AST validation | Structurally passed; Qwen CUDA execution pending |
 | 2026-08-29 | Strict frozen K/V recipes and cross-context transfer notebook | 134 tests; ruff; 33-cell nbformat/AST validation | Structurally passed; six Qwen CUDA transfer trials pending |
+| 2026-08-29 | Frozen mixed-context K/V transfer and joint-matrix promotion | Exact 3.25-bpv replay; short/long held-out KL; updated 47-cell joint notebook validation | Passed: universal mixed map selected; whole-system CUDA execution pending |
 
 The first frozen replay used an intentionally strict 1% KL-only gate. Exact
 recipe storage reproduced at 3.25 bpv in both contexts; short KL drifted 0.61%
@@ -250,6 +251,27 @@ long-context selection data, so it validates the allocation method at long
 context but does not yet prove that one frozen 256-token recipe transfers to
 1,024 tokens. A frozen-recipe cross-context trial is required before choosing a
 single deployment map.
+
+### Qwen3.5-4B frozen K/V transfer result
+
+The frozen transfer run at Git SHA `49d3cf1182f0` replayed both context-specific
+recipes at exactly 3.25 bpv and then evaluated the short, long, and mixed maps on
+both held-out contexts. Replay KL drift was 0.61% at 256 tokens and 1.04% at
+1,024 tokens; exact storage matched and both passed the multi-metric replay gate.
+
+| Frozen map | 256-token KL | 1,024-token KL | Worst regret vs replayed context optimum |
+|---|---:|---:|---:|
+| Short-context map | 0.445652 | 1.430826 | +5.28% |
+| Long-context map | 0.496695 | 1.359091 | +11.45% |
+| Mixed-context map | **0.435155** | 1.376698 | **+1.30%** |
+| Uniform K3/V3 | 0.572441 | 1.540281 | n/a |
+
+At identical 3.25-bpv storage, the mixed map reduced KL by 24.0% relative to
+uniform K3/V3 at 256 tokens and by 10.6% at 1,024 tokens. It improved on the
+replayed short-specific map by 2.36% and trailed the replayed long-specific map
+by only 1.30%. Decision: promote the saved mixed recipe as the universal frozen
+K/V candidate in the whole-system weight-plus-cache matrix, while retaining
+dynamic per-weight allocation as an ablation.
 
 ## Native K/V cache benchmark notes
 
