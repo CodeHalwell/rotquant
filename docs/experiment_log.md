@@ -167,6 +167,36 @@ controls, dynamic trials, source controls, and long-context confirmation. A
 regression test requires uniform 8-bit and a dynamic allocator restricted to
 8-bit to produce identical held-out metrics.
 
+### Corrected Qwen3.5-4B seed-0 K/V matrix
+
+The rerun with matched held-out C4 calls passed both endpoint equivalence
+checks: dynamic 2.25 bpv exactly reproduced uniform K2/V2, and dynamic 8.25 bpv
+exactly reproduced uniform K8/V8. This confirms that the corrected uniform and
+dynamic paths used the same evaluation calls and equivalent deployed recipes.
+
+On fixed 4-bit FWHT RotQuant weights, dynamic 3.25 bpv was the seed-0 winner:
+
+| Cache recipe | Effective bpv | KL | Cosine | Top-1 | NLL delta |
+|---|---:|---:|---:|---:|---:|
+| Uniform K2/V2 | 2.25 | 0.575244 | 0.909170 | 0.718750 | +0.1134 |
+| Uniform K2/V3 | 2.75 | 0.538010 | 0.916070 | 0.718750 | +0.0669 |
+| Uniform K2/V4 | 3.25 | 0.517738 | 0.918358 | 0.703125 | +0.0727 |
+| Dynamic mixed K/V | 3.25 | **0.448988** | **0.920411** | **0.750000** | **+0.0612** |
+| Uniform K4/V4 | 4.25 | 0.548273 | 0.916469 | 0.718750 | +0.0413 |
+| Dynamic mixed K/V | 4.188 | 0.457670 | 0.919841 | 0.734375 | +0.0850 |
+
+At the exact 3.25-bpv budget, dynamic allocation reduced KL by 13.3% relative
+to the best same-size uniform recipe, K2/V4. It also used fewer bytes and lower
+KL than every higher dynamic budget in this seed. The source-weight control
+improved from KL 0.8618 with uniform K4/V4 to 0.7186 with dynamic allocation at
+the same 4.25-bpv budget.
+
+Uniform and NF cache codebooks at K4/V4 improved KL and top-1 agreement over
+the Gaussian cache codebook, but increased held-out NLL delta substantially.
+This is a real multi-objective tradeoff rather than an unconditional codebook
+win. Decision: promote dynamic 3.25 bpv to seeds 1/2 and 1,024-token validation;
+do not spend more cache bits unless those checks overturn the seed-0 frontier.
+
 ## Native K/V cache benchmark notes
 
 Command family:
