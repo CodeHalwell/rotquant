@@ -69,12 +69,31 @@ def test_simulated_cache_packs_only_kv_and_quantizes_new_writes():
 
     assert metrics["kv_layers"] == 1
     assert metrics["packed_kv_bytes"] < metrics["source_kv_bytes"]
+    assert metrics["prefill_key_nmse"] > 0
+    assert metrics["prefill_value_nmse"] > 0
+    assert metrics["prefill_kv_nmse"] > 0
     assert metrics["non_kv_state_bytes"] > 0
     assert simulated.layers[0].keys.shape == source.layers[0].keys.shape
     new_keys, new_values = _states(torch.tensor([[7]]))
     simulated.update(new_keys, new_values, 0)
     assert simulated.layers[0].keys.shape[-2] == 7
     assert source.layers[0].keys.shape[-2] == 6
+
+
+def test_prefill_reconstruction_nmse_improves_with_precision():
+    ids = torch.arange(1, 33).reshape(1, -1)
+    keys, values = _states(ids)
+    four_bit = simulate_packed_kv_cache(
+        _Cache(keys, values),
+        KVQuantConfig(bits=4, group_size=4, rotation_block=8),
+    )[1]
+    eight_bit = simulate_packed_kv_cache(
+        _Cache(keys, values),
+        KVQuantConfig(bits=8, group_size=4, rotation_block=8),
+    )[1]
+
+    assert eight_bit["prefill_key_nmse"] < four_bit["prefill_key_nmse"]
+    assert eight_bit["prefill_value_nmse"] < four_bit["prefill_value_nmse"]
 
 
 def test_end_to_end_cache_eval_reports_global_quality_and_bytes():

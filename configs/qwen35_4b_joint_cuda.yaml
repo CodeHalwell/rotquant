@@ -1,0 +1,50 @@
+# Qwen3.5-4B whole-system co-design baseline: RotQuant weights plus KV cache.
+# The Colab matrix overrides weight and cache recipes around this fixed protocol.
+# Cached fallback is for CUDA quality experiments only, never throughput/VRAM claims.
+experiment: QWEN35_JOINT
+label: qwen35_joint_rotquant_kv_cuda
+model: unsloth/Qwen3.5-4B
+model_loader: multimodal_lm
+device: cuda
+dtype: float16
+seed: 0
+calib_seq_len: 128
+rotation_n_calib: 1
+quant:
+  bits: 4
+  codebook: gaussian
+  scale: mse_search
+  group_size: 128
+  error_comp: none
+patch:
+  rotation: fwht
+  block: 128
+  mode: consistent
+  fallback: true
+  include: [model.language_model.layers.]
+  exclude: [linear_attn.in_proj_a, linear_attn.in_proj_b]
+eval:
+  perplexity: true
+  ppl_datasets: [wikitext2]
+  ppl:
+    seq_len: 256
+    max_samples: 64
+  zeroshot: false
+  trajectory:
+    batches: 2
+    prompt_len: 64
+    new_tokens: 16
+    skip: 2048
+    use_cache: true
+  kv_cache:
+    bits: 4
+    key_bits: 4
+    value_bits: 4
+    group_size: 64
+    codebook: gaussian
+    rotation_block: 128
+    batches: 4
+    eval_offset_batches: 4
+    prompt_len: 256
+    continuation_len: 16
+    skip: 384

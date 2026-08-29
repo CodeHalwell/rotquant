@@ -159,6 +159,10 @@ def simulate_packed_kv_cache(
     value_elements = 0
     key_code_bits = 0
     value_code_bits = 0
+    key_squared_error = 0.0
+    value_squared_error = 0.0
+    key_signal_energy = 0.0
+    value_signal_energy = 0.0
     packed_kv_bytes = 0
     rotations: dict[int, tuple[Any, Any]] = {}
     n_kv_layers = 0
@@ -181,8 +185,16 @@ def simulate_packed_kv_cache(
         packed_keys = quantize_kv(keys, key_rotation, layer_config)
         packed_values = quantize_kv(
             values, value_rotation, layer_config, value=True)
-        layer.keys = _reconstruct(packed_keys, keys)
-        layer.values = _reconstruct(packed_values, values)
+        reconstructed_keys = _reconstruct(packed_keys, keys)
+        reconstructed_values = _reconstruct(packed_values, values)
+        key_squared_error += float((
+            reconstructed_keys.float() - keys.float()).square().sum().item())
+        value_squared_error += float((
+            reconstructed_values.float() - values.float()).square().sum().item())
+        key_signal_energy += float(keys.float().square().sum().item())
+        value_signal_energy += float(values.float().square().sum().item())
+        layer.keys = reconstructed_keys
+        layer.values = reconstructed_values
         rotations[layer_idx] = (key_rotation, value_rotation)
         source_kv_bytes += keys.numel() * keys.element_size()
         source_kv_bytes += values.numel() * values.element_size()
@@ -226,6 +238,12 @@ def simulate_packed_kv_cache(
         "packed_kv_bytes": packed_kv_bytes,
         "kv_compression_ratio": source_kv_bytes / max(packed_kv_bytes, 1),
         "effective_kv_bpv": packed_kv_bytes * 8 / max(source_kv_elements, 1),
+        "prefill_key_nmse": key_squared_error / max(key_signal_energy, 1e-12),
+        "prefill_value_nmse": (
+            value_squared_error / max(value_signal_energy, 1e-12)),
+        "prefill_kv_nmse": (
+            (key_squared_error + value_squared_error)
+            / max(key_signal_energy + value_signal_energy, 1e-12)),
         "non_kv_state_bytes": non_kv_state_bytes,
         "source_total_cache_bytes": source_total_bytes,
         "deployed_total_cache_bytes": deployed_total_bytes,

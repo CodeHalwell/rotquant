@@ -187,6 +187,15 @@ pairs plus codebook/group/rotation/dynamic-budget ablations, persists every
 trial to Drive, validates Pareto candidates across three seeds, and confirms the
 3-bit- and 4-bit-budget winners at 1,024-token context.
 
+For whole-system co-design, open
+[`notebooks/qwen35_4b_joint_rotquant_kv_colab.ipynb`](notebooks/qwen35_4b_joint_rotquant_kv_colab.ipynb).
+It screens uniform and mixed 2/3/4/8-bit weight recipes, crosses the viable
+weights with asymmetric and dynamic K/V budgets, optionally applies block-scale
+and LoRA-QAT recovery, and validates the joint model-plus-cache Pareto winners
+over three seeds and a 1,024-token prefill. Direct K/V reconstruction NMSE is
+reported alongside end-to-end KL to distinguish error cancellation from a
+quantizer-quality problem.
+
 For CUDA LoRA-QAT quality recovery, open
 [`notebooks/qwen35_4b_lora_qat_colab.ipynb`](notebooks/qwen35_4b_lora_qat_colab.ipynb)
 in Colab. It checks the GPU, establishes a matched CUDA source baseline, runs a
