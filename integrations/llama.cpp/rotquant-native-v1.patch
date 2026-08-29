@@ -1,0 +1,887 @@
+diff --git a/ggml/src/ggml-metal/CMakeLists.txt b/ggml/src/ggml-metal/CMakeLists.txt
+index 140c5d809..7cae9f42e 100644
+--- a/ggml/src/ggml-metal/CMakeLists.txt
++++ b/ggml/src/ggml-metal/CMakeLists.txt
+@@ -33,6 +33,7 @@ set(METALLIB_KERNEL_SOURCES
+     kernels/fa.metal
+     kernels/mul_mv.metal
+     kernels/mul_mm.metal
++    kernels/rotquant.metal
+     kernels/quantize.metal
+     kernels/softmax.metal
+     kernels/norm.metal
+diff --git a/ggml/src/ggml-metal/ggml-metal-device.cpp b/ggml/src/ggml-metal/ggml-metal-device.cpp
+index a82caa5e4..c0c57a944 100644
+--- a/ggml/src/ggml-metal/ggml-metal-device.cpp
++++ b/ggml/src/ggml-metal/ggml-metal-device.cpp
+@@ -1334,6 +1334,28 @@ ggml_metal_pipeline_with_params ggml_metal_library_get_pipeline_fwht(ggml_metal_
+     return res;
+ }
+
++ggml_metal_pipeline_with_params ggml_metal_library_get_pipeline_rotquant_rotate(
++        ggml_metal_library_t lib, enum ggml_type type) {
++    char base[256];
++    snprintf(base, sizeof(base), "kernel_rotquant_rotate_%s", ggml_type_name(type));
++
++    ggml_metal_pipeline_with_params res = ggml_metal_library_get_pipeline(lib, base);
++    if (!res.pipeline) {
++        res = ggml_metal_library_compile_pipeline(lib, base, base, nullptr);
++    }
++    return res;
++}
++
++ggml_metal_pipeline_with_params ggml_metal_library_get_pipeline_rotquant_mul_mv(
++        ggml_metal_library_t lib) {
++    const char * name = "kernel_rotquant_mul_mv_f32";
++    ggml_metal_pipeline_with_params res = ggml_metal_library_get_pipeline(lib, name);
++    if (!res.pipeline) {
++        res = ggml_metal_library_compile_pipeline(lib, name, name, nullptr);
++    }
++    return res;
++}
++
+ // note: reuse the argsort kernel for top_k
+ ggml_metal_pipeline_with_params ggml_metal_library_get_pipeline_top_k(ggml_metal_library_t lib, const ggml_tensor * op) {
+     assert(op->op == GGML_OP_TOP_K);
+diff --git a/ggml/src/ggml-metal/ggml-metal-device.h b/ggml/src/ggml-metal/ggml-metal-device.h
+index 003b688db..398f58a98 100644
+--- a/ggml/src/ggml-metal/ggml-metal-device.h
++++ b/ggml/src/ggml-metal/ggml-metal-device.h
+@@ -144,6 +144,8 @@ struct ggml_metal_pipeline_with_params ggml_metal_library_get_pipeline_argmax
+ struct ggml_metal_pipeline_with_params ggml_metal_library_get_pipeline_argsort           (ggml_metal_library_t lib, const struct ggml_tensor * op);
+ struct ggml_metal_pipeline_with_params ggml_metal_library_get_pipeline_argsort_merge     (ggml_metal_library_t lib, const struct ggml_tensor * op);
+ struct ggml_metal_pipeline_with_params ggml_metal_library_get_pipeline_fwht              (ggml_metal_library_t lib, int n);
++struct ggml_metal_pipeline_with_params ggml_metal_library_get_pipeline_rotquant_rotate   (ggml_metal_library_t lib, enum ggml_type type);
++struct ggml_metal_pipeline_with_params ggml_metal_library_get_pipeline_rotquant_mul_mv   (ggml_metal_library_t lib);
+ struct ggml_metal_pipeline_with_params ggml_metal_library_get_pipeline_top_k             (ggml_metal_library_t lib, const struct ggml_tensor * op);
+ struct ggml_metal_pipeline_with_params ggml_metal_library_get_pipeline_top_k_merge       (ggml_metal_library_t lib, const struct ggml_tensor * op);
+ struct ggml_metal_pipeline_with_params ggml_metal_library_get_pipeline_bin               (ggml_metal_library_t lib, const struct ggml_tensor * op, int32_t n_fuse );
+diff --git a/ggml/src/ggml-metal/ggml-metal-device.m b/ggml/src/ggml-metal/ggml-metal-device.m
+index 41ce90dc8..c2e8463ec 100644
+--- a/ggml/src/ggml-metal/ggml-metal-device.m
++++ b/ggml/src/ggml-metal/ggml-metal-device.m
+@@ -22,6 +22,9 @@
+ #define GGML_METAL_HAS_RESIDENCY_SETS 1
+ #endif
+
++#define GGML_METAL_RQ_ROTATE_MAGIC ((uintptr_t) 0x5251524f54415445ULL)
++#define GGML_METAL_RQ_MUL_MAT_MAGIC ((uintptr_t) 0x52514d554c4d4154ULL)
++
+ // overload of MTLGPUFamilyMetalX (not available in some environments)
+ static const NSInteger MTLGPUFamilyMetal3_GGML = 5001;
+ static const NSInteger MTLGPUFamilyMetal4_GGML = 5002;
+@@ -108,6 +111,7 @@ int ggml_metal_pipeline_max_theads_per_threadgroup(struct ggml_metal_pipeline_wi
+     X(FA,              fa)             \
+     X(MUL_MV,          mul_mv)         \
+     X(MUL_MM,          mul_mm)         \
++    X(ROTQUANT,        rotquant)       \
+     X(QUANTIZE,        quantize)       \
+     X(SOFTMAX,         softmax)        \
+     X(NORM,            norm)           \
+@@ -1808,6 +1812,37 @@ bool ggml_metal_device_supports_op(ggml_metal_device_t dev, const struct ggml_te
+         case GGML_OP_OPT_STEP_ADAMW:
+         case GGML_OP_OPT_STEP_SGD:
+             return has_simdgroup_reduction;
++        case GGML_OP_CUSTOM:
++            {
++                const struct ggml_custom_op_params * params =
++                    (const struct ggml_custom_op_params *) op->op_params;
++                const uintptr_t magic = (uintptr_t) params->userdata;
++                if (magic == GGML_METAL_RQ_ROTATE_MAGIC) {
++                    const struct ggml_tensor * input = op->src[0];
++                    const struct ggml_tensor * rotation = op->src[1];
++                    return input != NULL && rotation != NULL &&
++                        (input->type == GGML_TYPE_F32 || input->type == GGML_TYPE_F16 ||
++                         (has_bfloat && input->type == GGML_TYPE_BF16)) &&
++                        rotation->type == GGML_TYPE_F32 && op->type == GGML_TYPE_F32 &&
++                        input->ne[0] % 128 == 0 &&
++                        rotation->ne[0] == input->ne[0] + input->ne[0] / 2 * 7 &&
++                        ggml_is_contiguous_rows(input) && ggml_is_contiguous(rotation) &&
++                        ggml_is_contiguous_rows(op) && ggml_are_same_shape(input, op);
++                }
++                if (magic == GGML_METAL_RQ_MUL_MAT_MAGIC) {
++                    const struct ggml_tensor * qweight = op->src[0];
++                    const struct ggml_tensor * input = op->src[1];
++                    return has_simdgroup_reduction && qweight != NULL && input != NULL &&
++                        qweight->type == GGML_TYPE_I8 && input->type == GGML_TYPE_F32 &&
++                        op->type == GGML_TYPE_F32 && input->ne[0] % 128 == 0 &&
++                        qweight->ne[0] == input->ne[0] / 128 * 66 &&
++                        qweight->ne[1] == op->ne[0] && input->ne[1] == op->ne[1] &&
++                        input->ne[2] == op->ne[2] && input->ne[3] == op->ne[3] &&
++                        ggml_is_contiguous_rows(qweight) && ggml_is_contiguous_rows(input) &&
++                        ggml_is_contiguous_rows(op);
++                }
++                return false;
++            }
+         default:
+             return false;
+     }
+diff --git a/ggml/src/ggml-metal/ggml-metal-impl.h b/ggml/src/ggml-metal/ggml-metal-impl.h
+index 49102afe9..187dfd2b9 100644
+--- a/ggml/src/ggml-metal/ggml-metal-impl.h
++++ b/ggml/src/ggml-metal/ggml-metal-impl.h
+@@ -1193,6 +1193,34 @@ typedef struct {
+     int32_t nrows;
+ } ggml_metal_kargs_fwht;
+
++typedef struct {
++    int64_t  n_embd;
++    int64_t  n_rows;
++    int64_t  ne01;
++    int64_t  ne02;
++    uint64_t nb01;
++    uint64_t nb02;
++    uint64_t nb03;
++    uint64_t nb1;
++    uint64_t nb2;
++    uint64_t nb3;
++} ggml_metal_kargs_rotquant_rotate;
++
++typedef struct {
++    int64_t  n_embd;
++    int64_t  n_outputs;
++    int64_t  n_rows;
++    int64_t  ne11;
++    int64_t  ne12;
++    uint64_t nb01;
++    uint64_t nb11;
++    uint64_t nb12;
++    uint64_t nb13;
++    uint64_t nb1;
++    uint64_t nb2;
++    uint64_t nb3;
++} ggml_metal_kargs_rotquant_mul_mv;
++
+ typedef struct {
+     int64_t  ne0;
+     float    start;
+diff --git a/ggml/src/ggml-metal/ggml-metal-ops.cpp b/ggml/src/ggml-metal/ggml-metal-ops.cpp
+index f6f2fdc86..281c768b7 100644
+--- a/ggml/src/ggml-metal/ggml-metal-ops.cpp
++++ b/ggml/src/ggml-metal/ggml-metal-ops.cpp
+@@ -14,6 +14,9 @@
+ #include <limits>
+ #include <cmath>
+
++#define GGML_METAL_RQ_ROTATE_MAGIC ((uintptr_t) 0x5251524f54415445ULL)
++#define GGML_METAL_RQ_MUL_MAT_MAGIC ((uintptr_t) 0x52514d554c4d4154ULL)
++
+ static ggml_metal_buffer_id ggml_metal_get_buffer_id(const ggml_tensor * t) {
+     if (!t) {
+         return { nullptr, 0 };
+@@ -496,6 +499,10 @@ static int ggml_metal_op_encode_impl(ggml_metal_op_t ctx, int idx) {
+             {
+                 n_fuse = ggml_metal_op_count_equal(ctx, idx);
+             } break;
++        case GGML_OP_CUSTOM:
++            {
++                n_fuse = ggml_metal_op_rotquant(ctx, idx);
++            } break;
+         default:
+             {
+                 GGML_LOG_ERROR("%s: error: node %3d, op = %8s not implemented\n", __func__, idx, ggml_op_name(node->op));
+@@ -2267,6 +2274,70 @@ int ggml_metal_op_fwht(ggml_metal_op_t ctx, int idx) {
+     return 1;
+ }
+
++int ggml_metal_op_rotquant(ggml_metal_op_t ctx, int idx) {
++    ggml_tensor * op = ctx->node(idx);
++    ggml_metal_library_t lib = ctx->lib;
++    ggml_metal_encoder_t enc = ctx->enc;
++
++    const ggml_custom_op_params * params =
++        reinterpret_cast<const ggml_custom_op_params *>(op->op_params);
++    const uintptr_t magic = reinterpret_cast<uintptr_t>(params->userdata);
++
++    if (magic == GGML_METAL_RQ_ROTATE_MAGIC) {
++        const ggml_tensor * input = op->src[0];
++        const ggml_tensor * rotation = op->src[1];
++        ggml_metal_kargs_rotquant_rotate args = {
++            /* .n_embd = */ input->ne[0],
++            /* .n_rows = */ ggml_nrows(input),
++            /* .ne01   = */ input->ne[1],
++            /* .ne02   = */ input->ne[2],
++            /* .nb01   = */ input->nb[1],
++            /* .nb02   = */ input->nb[2],
++            /* .nb03   = */ input->nb[3],
++            /* .nb1    = */ op->nb[1],
++            /* .nb2    = */ op->nb[2],
++            /* .nb3    = */ op->nb[3],
++        };
++        auto pipeline = ggml_metal_library_get_pipeline_rotquant_rotate(lib, input->type);
++        ggml_metal_encoder_set_pipeline(enc, pipeline);
++        ggml_metal_encoder_set_bytes(enc, &args, sizeof(args), 0);
++        ggml_metal_encoder_set_buffer(enc, ggml_metal_get_buffer_id(input),    1);
++        ggml_metal_encoder_set_buffer(enc, ggml_metal_get_buffer_id(rotation), 2);
++        ggml_metal_encoder_set_buffer(enc, ggml_metal_get_buffer_id(op),       3);
++        ggml_metal_encoder_dispatch_threadgroups(
++            enc, input->ne[0] / 128, ggml_nrows(input), 1, 128, 1, 1);
++        return 1;
++    }
++
++    GGML_ASSERT(magic == GGML_METAL_RQ_MUL_MAT_MAGIC);
++    const ggml_tensor * qweight = op->src[0];
++    const ggml_tensor * input = op->src[1];
++    ggml_metal_kargs_rotquant_mul_mv args = {
++        /* .n_embd   = */ input->ne[0],
++        /* .n_outputs= */ qweight->ne[1],
++        /* .n_rows   = */ ggml_nrows(input),
++        /* .ne11     = */ input->ne[1],
++        /* .ne12     = */ input->ne[2],
++        /* .nb01     = */ qweight->nb[1],
++        /* .nb11     = */ input->nb[1],
++        /* .nb12     = */ input->nb[2],
++        /* .nb13     = */ input->nb[3],
++        /* .nb1      = */ op->nb[1],
++        /* .nb2      = */ op->nb[2],
++        /* .nb3      = */ op->nb[3],
++    };
++    constexpr int64_t nsg = 4;
++    auto pipeline = ggml_metal_library_get_pipeline_rotquant_mul_mv(lib);
++    ggml_metal_encoder_set_pipeline(enc, pipeline);
++    ggml_metal_encoder_set_bytes(enc, &args, sizeof(args), 0);
++    ggml_metal_encoder_set_buffer(enc, ggml_metal_get_buffer_id(qweight), 1);
++    ggml_metal_encoder_set_buffer(enc, ggml_metal_get_buffer_id(input),   2);
++    ggml_metal_encoder_set_buffer(enc, ggml_metal_get_buffer_id(op),      3);
++    ggml_metal_encoder_dispatch_threadgroups(
++        enc, (qweight->ne[1] + nsg - 1) / nsg, ggml_nrows(input), 1, 32 * nsg, 1, 1);
++    return 1;
++}
++
+ int ggml_metal_op_pool_2d(ggml_metal_op_t ctx, int idx) {
+     ggml_tensor * op = ctx->node(idx);
+
+diff --git a/ggml/src/ggml-metal/ggml-metal-ops.h b/ggml/src/ggml-metal/ggml-metal-ops.h
+index 159a628d0..a495a3854 100644
+--- a/ggml/src/ggml-metal/ggml-metal-ops.h
++++ b/ggml/src/ggml-metal/ggml-metal-ops.h
+@@ -68,6 +68,7 @@ int ggml_metal_op_cpy               (ggml_metal_op_t ctx, int idx);
+ int ggml_metal_op_pool_1d           (ggml_metal_op_t ctx, int idx);
+ int ggml_metal_op_pool_2d           (ggml_metal_op_t ctx, int idx);
+ int ggml_metal_op_fwht              (ggml_metal_op_t ctx, int idx);
++int ggml_metal_op_rotquant          (ggml_metal_op_t ctx, int idx);
+ int ggml_metal_op_mul_mat           (ggml_metal_op_t ctx, int idx);
+ int ggml_metal_op_mul_mat_id        (ggml_metal_op_t ctx, int idx);
+ int ggml_metal_op_add_id            (ggml_metal_op_t ctx, int idx);
+diff --git a/ggml/src/ggml-metal/kernels/rotquant.metal b/ggml/src/ggml-metal/kernels/rotquant.metal
+new file mode 100644
+index 000000000..2e123dc00
+--- /dev/null
++++ b/ggml/src/ggml-metal/kernels/rotquant.metal
+@@ -0,0 +1,130 @@
++#include "common.h"
++
++constant float rotquant_codebook[16] = {
++    -2.7338738441467285f, -2.0704751014709473f,
++    -1.6195980310440063f, -1.2577794790267944f,
++    -0.9437850117683411f, -0.6579855084419250f,
++    -0.3889232873916626f, -0.1287587136030197f,
++     0.1286393851041794f,  0.3888039886951447f,
++     0.6578662991523743f,  0.9436659216880798f,
++     1.2576605081558228f,  1.6195257902145386f,
++     2.0704751014709473f,  2.7338738441467285f,
++};
++
++template<typename T>
++kernel void kernel_rotquant_rotate(
++        constant ggml_metal_kargs_rotquant_rotate & args,
++        device const char  * src_bytes,
++        device const float * rotation,
++        device       char  * dst_bytes,
++        uint3 tgpig [[threadgroup_position_in_grid]],
++        uint  tid   [[thread_index_in_threadgroup]]) {
++    constexpr uint block_size = 128;
++    constexpr uint stages = 7;
++
++    const int64_t block = tgpig.x;
++    const int64_t row = tgpig.y;
++    if (row >= args.n_rows || block * block_size >= args.n_embd) {
++        return;
++    }
++
++    int64_t r = row;
++    const int64_t i1 = r % args.ne01;
++    r /= args.ne01;
++    const int64_t i2 = r % args.ne02;
++    const int64_t i3 = r / args.ne02;
++
++    const device T * src = reinterpret_cast<device const T *>(
++        src_bytes + i1 * args.nb01 + i2 * args.nb02 + i3 * args.nb03);
++    device float * dst = reinterpret_cast<device float *>(
++        dst_bytes + i1 * args.nb1 + i2 * args.nb2 + i3 * args.nb3);
++
++    threadgroup float ping[block_size];
++    threadgroup float pong[block_size];
++    const int64_t element = block * block_size + tid;
++    ping[tid] = float(src[element]) * rotation[element];
++    threadgroup_barrier(mem_flags::mem_threadgroup);
++
++    for (uint stage = 0; stage < stages; ++stage) {
++        const uint step = 1u << stage;
++        const uint span = 2u * step;
++        const uint group = tid / span;
++        const uint within = tid % span;
++        const uint j = within % step;
++        const uint ia = group * span + j;
++        const uint ib = ia + step;
++        const uint pair = group * step + j;
++        const int64_t theta_index = args.n_embd
++            + (block * stages + stage) * (block_size / 2) + pair;
++        const float theta = rotation[theta_index];
++        const float c = cos(theta);
++        const float s = sin(theta);
++        const threadgroup float * in = (stage & 1u) ? pong : ping;
++        threadgroup float * out = (stage & 1u) ? ping : pong;
++        const float a = in[ia];
++        const float b = in[ib];
++        out[tid] = within < step ? c * a + s * b : s * a - c * b;
++        threadgroup_barrier(mem_flags::mem_threadgroup);
++    }
++
++    // Seven stages leave the result in pong.
++    dst[element] = pong[tid];
++}
++
++kernel void kernel_rotquant_mul_mv_f32(
++        constant ggml_metal_kargs_rotquant_mul_mv & args,
++        device const uchar * qweight,
++        device const char  * input_bytes,
++        device       char  * dst_bytes,
++        uint3  tgpig [[threadgroup_position_in_grid]],
++        ushort sgitg [[simdgroup_index_in_threadgroup]],
++        ushort lane  [[thread_index_in_simdgroup]],
++        ushort3 ntg  [[threads_per_threadgroup]]) {
++    const int64_t output = tgpig.x * (ntg.x / 32) + sgitg;
++    const int64_t row = tgpig.y;
++    if (output >= args.n_outputs || row >= args.n_rows) {
++        return;
++    }
++
++    int64_t r = row;
++    const int64_t i1 = r % args.ne11;
++    r /= args.ne11;
++    const int64_t i2 = r % args.ne12;
++    const int64_t i3 = r / args.ne12;
++
++    const device float * input = reinterpret_cast<device const float *>(
++        input_bytes + i1 * args.nb11 + i2 * args.nb12 + i3 * args.nb13);
++    device float * dst = reinterpret_cast<device float *>(
++        dst_bytes + i1 * args.nb1 + i2 * args.nb2 + i3 * args.nb3);
++    const device uchar * qrow = qweight + output * args.nb01;
++
++    constexpr int64_t group_size = 128;
++    constexpr int64_t code_bytes = 64;
++    constexpr int64_t block_bytes = 66;
++    const int64_t n_groups = args.n_embd / group_size;
++    float sum = 0.0f;
++    for (int64_t group = 0; group < n_groups; ++group) {
++        const device uchar * packed = qrow + group * block_bytes;
++        const float scale = float(*reinterpret_cast<device const half *>(packed));
++        const device uchar * codes = packed + 2;
++        const int64_t input_base = group * group_size;
++        for (int64_t j = lane; j < code_bytes; j += 32) {
++            const uchar pair = codes[j];
++            sum += scale * (
++                rotquant_codebook[pair & 0x0f] * input[input_base + 2*j] +
++                rotquant_codebook[pair >> 4]   * input[input_base + 2*j + 1]);
++        }
++    }
++
++    sum = simd_sum(sum);
++    if (lane == 0) {
++        dst[output] = sum;
++    }
++}
++
++typedef decltype(kernel_rotquant_rotate<float>) kernel_rotquant_rotate_t;
++template [[host_name("kernel_rotquant_rotate_f32")]] kernel kernel_rotquant_rotate_t kernel_rotquant_rotate<float>;
++template [[host_name("kernel_rotquant_rotate_f16")]] kernel kernel_rotquant_rotate_t kernel_rotquant_rotate<half>;
++#if defined(GGML_METAL_HAS_BF16)
++template [[host_name("kernel_rotquant_rotate_bf16")]] kernel kernel_rotquant_rotate_t kernel_rotquant_rotate<bfloat>;
++#endif
+diff --git a/src/CMakeLists.txt b/src/CMakeLists.txt
+index 8922dc12a..aed19e257 100644
+--- a/src/CMakeLists.txt
++++ b/src/CMakeLists.txt
+@@ -38,6 +38,7 @@ add_library(llama
+             llama-model-saver.cpp
+             llama-model.cpp
+             llama-quant.cpp
++            llama-rotquant.cpp
+             llama-sampler.cpp
+             llama-vocab.cpp
+             unicode-data.cpp
+diff --git a/src/llama-model-loader.cpp b/src/llama-model-loader.cpp
+index 1b1f852a0..5612ce3f1 100644
+--- a/src/llama-model-loader.cpp
++++ b/src/llama-model-loader.cpp
+@@ -1137,10 +1137,18 @@ struct ggml_tensor * llama_model_loader::create_tensor(
+             return nullptr;
+         }
+
++        const bool is_rotquant_raw = tn.suffix != nullptr &&
++            (strcmp(tn.suffix, "rqweight") == 0 || strcmp(tn.suffix, "rqrotation") == 0);
++
+         // tensors with "bias" suffix are always used with GGML_OP_ADD or GGML_OP_ADD_ID;
+         // embedded-adapter ".lora_a"/".lora_b" tensors are always used with GGML_OP_MUL_MAT_ID
+         ggml_op op;
+-        if (tn.suffix != nullptr && strcmp(tn.suffix, "bias") == 0) {
++        if (is_rotquant_raw) {
++            // RotQuant tensors are opaque inputs to a custom operation.
++            // They are not regular matrices and must never be selected based
++            // on the operation associated with their canonical tensor kind.
++            op = GGML_OP_NONE;
++        } else if (tn.suffix != nullptr && strcmp(tn.suffix, "bias") == 0) {
+             op = info.op == GGML_OP_MUL_MAT_ID ? GGML_OP_ADD_ID : GGML_OP_ADD;
+         } else if (hparams.router_layer >= 0 && tn.suffix != nullptr &&
+                 (strcmp(tn.suffix, "lora_a") == 0 || strcmp(tn.suffix, "lora_b") == 0)) {
+@@ -1161,7 +1169,7 @@ struct ggml_tensor * llama_model_loader::create_tensor(
+         }
+
+         // select the buffer type for this tensor
+-        const buft_list_t * buft_list;
++        const buft_list_t * buft_list = nullptr;
+         switch (info.layer) {
+             case LLM_TENSOR_LAYER_INPUT:
+                 buft_list = buft_list_input;
+@@ -1214,6 +1222,16 @@ struct ggml_tensor * llama_model_loader::create_tensor(
+             }
+         }
+
++        // CPU_REPACK interprets I8 tensor shapes as ordinary matrices. Native
++        // RotQuant rows are an opaque byte stream, so CPU placement must use
++        // the plain CPU buffer. Accelerator buffers can retain the raw layout.
++        if (is_rotquant_raw) {
++            auto * raw_dev = ggml_backend_buft_get_device(buft);
++            if (raw_dev && ggml_backend_dev_type(raw_dev) == GGML_BACKEND_DEVICE_TYPE_CPU) {
++                buft = ggml_backend_cpu_buffer_type();
++            }
++        }
++
+         // avoid using a host buffer when using mmap
+         auto * buft_dev = ggml_backend_buft_get_device(buft);
+         if (use_mmap && buft_dev && buft == ggml_backend_dev_host_buffer_type(buft_dev)) {
+diff --git a/src/llama-rotquant.cpp b/src/llama-rotquant.cpp
+new file mode 100644
+index 000000000..4d60c1751
+--- /dev/null
++++ b/src/llama-rotquant.cpp
+@@ -0,0 +1,195 @@
++#include "llama-rotquant.h"
++
++#include "ggml.h"
++
++#include <algorithm>
++#include <cmath>
++#include <cstdint>
++#include <cstring>
++#include <vector>
++
++namespace {
++
++constexpr int64_t RQ_GROUP_SIZE = 128;
++constexpr int64_t RQ_CODE_BYTES = 64;
++constexpr int64_t RQ_SCALE_BYTES = 2;
++constexpr int64_t RQ_BLOCK_BYTES = RQ_SCALE_BYTES + RQ_CODE_BYTES;
++constexpr int64_t RQ_ROTATION_BLOCK = 128;
++constexpr int64_t RQ_ROTATION_STAGES = 7;
++// Host-side tags consumed by the Metal backend. They are values, not pointers
++// to storage, and are never dereferenced.
++constexpr uintptr_t RQ_ROTATE_MAGIC = 0x5251524f54415445ULL; // "RQROTATE"
++constexpr uintptr_t RQ_MUL_MAT_MAGIC = 0x52514d554c4d4154ULL; // "RQMULMAT"
++
++// rotquant.codebooks.lloyd_max_gaussian(16), rounded once to float32.
++constexpr float RQ_CODEBOOK[16] = {
++    -2.7338738441467285f, -2.0704751014709473f,
++    -1.6195980310440063f, -1.2577794790267944f,
++    -0.9437850117683411f, -0.6579855084419250f,
++    -0.3889232873916626f, -0.1287587136030197f,
++     0.1286393851041794f,  0.3888039886951447f,
++     0.6578662991523743f,  0.9436659216880798f,
++     1.2576605081558228f,  1.6195257902145386f,
++     2.0704751014709473f,  2.7338738441467285f,
++};
++
++const char * row_ptr(const ggml_tensor * tensor, int64_t row) {
++    int64_t i1 = row % tensor->ne[1];
++    row /= tensor->ne[1];
++    int64_t i2 = row % tensor->ne[2];
++    int64_t i3 = row / tensor->ne[2];
++    return static_cast<const char *>(tensor->data)
++        + i1 * tensor->nb[1] + i2 * tensor->nb[2] + i3 * tensor->nb[3];
++}
++
++char * row_ptr(ggml_tensor * tensor, int64_t row) {
++    return const_cast<char *>(row_ptr(const_cast<const ggml_tensor *>(tensor), row));
++}
++
++void rotate_activation(
++        std::vector<float> & values,
++        const float        * rotation,
++        int64_t              n_embd) {
++    const float * signs = rotation;
++    const float * theta = rotation + n_embd;
++    const int64_t n_blocks = n_embd / RQ_ROTATION_BLOCK;
++
++    for (int64_t i = 0; i < n_embd; ++i) {
++        values[i] *= signs[i];
++    }
++
++    for (int64_t stage = 0; stage < RQ_ROTATION_STAGES; ++stage) {
++        const int64_t step = int64_t(1) << stage;
++        const int64_t groups = RQ_ROTATION_BLOCK / (2 * step);
++        for (int64_t block = 0; block < n_blocks; ++block) {
++            const int64_t block_base = block * RQ_ROTATION_BLOCK;
++            const float * stage_theta = theta
++                + (block * RQ_ROTATION_STAGES + stage) * (RQ_ROTATION_BLOCK / 2);
++            for (int64_t group = 0; group < groups; ++group) {
++                for (int64_t j = 0; j < step; ++j) {
++                    const int64_t pair = group * step + j;
++                    const int64_t ia = block_base + group * 2 * step + j;
++                    const int64_t ib = ia + step;
++                    const float a = values[ia];
++                    const float b = values[ib];
++                    const float c = std::cos(stage_theta[pair]);
++                    const float s = std::sin(stage_theta[pair]);
++                    values[ia] = c * a + s * b;
++                    values[ib] = s * a - c * b;
++                }
++            }
++        }
++    }
++}
++
++void compute_rotquant_rotate(
++        ggml_tensor * dst,
++        int           ith,
++        int           nth,
++        void        *) {
++    const ggml_tensor * input = dst->src[0];
++    const ggml_tensor * rotation = dst->src[1];
++
++    const int64_t n_embd = input->ne[0];
++    const int64_t n_rows = ggml_nrows(input);
++    const float * rotation_data = static_cast<const float *>(rotation->data);
++
++    std::vector<float> rotated(n_embd);
++    for (int64_t token = ith; token < n_rows; token += nth) {
++        const void * input_row = row_ptr(input, token);
++        if (input->type == GGML_TYPE_F32) {
++            std::memcpy(rotated.data(), input_row, n_embd * sizeof(float));
++        } else if (input->type == GGML_TYPE_F16) {
++            const ggml_fp16_t * values = static_cast<const ggml_fp16_t *>(input_row);
++            for (int64_t i = 0; i < n_embd; ++i) {
++                rotated[i] = ggml_fp16_to_fp32(values[i]);
++            }
++        } else if (input->type == GGML_TYPE_BF16) {
++            const ggml_bf16_t * values = static_cast<const ggml_bf16_t *>(input_row);
++            for (int64_t i = 0; i < n_embd; ++i) {
++                rotated[i] = ggml_bf16_to_fp32(values[i]);
++            }
++        } else {
++            const ggml_type_traits * traits = ggml_get_type_traits(input->type);
++            GGML_ASSERT(traits != nullptr && traits->to_float != nullptr);
++            traits->to_float(input_row, rotated.data(), n_embd);
++        }
++        rotate_activation(rotated, rotation_data, n_embd);
++        std::memcpy(row_ptr(dst, token), rotated.data(), n_embd * sizeof(float));
++    }
++}
++
++void compute_rotquant_mul_mat(
++        ggml_tensor * dst,
++        int           ith,
++        int           nth,
++        void        *) {
++    const ggml_tensor * qweight = dst->src[0];
++    const ggml_tensor * input = dst->src[1];
++
++    const int64_t n_embd = input->ne[0];
++    const int64_t n_groups = n_embd / RQ_GROUP_SIZE;
++    const int64_t n_outputs = qweight->ne[1];
++    const int64_t n_rows = ggml_nrows(input);
++
++    for (int64_t token = 0; token < n_rows; ++token) {
++        const float * rotated = reinterpret_cast<const float *>(row_ptr(input, token));
++        for (int64_t output = ith; output < n_outputs; output += nth) {
++            const uint8_t * qrow = reinterpret_cast<const uint8_t *>(qweight->data)
++                + output * qweight->nb[1];
++            float sum = 0.0f;
++            for (int64_t group = 0; group < n_groups; ++group) {
++                const uint8_t * packed = qrow + group * RQ_BLOCK_BYTES;
++                ggml_fp16_t scale_bits;
++                std::memcpy(&scale_bits, packed, sizeof(scale_bits));
++                const float scale = ggml_fp16_to_fp32(scale_bits);
++                const uint8_t * codes = packed + RQ_SCALE_BYTES;
++                const int64_t input_base = group * RQ_GROUP_SIZE;
++                float group_sum = 0.0f;
++                for (int64_t j = 0; j < RQ_CODE_BYTES; ++j) {
++                    const uint8_t pair = codes[j];
++                    group_sum += RQ_CODEBOOK[pair & 0x0f] * rotated[input_base + 2*j + 0];
++                    group_sum += RQ_CODEBOOK[pair >> 4]   * rotated[input_base + 2*j + 1];
++                }
++                sum += scale * group_sum;
++            }
++            float * output_row = reinterpret_cast<float *>(row_ptr(dst, token));
++            output_row[output] = sum;
++        }
++    }
++}
++
++} // namespace
++
++ggml_tensor * llama_rotquant_mul_mat(
++        ggml_context * ctx,
++        ggml_tensor  * qweight,
++        ggml_tensor  * input,
++        ggml_tensor  * rotation) {
++    GGML_ASSERT(qweight->type == GGML_TYPE_I8);
++    GGML_ASSERT(rotation->type == GGML_TYPE_F32);
++    GGML_ASSERT(input->ne[0] % RQ_GROUP_SIZE == 0);
++    GGML_ASSERT(qweight->ne[0] == input->ne[0] / RQ_GROUP_SIZE * RQ_BLOCK_BYTES);
++    GGML_ASSERT(rotation->ne[0] == input->ne[0]
++        + input->ne[0] / 2 * RQ_ROTATION_STAGES);
++
++    ggml_tensor * rotate_args[] = { input, rotation };
++    ggml_tensor * rotated = ggml_custom_4d(
++        ctx,
++        GGML_TYPE_F32,
++        input->ne[0], input->ne[1], input->ne[2], input->ne[3],
++        rotate_args, 2,
++        compute_rotquant_rotate,
++        GGML_N_TASKS_MAX,
++        reinterpret_cast<void *>(RQ_ROTATE_MAGIC));
++
++    ggml_tensor * matmul_args[] = { qweight, rotated };
++    return ggml_custom_4d(
++        ctx,
++        GGML_TYPE_F32,
++        qweight->ne[1], input->ne[1], input->ne[2], input->ne[3],
++        matmul_args, 2,
++        compute_rotquant_mul_mat,
++        GGML_N_TASKS_MAX,
++        reinterpret_cast<void *>(RQ_MUL_MAT_MAGIC));
++}
+diff --git a/src/llama-rotquant.h b/src/llama-rotquant.h
+new file mode 100644
+index 000000000..5a9262747
+--- /dev/null
++++ b/src/llama-rotquant.h
+@@ -0,0 +1,12 @@
++#pragma once
++
++#include "ggml.h"
++
++// Native RotQuant-GGUF v1 matrix multiplication. qweight is an I8 byte tensor
++// with [fp16 scale | 64 packed nibbles] for every group of 128 logical values.
++// rotation is F32 [signs | butterfly theta].
++ggml_tensor * llama_rotquant_mul_mat(
++        ggml_context * ctx,
++        ggml_tensor  * qweight,
++        ggml_tensor  * input,
++        ggml_tensor  * rotation);
+diff --git a/src/models/models.h b/src/models/models.h
+index 9b87a40d5..1b4419acc 100644
+--- a/src/models/models.h
++++ b/src/models/models.h
+@@ -2234,9 +2234,17 @@ struct llama_model_qwen35 : public llama_model_base {
+     void load_arch_hparams(llama_model_loader & ml) override;
+     void load_arch_tensors(llama_model_loader & ml) override;
+
++    // Maps raw RotQuant weight tensors to their associated butterfly state.
++    std::map<const ggml_tensor *, ggml_tensor *> rotquant_rotations;
++
+     struct graph : public llm_build_delta_net_base {
+-        graph(const llama_model & model, const llm_graph_params & params);
++        graph(const llama_model_qwen35 & model, const llm_graph_params & params);
+     private:
++        ggml_tensor * build_mm(
++                    ggml_tensor * weight,
++                    ggml_tensor * input,
++                    ggml_tensor * scale = nullptr);
++
+         ggml_tensor * build_layer_attn(
+         llm_graph_input_attn_kv * inp_attn,
+                     ggml_tensor * cur,
+@@ -2264,7 +2272,7 @@ struct llama_model_qwen35 : public llama_model_base {
+                     ggml_tensor * input,
+                             int   il);
+
+-        const llama_model & model;
++        const llama_model_qwen35 & model;
+     };
+
+     struct graph_mtp : public llm_graph_context {
+diff --git a/src/models/qwen35.cpp b/src/models/qwen35.cpp
+index 309dd4324..0903f7a89 100644
+--- a/src/models/qwen35.cpp
++++ b/src/models/qwen35.cpp
+@@ -1,5 +1,6 @@
+ #include "models.h"
+ #include "llama-memory-recurrent.h"
++#include "llama-rotquant.h"
+
+ void llama_model_qwen35::load_arch_hparams(llama_model_loader & ml) {
+     ml.get_key(LLM_KV_ATTENTION_LAYERNORM_RMS_EPS,       hparams.f_norm_rms_eps);
+@@ -52,6 +53,20 @@ void llama_model_qwen35::load_arch_tensors(llama_model_loader & ml) {
+         output = create_tensor(tn(LLM_TENSOR_TOKEN_EMBD, "weight"), { n_embd, n_vocab }, TENSOR_DUPLICATED);
+     }
+
++    auto load_linear = [&](llm_tensor tensor, int il, int64_t in_features, int64_t out_features, int flags) {
++        const auto rq_name = tn(tensor, "rqweight", il);
++        if (ml.get_weight(rq_name.str().c_str()) != nullptr) {
++            GGML_ASSERT(in_features % 128 == 0);
++            ggml_tensor * qweight = create_tensor(
++                rq_name, { in_features / 128 * 66, out_features }, flags);
++            ggml_tensor * rotation = create_tensor(
++                tn(tensor, "rqrotation", il), { in_features + in_features / 2 * 7 }, flags);
++            rotquant_rotations.emplace(qweight, rotation);
++            return qweight;
++        }
++        return create_tensor(tn(tensor, "weight", il), { in_features, out_features }, flags);
++    };
++
+     auto load_block_trunk = [&](int il, int flags) {
+         auto & layer = layers[il];
+
+@@ -69,8 +84,10 @@ void llama_model_qwen35::load_arch_tensors(llama_model_loader & ml) {
+
+         if (!hparams.is_recr(il)) {
+             // Attention layers
+-            create_tensor_qkv(layer, il, n_embd, n_embd_head_k * n_head * 2, n_embd_k_gqa, n_embd_v_gqa, flags);
+-            layer.wo = create_tensor(tn(LLM_TENSOR_ATTN_OUT, "weight", il), { n_embd_head_k * n_head, n_embd }, flags);
++            layer.wq = load_linear(LLM_TENSOR_ATTN_Q, il, n_embd, n_embd_head_k * n_head * 2, flags);
++            layer.wk = load_linear(LLM_TENSOR_ATTN_K, il, n_embd, n_embd_k_gqa, flags);
++            layer.wv = load_linear(LLM_TENSOR_ATTN_V, il, n_embd, n_embd_v_gqa, flags);
++            layer.wo = load_linear(LLM_TENSOR_ATTN_OUT, il, n_embd_head_k * n_head, n_embd, flags);
+
+             // Q/K normalization for attention layers
+             layer.attn_q_norm = create_tensor(tn(LLM_TENSOR_ATTN_Q_NORM, "weight", il), { n_embd_head_k }, flags);
+@@ -78,20 +95,20 @@ void llama_model_qwen35::load_arch_tensors(llama_model_loader & ml) {
+         } else {
+             // Linear attention (gated delta net) specific tensors
+             // Create tensors with calculated dimensions
+-            layer.wqkv           = create_tensor(tn(LLM_TENSOR_ATTN_QKV,       "weight", il), { n_embd, key_dim * 2 + value_dim }, TENSOR_NOT_REQUIRED);
+-            layer.wqkv_gate      = create_tensor(tn(LLM_TENSOR_ATTN_GATE,      "weight", il), { n_embd, value_dim }, TENSOR_NOT_REQUIRED);
++            layer.wqkv           = load_linear(LLM_TENSOR_ATTN_QKV,  il, n_embd, key_dim * 2 + value_dim, flags);
++            layer.wqkv_gate      = load_linear(LLM_TENSOR_ATTN_GATE, il, n_embd, value_dim, flags);
+             layer.ssm_conv1d     = create_tensor(tn(LLM_TENSOR_SSM_CONV1D,     "weight", il), { hparams.ssm_d_conv, conv_dim }, flags);
+             layer.ssm_dt         = create_tensor(tn(LLM_TENSOR_SSM_DT,         "bias",   il), { hparams.ssm_dt_rank }, flags);
+             layer.ssm_a          = create_tensor(tn(LLM_TENSOR_SSM_A_NOSCAN,             il), { hparams.ssm_dt_rank }, flags);
+             layer.ssm_beta       = create_tensor(tn(LLM_TENSOR_SSM_BETA,       "weight", il), { n_embd, n_v_heads }, flags);
+             layer.ssm_alpha      = create_tensor(tn(LLM_TENSOR_SSM_ALPHA,      "weight", il), { n_embd, n_v_heads }, flags);
+             layer.ssm_norm       = create_tensor(tn(LLM_TENSOR_SSM_NORM,       "weight", il), { head_v_dim }, flags);
+-            layer.ssm_out        = create_tensor(tn(LLM_TENSOR_SSM_OUT,        "weight", il), { value_dim, n_embd }, flags);
++            layer.ssm_out        = load_linear(LLM_TENSOR_SSM_OUT, il, value_dim, n_embd, flags);
+         }
+
+-        layer.ffn_gate = create_tensor(tn(LLM_TENSOR_FFN_GATE, "weight", il), {n_embd,   n_ff}, flags);
+-        layer.ffn_down = create_tensor(tn(LLM_TENSOR_FFN_DOWN, "weight", il), {  n_ff, n_embd}, flags);
+-        layer.ffn_up   = create_tensor(tn(LLM_TENSOR_FFN_UP,   "weight", il), {n_embd,   n_ff}, flags);
++        layer.ffn_gate = load_linear(LLM_TENSOR_FFN_GATE, il, n_embd, n_ff, flags);
++        layer.ffn_down = load_linear(LLM_TENSOR_FFN_DOWN, il, n_ff, n_embd, flags);
++        layer.ffn_up   = load_linear(LLM_TENSOR_FFN_UP,   il, n_embd, n_ff, flags);
+     };
+
+     auto load_block_mtp = [&](int il) {
+@@ -134,7 +151,7 @@ std::unique_ptr<llm_graph_context> llama_model_qwen35::build_arch_graph(const ll
+     return std::make_unique<graph>(*this, params);
+ }
+
+-llama_model_qwen35::graph::graph(const llama_model & model, const llm_graph_params & params) :
++llama_model_qwen35::graph::graph(const llama_model_qwen35 & model, const llm_graph_params & params) :
+     llm_build_delta_net_base(params), model(model) {
+     const int64_t n_embd_head = hparams.n_embd_head_v();
+
+@@ -228,17 +245,29 @@ llama_model_qwen35::graph::graph(const llama_model & model, const llm_graph_para
+     ggml_build_forward_expand(gf, cur);
+ }
+
++ggml_tensor * llama_model_qwen35::graph::build_mm(
++        ggml_tensor * weight,
++        ggml_tensor * input,
++        ggml_tensor * scale) {
++    const auto it = model.rotquant_rotations.find(weight);
++    if (it != model.rotquant_rotations.end()) {
++        GGML_ASSERT(scale == nullptr);
++        return llama_rotquant_mul_mat(ctx0, weight, input, it->second);
++    }
++    return build_lora_mm(weight, input, scale);
++}
++
+ std::pair<ggml_tensor *, ggml_tensor *> llama_model_qwen35::graph::build_qkvz(
+                 ggml_tensor * input,
+                         int   il) {
+     const int64_t n_seqs       = ubatch.n_seqs;
+     const int64_t n_seq_tokens = ubatch.n_seq_tokens;
+
+-    ggml_tensor * qkv_mixed = build_lora_mm(model.layers[il].wqkv, input, model.layers[il].wqkv_s);
++    ggml_tensor * qkv_mixed = build_mm(model.layers[il].wqkv, input, model.layers[il].wqkv_s);
+     qkv_mixed = ggml_reshape_3d(ctx0, qkv_mixed, qkv_mixed->ne[0], n_seq_tokens, n_seqs);
+     cb(qkv_mixed, "linear_attn_qkv_mixed", il);
+
+-    ggml_tensor * z = build_lora_mm(model.layers[il].wqkv_gate, input, model.layers[il].wqkv_gate_s);
++    ggml_tensor * z = build_mm(model.layers[il].wqkv_gate, input, model.layers[il].wqkv_gate_s);
+     cb(z, "z", il);
+
+     return { qkv_mixed, z };
+@@ -267,7 +296,7 @@ ggml_tensor * llama_model_qwen35::graph::build_layer_attn(
+     // Order: joint QG projection, QG split, Q norm, KV projection, K norm, RoPE, attention
+
+     // Qwen3Next uses a single Q projection that outputs query + gate
+-    ggml_tensor * Qcur_full = build_lora_mm(model.layers[il].wq, cur, model.layers[il].wq_s); // [ (n_embd_head * 2) * n_head, n_tokens ]
++    ggml_tensor * Qcur_full = build_mm(model.layers[il].wq, cur, model.layers[il].wq_s); // [ (n_embd_head * 2) * n_head, n_tokens ]
+     cb(Qcur_full, "Qcur_full", il);
+
+     ggml_tensor * Qcur = ggml_view_3d(ctx0, Qcur_full, n_embd_head, n_head, n_tokens,
+@@ -279,10 +308,10 @@ ggml_tensor * llama_model_qwen35::graph::build_layer_attn(
+     Qcur = build_norm(Qcur, model.layers[il].attn_q_norm, nullptr, LLM_NORM_RMS, il);
+     cb(Qcur, "Qcur_normed", il);
+
+-    ggml_tensor * Kcur = build_lora_mm(model.layers[il].wk, cur, model.layers[il].wk_s);
++    ggml_tensor * Kcur = build_mm(model.layers[il].wk, cur, model.layers[il].wk_s);
+     cb(Kcur, "Kcur", il);
+
+-    ggml_tensor * Vcur = build_lora_mm(model.layers[il].wv, cur, model.layers[il].wv_s);
++    ggml_tensor * Vcur = build_mm(model.layers[il].wv, cur, model.layers[il].wv_s);
+     cb(Vcur, "Vcur", il);
+
+     // Apply K normalization
+@@ -330,7 +359,7 @@ ggml_tensor * llama_model_qwen35::graph::build_layer_attn(
+     cur = ggml_mul(ctx0, cur, gate_sigmoid);
+     cb(cur, "attn_gated", il);
+
+-    cur = build_lora_mm(model.layers[il].wo, cur, model.layers[il].wo_s);
++    cur = build_mm(model.layers[il].wo, cur, model.layers[il].wo_s);
+     cb(cur, "attn_output", il);
+
+     return cur;
+@@ -461,7 +490,7 @@ ggml_tensor * llama_model_qwen35::graph::build_layer_attn_linear(
+     cb(final_output, "final_output", il);
+
+     // Output projection
+-    cur = build_lora_mm(model.layers[il].ssm_out, final_output, model.layers[il].ssm_out_s);
++    cur = build_mm(model.layers[il].ssm_out, final_output, model.layers[il].ssm_out_s);
+     cb(cur, "linear_attn_out", il);
+
+     // Reshape back to original dimensions
+@@ -474,12 +503,13 @@ ggml_tensor * llama_model_qwen35::graph::build_layer_ffn(ggml_tensor * cur, cons
+     // Qwen3.5 does not use MoE FFN
+     GGML_ASSERT(model.layers[il].ffn_gate_inp == nullptr);
+
+-    cur = build_ffn(cur,
+-        model.layers[il].ffn_up, NULL, model.layers[il].ffn_up_s,
+-        model.layers[il].ffn_gate, NULL, model.layers[il].ffn_gate_s,
+-        model.layers[il].ffn_down, NULL, model.layers[il].ffn_down_s,
+-        NULL,
+-        LLM_FFN_SILU, LLM_FFN_PAR, il);
++    ggml_tensor * up = build_mm(model.layers[il].ffn_up, cur, model.layers[il].ffn_up_s);
++    cb(up, "ffn_up", il);
++    ggml_tensor * gate = build_mm(model.layers[il].ffn_gate, cur, model.layers[il].ffn_gate_s);
++    cb(gate, "ffn_gate", il);
++    cur = ggml_swiglu_split(ctx0, gate, up);
++    cb(cur, "ffn_swiglu", il);
++    cur = build_mm(model.layers[il].ffn_down, cur, model.layers[il].ffn_down_s);
+     cb(cur, "ffn_out", il);
+
+     return cur;

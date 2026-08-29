@@ -227,14 +227,18 @@ def load_hf_model(model_name: str, dtype: torch.dtype, device,
     return model, tokenizer, selected
 
 
-def build_calib_loader(tokenizer, n_seq: int, seq_len: int, device):
+def build_calib_loader(tokenizer, n_seq: int, seq_len: int, device,
+                       skip: int = 0):
     """Tokenised C4/WikiText-train calibration sequences (128-512 typical)."""
     from datasets import load_dataset
     ds = load_dataset("allenai/c4", "en", split="train", streaming=True)
-    batches, count = [], 0
+    batches, count, eligible = [], 0, 0
     for row in ds:
         ids = tokenizer(row["text"], return_tensors="pt").input_ids
         if ids.shape[1] < seq_len:
+            continue
+        if eligible < skip:
+            eligible += 1
             continue
         batches.append({"input_ids": ids[:, :seq_len].to(device)})
         count += 1
@@ -347,11 +351,16 @@ def run(config_path: str, output_dir: str = "results",
     activations = None
     block_calls = None
     distill_calls = None
+    dynamic_calls = None
+    trajectory_references = None
+    trajectory_config = None
     needs_hessians = pcfg.enabled and (
         qcfg.error_comp == "gptq" or cfg.get("calibrate", False))
     rotation_train_cfg = pcfg.train_rotation or {}
-    needs_activations = (pcfg.enabled
-                         and rotation_train_cfg.get("objective") == "activation")
+    dynamic_cfg = pcfg.dynamic or {}
+    needs_dynamic = pcfg.enabled and bool(pcfg.dynamic)
+    needs_activations = (pcfg.enabled and (
+        rotation_train_cfg.get("objective") == "activation" or needs_dynamic))
     needs_block_calls = (pcfg.enabled
                          and rotation_train_cfg.get("objective") == "block")
     calib_loader = None
@@ -374,9 +383,15 @@ def run(config_path: str, output_dir: str = "results",
 
     if needs_activations:
         from rotquant.calibrate import collect_activations
-        train_tokens = int(rotation_train_cfg.get("max_tokens", 64))
-        selection_tokens = int(rotation_train_cfg.get("selection_tokens", 0))
-        max_tokens = train_tokens + selection_tokens
+        rotation_tokens = 0
+        if rotation_train_cfg.get("objective") == "activation":
+            train_tokens = int(rotation_train_cfg.get("max_tokens", 64))
+            selection_tokens = int(
+                rotation_train_cfg.get("selection_tokens", 0))
+            rotation_tokens = train_tokens + selection_tokens
+        dynamic_tokens = int(dynamic_cfg.get("max_tokens", 32)) \
+            if needs_dynamic else 0
+        max_tokens = max(rotation_tokens, dynamic_tokens)
         if calib_loader is None:
             calib_seq_len = int(cfg.get("calib_seq_len", 2048))
             minimum_batches = max(1, (max_tokens + calib_seq_len - 1) // calib_seq_len)
@@ -390,6 +405,19 @@ def run(config_path: str, output_dir: str = "results",
                 max_tokens=max_tokens)
         activations = activation_calib.activations
         metrics["activation_calib_seconds"] = t.elapsed
+
+    dynamic_global_batches = int(dynamic_cfg.get("global_kl_batches", 0)) \
+        if needs_dynamic else 0
+    if dynamic_global_batches:
+        from rotquant.block_train import collect_teacher_calls
+        dynamic_loader = build_calib_loader(
+            tokenizer, dynamic_global_batches,
+            int(cfg.get("calib_seq_len", 256)), device)
+        with Timer() as t:
+            dynamic_calls = collect_teacher_calls(
+                model, dynamic_loader, device,
+                max_batches=dynamic_global_batches)
+        metrics["dynamic_teacher_calib_seconds"] = t.elapsed
 
     if needs_block_calls:
         from rotquant.block_train import (
@@ -433,8 +461,33 @@ def run(config_path: str, output_dir: str = "results",
             tokenizer, 1, eval_cfg.get("layer_mse_seq_len", 512), device)[0]
         fp_capture = capture_outputs(model, drift_batch, device)
 
-    reset_peak_vram()
+    trajectory_requested = eval_cfg.get("trajectory", False)
+    if trajectory_requested:
+        from eval.trajectory import TrajectoryConfig, capture_trajectories
+        trajectory_kwargs = (trajectory_requested
+                             if isinstance(trajectory_requested, dict) else {})
+        trajectory_config = TrajectoryConfig(**trajectory_kwargs)
+        trajectory_batches = build_calib_loader(
+            tokenizer, trajectory_config.batches,
+            trajectory_config.prompt_len, device,
+            skip=trajectory_config.skip)
+        with Timer() as t:
+            trajectory_references = capture_trajectories(
+                model, tokenizer, trajectory_batches, device,
+                trajectory_config)
+        metrics["source_trajectory_seconds"] = t.elapsed
+
     patch_stats: Dict[str, Any] = {}
+    if needs_dynamic:
+        from rotquant.dynamic import select_dynamic_quantization
+        with Timer() as t:
+            pcfg.layer_quant, dynamic_stats = select_dynamic_quantization(
+                model, pcfg, activations=activations,
+                teacher_calls=dynamic_calls)
+        dynamic_stats["seconds"] = t.elapsed
+        patch_stats["dynamic_quantization"] = dynamic_stats
+
+    reset_peak_vram()
     with Timer() as t:
         if needs_block_calls:
             from rotquant.block_train import train_and_patch_blocks
@@ -456,6 +509,40 @@ def run(config_path: str, output_dir: str = "results",
         drift = drift_between(fp_capture, q_capture)
         metrics["layer_mse"] = {"mse": drift.mse, "cosine": drift.cosine,
                                 "order": drift.order}
+
+    if trajectory_references is not None:
+        from eval.trajectory import evaluate_trajectories
+        with Timer() as t:
+            metrics["trajectory"] = evaluate_trajectories(
+                model, tokenizer, trajectory_references, device,
+                trajectory_config)
+        metrics["trajectory"]["seconds"] = t.elapsed
+
+    kv_cache_requested = eval_cfg.get("kv_cache", False)
+    if kv_cache_requested:
+        from eval.kv_cache import KVCacheEvalConfig, evaluate_kv_cache
+        kv_cache_kwargs = (kv_cache_requested
+                           if isinstance(kv_cache_requested, dict) else {})
+        kv_cache_kwargs = dict(kv_cache_kwargs)
+        kv_cache_kwargs.setdefault("seed", seed)
+        kv_cache_config = KVCacheEvalConfig(**kv_cache_kwargs)
+        kv_selection_batches = 0
+        if kv_cache_config.dynamic:
+            from eval.kv_cache import KVDynamicConfig
+            kv_selection_batches = KVDynamicConfig(
+                **kv_cache_config.dynamic).selection_batches
+        kv_cache_batches = build_calib_loader(
+            tokenizer,
+            kv_cache_config.batches + kv_selection_batches,
+            (kv_cache_config.prompt_len
+             + kv_cache_config.continuation_len + 1),
+            device,
+            skip=kv_cache_config.skip,
+        )
+        with Timer() as t:
+            metrics["kv_cache"] = evaluate_kv_cache(
+                model, kv_cache_batches, kv_cache_config, device)
+        metrics["kv_cache"]["seconds"] = t.elapsed
 
     if eval_cfg.get("perplexity", True):
         from eval.perplexity import perplexity, PPLConfig

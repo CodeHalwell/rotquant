@@ -9,6 +9,7 @@ plain-FWHT block on disjoint held-out calls.
 from __future__ import annotations
 
 import copy
+import fnmatch
 from dataclasses import dataclass, replace
 from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
 
@@ -17,7 +18,9 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 from .linear import QuantLinear
-from .patch import PatchConfig, _cpu_staging_linear, _get_parent
+from .patch import (
+    PatchConfig, _cpu_staging_linear, _get_parent, quant_config_for,
+)
 from .quantize import (
     QuantConfig, Quantizer, _expand_scales, _group_scales_rms,
     _quantize_groups, _storage_scales,
@@ -79,8 +82,19 @@ class BlockRotationTrainConfig:
     distill_lora_rank: int = 0
     distill_lora_alpha: float = 8.0
     distill_lora_lr: float = 1e-3
+    distill_lora_init: str = "zero"
+    distill_lora_svd_oversample: int = 4
+    distill_lora_svd_niter: int = 1
     distill_train_rotations: bool = True
     distill_train_scales: bool = True
+    distill_code_refresh_interval: int = 0
+    # Existing source-precision parameters can be tuned without adding model
+    # bytes. Patterns are glob-matched when they contain wildcard characters,
+    # otherwise they are treated as substrings (e.g. ["norm"] or
+    # ["*final_layernorm.weight"]).
+    distill_existing_patterns: Tuple[str, ...] = ()
+    distill_existing_lr: float = 1e-5
+    distill_existing_weight_decay: float = 0.0
 
     def __post_init__(self) -> None:
         if self.objective != "block":
@@ -144,11 +158,28 @@ class BlockRotationTrainConfig:
                     self.distill_lora_alpha <= 0 or self.distill_lora_lr <= 0):
                 raise ValueError(
                     "enabled distillation LoRA requires alpha and lr > 0")
+            if self.distill_lora_init not in ("zero", "residual_svd"):
+                raise ValueError(
+                    "distill_lora_init must be 'zero' or 'residual_svd'")
+            if (self.distill_lora_svd_oversample < 0
+                    or self.distill_lora_svd_niter < 0):
+                raise ValueError(
+                    "distillation LoRA SVD settings must be nonnegative")
+            if self.distill_code_refresh_interval < 0:
+                raise ValueError("distill_code_refresh_interval must be >= 0")
+            self.distill_existing_patterns = tuple(
+                self.distill_existing_patterns or ())
+            if self.distill_existing_patterns and self.distill_existing_lr <= 0:
+                raise ValueError("distill_existing_lr must be > 0")
+            if self.distill_existing_weight_decay < 0:
+                raise ValueError("distill_existing_weight_decay must be >= 0")
             if (not self.distill_train_rotations
                     and not self.distill_train_scales
-                    and not self.distill_lora_rank):
+                    and not self.distill_lora_rank
+                    and not self.distill_existing_patterns):
                 raise ValueError(
-                    "distillation must train rotations, scales, or LoRA")
+                    "distillation must train rotations, scales, LoRA, or "
+                    "existing parameters")
 
 
 def _tree_copy_cpu(value, storage_dtype=torch.float16):
@@ -452,18 +483,19 @@ def _fake_quant_block(source: nn.Module, global_name: str,
                       seed_by_name: Dict[str, int], device,
                       config: BlockRotationTrainConfig):
     block = copy.deepcopy(source).to(device=device, dtype=torch.float32).eval()
-    proxy_cfg = replace(
-        quant_cfg,
-        error_comp="none",
-        scale=(quant_cfg.scale if config.learn_scales else
-               ((patch_cfg.train_rotation or {}).get("assignment_scale")
-                or quant_cfg.scale)),
-    )
     fake: Dict[str, FakeQuantButterflyLinear] = {}
     for relative, linear in _target_linears(block):
         full_name = f"{global_name}.{relative}"
         if full_name not in seed_by_name:
             continue
+        selected_quant = quant_config_for(patch_cfg, full_name)
+        proxy_cfg = replace(
+            selected_quant,
+            error_comp="none",
+            scale=(selected_quant.scale if config.learn_scales else
+                   ((patch_cfg.train_rotation or {}).get("assignment_scale")
+                    or selected_quant.scale)),
+        )
         replacement = FakeQuantButterflyLinear(
             linear, proxy_cfg, block=patch_cfg.block,
             seed=seed_by_name[full_name], learn_scales=config.learn_scales,
@@ -640,6 +672,7 @@ def _packed_cpu_block(source: nn.Module, global_name: str,
         full_name = f"{global_name}.{relative}"
         if full_name not in seed_by_name:
             continue
+        selected_quant = quant_config_for(patch_cfg, full_name)
         rotation = ButterflyRotation(
             linear.in_features, block=patch_cfg.block,
             seed=seed_by_name[full_name], device=device)
@@ -648,10 +681,11 @@ def _packed_cpu_block(source: nn.Module, global_name: str,
             rotation.theta.data.copy_(state["theta"])
         rotation.requires_grad_(False).eval()
         scales_override = (
-            _scale_override(linear, rotation, quant_cfg, state)
+            _scale_override(linear, rotation, selected_quant, state)
             if state is not None else None)
         qlinear = QuantLinear.from_linear(
-            linear, quant_cfg, weight_rotation=rotation, act_rotation=rotation,
+            linear, selected_quant,
+            weight_rotation=rotation, act_rotation=rotation,
             scales_override=scales_override,
             fallback=True, fallback_dtype=torch.float32)
         parent, attr = _get_parent(block, relative)
@@ -670,6 +704,7 @@ def _patch_source_block(source: nn.Module, global_name: str,
         full_name = f"{global_name}.{relative}"
         if full_name not in seed_by_name:
             continue
+        selected_quant = quant_config_for(patch_cfg, full_name)
         source_device, source_dtype = linear.weight.device, linear.weight.dtype
         stage = source_device.type == "mps" and patch_cfg.fallback
         work = _cpu_staging_linear(linear) if stage else linear
@@ -686,12 +721,33 @@ def _patch_source_block(source: nn.Module, global_name: str,
                 state["theta"].to(rotation.theta.device))
         rotation.requires_grad_(False).eval()
         scales_override = (
-            _scale_override(work, rotation, quant_cfg, state)
+            _scale_override(work, rotation, selected_quant, state)
             if state is not None else None)
         qlinear = QuantLinear.from_linear(
-            work, quant_cfg, weight_rotation=rotation, act_rotation=rotation,
+            work, selected_quant,
+            weight_rotation=rotation, act_rotation=rotation,
             scales_override=scales_override,
             fallback=patch_cfg.fallback, fallback_dtype=source_dtype)
+        recovery = patch_cfg.train_rotation or {}
+        lora_rank = int(recovery.get("distill_lora_rank", 0))
+        lora_init = str(recovery.get("distill_lora_init", "zero"))
+        if lora_rank and lora_init == "residual_svd":
+            with torch.no_grad():
+                rotated_source = rotation.rotate_weight(
+                    work.weight.detach()).float()
+                residual = rotated_source - qlinear.qweight.dequantize().float()
+            qlinear.enable_lora(
+                lora_rank,
+                float(recovery.get("distill_lora_alpha", 8.0)),
+                init="residual_svd",
+                residual=residual,
+                oversample=int(recovery.get(
+                    "distill_lora_svd_oversample", 4)),
+                niter=int(recovery.get("distill_lora_svd_niter", 1)),
+            )
+            del residual, rotated_source
+        if int(recovery.get("distill_code_refresh_interval", 0)):
+            qlinear.retain_recovery_source(work.weight)
         if stage:
             qlinear.to(device=source_device, dtype=source_dtype)
         parent, attr = _get_parent(source, relative)
@@ -758,6 +814,32 @@ def _restore_parameter_snapshot(parameters: Sequence[torch.Tensor],
             parameter.copy_(value.to(parameter.device, parameter.dtype))
 
 
+def _parameter_name_matches(name: str, patterns: Sequence[str]) -> bool:
+    return any(
+        fnmatch.fnmatchcase(name, pattern)
+        if any(char in pattern for char in "*?[") else pattern in name
+        for pattern in patterns)
+
+
+@torch.no_grad()
+def _distill_eval_without_lora(model: nn.Module,
+                               calls: Sequence[TeacherCall], device,
+                               compute_dtype: torch.dtype,
+                               config: BlockRotationTrainConfig) -> float:
+    """Evaluate the packed block model before any optional LoRA residual."""
+    saved = []
+    for module in model.modules():
+        if isinstance(module, QuantLinear) and module.lora_B is not None:
+            saved.append((module, module.lora_B.detach().clone()))
+            module.lora_B.zero_()
+    try:
+        return _distill_eval_loss(
+            model, calls, device, compute_dtype, config)
+    finally:
+        for module, value in saved:
+            module.lora_B.copy_(value)
+
+
 def distill_packed_model(model: nn.Module, calls: Sequence[TeacherCall], device,
                          compute_dtype: torch.dtype,
                          config: BlockRotationTrainConfig) -> Dict[str, Any]:
@@ -779,6 +861,8 @@ def distill_packed_model(model: nn.Module, calls: Sequence[TeacherCall], device,
     seen_rotations = set()
     scale_params = []
     lora_params = []
+    existing_params = []
+    existing_names = []
     quant_linears = []
     for module in model.modules():
         if not isinstance(module, QuantLinear):
@@ -790,7 +874,8 @@ def distill_packed_model(model: nn.Module, calls: Sequence[TeacherCall], device,
                 config.distill_scale_multiplier_max))
         if config.distill_lora_rank:
             lora_params.extend(module.enable_lora(
-                config.distill_lora_rank, config.distill_lora_alpha))
+                config.distill_lora_rank, config.distill_lora_alpha,
+                init=config.distill_lora_init))
         rotation = module.act_rotation
         if (config.distill_train_rotations
                 and isinstance(rotation, ButterflyRotation)
@@ -800,10 +885,24 @@ def distill_packed_model(model: nn.Module, calls: Sequence[TeacherCall], device,
             rotation.train(True)
             rotation_modules.append(rotation)
             rotation_params.append(rotation.theta)
-    if not scale_params and not rotation_params and not lora_params:
+    quant_parameter_ids = {
+        id(parameter)
+        for module in quant_linears
+        for parameter in module.parameters()
+    }
+    for name, parameter in model.named_parameters():
+        if (id(parameter) in quant_parameter_ids
+                or not _parameter_name_matches(
+                    name, config.distill_existing_patterns)):
+            continue
+        parameter.requires_grad_(True)
+        existing_names.append(name)
+        existing_params.append(parameter)
+    if (not scale_params and not rotation_params and not lora_params
+            and not existing_params):
         raise ValueError("distillation found no trainable packed parameters")
 
-    parameters = rotation_params + scale_params + lora_params
+    parameters = rotation_params + scale_params + lora_params + existing_params
     initial_snapshot = _parameter_snapshot(parameters)
     angle_reference = [parameter.detach().clone()
                        for parameter in rotation_params]
@@ -814,12 +913,20 @@ def distill_packed_model(model: nn.Module, calls: Sequence[TeacherCall], device,
         groups.append({"params": scale_params, "lr": config.distill_scale_lr})
     if lora_params:
         groups.append({"params": lora_params, "lr": config.distill_lora_lr})
+    if existing_params:
+        groups.append({
+            "params": existing_params,
+            "lr": config.distill_existing_lr,
+            "weight_decay": config.distill_existing_weight_decay,
+        })
     optimizer = torch.optim.Adam(groups)
 
     initial_train = _distill_eval_loss(
         model, train_calls, device, compute_dtype, config)
     initial_validation = _distill_eval_loss(
         model, validation_calls, device, compute_dtype, config)
+    reference_selection = _distill_eval_without_lora(
+        model, selection_calls, device, compute_dtype, config)
     best_validation = initial_validation
     patience_validation = initial_validation
     best_step = 0
@@ -846,6 +953,10 @@ def distill_packed_model(model: nn.Module, calls: Sequence[TeacherCall], device,
             torch.nn.utils.clip_grad_norm_(
                 parameters, config.distill_max_grad_norm)
         optimizer.step()
+        if (config.distill_code_refresh_interval
+                and step % config.distill_code_refresh_interval == 0):
+            for module in quant_linears:
+                module.refresh_quantization()
         steps_run = step
 
         validation = _distill_eval_loss(
@@ -866,6 +977,9 @@ def distill_packed_model(model: nn.Module, calls: Sequence[TeacherCall], device,
             break
 
     _restore_parameter_snapshot(parameters, best_snapshot)
+    if config.distill_code_refresh_interval:
+        for module in quant_linears:
+            module.refresh_quantization()
     candidate_snapshot = _parameter_snapshot(parameters)
     candidate_train = _distill_eval_loss(
         model, train_calls, device, compute_dtype, config)
@@ -873,13 +987,15 @@ def distill_packed_model(model: nn.Module, calls: Sequence[TeacherCall], device,
         model, validation_calls, device, compute_dtype, config)
     candidate_selection = _distill_eval_loss(
         model, selection_calls, device, compute_dtype, config)
-    _restore_parameter_snapshot(parameters, initial_snapshot)
-    reference_selection = _distill_eval_loss(
-        model, selection_calls, device, compute_dtype, config)
     accepted = candidate_selection <= reference_selection * (
         1.0 - config.distill_selection_min_improvement)
     if accepted:
         _restore_parameter_snapshot(parameters, candidate_snapshot)
+    else:
+        _restore_parameter_snapshot(parameters, initial_snapshot)
+        if config.distill_code_refresh_interval:
+            for module in quant_linears:
+                module.refresh_quantization()
 
     final_train = _distill_eval_loss(
         model, train_calls, device, compute_dtype, config)
@@ -897,8 +1013,11 @@ def distill_packed_model(model: nn.Module, calls: Sequence[TeacherCall], device,
             module.commit_lora()
         else:
             module.disable_lora()
+        module.drop_recovery_source()
     for rotation in rotation_modules:
         rotation.requires_grad_(False).eval()
+    for parameter in existing_params:
+        parameter.requires_grad_(False)
     del optimizer
 
     logger.info(
@@ -916,9 +1035,15 @@ def distill_packed_model(model: nn.Module, calls: Sequence[TeacherCall], device,
         "stopped_early": steps_run < config.distill_steps,
         "accepted": accepted,
         "lora_rank": config.distill_lora_rank,
+        "lora_init": config.distill_lora_init,
         "lora_retained": bool(accepted and config.distill_lora_rank),
         "train_rotations": config.distill_train_rotations,
         "train_scales": config.distill_train_scales,
+        "code_refresh_interval": config.distill_code_refresh_interval,
+        "existing_parameter_names": existing_names,
+        "existing_parameter_bytes": sum(
+            parameter.numel() * parameter.element_size()
+            for parameter in existing_params),
         "adapter_parameter_bytes": sum(
             module.adapter_state_bytes() for module in quant_linears),
         "train_batches": config.distill_train_batches,

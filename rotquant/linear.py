@@ -67,6 +67,11 @@ class QuantLinear(nn.Module):
         self.register_parameter("lora_B", None)
         self.lora_rank = 0
         self.lora_alpha = 0.0
+        # Recovery-only metadata. Neither item is a parameter/buffer, so it is
+        # excluded from checkpoints and ``.to()`` does not duplicate a CPU
+        # source copy onto the accelerator.
+        self._quant_config: Optional[QuantConfig] = None
+        self._recovery_source_weight: Optional[torch.Tensor] = None
         if fallback:
             global _fallback_warning_emitted
             if not _fallback_warning_emitted:
@@ -213,21 +218,57 @@ class QuantLinear(nn.Module):
             return base_out + correction
         return base_out
 
-    def enable_lora(self, rank: int, alpha: float) -> tuple[nn.Parameter,
-                                                            nn.Parameter]:
-        """Attach a zero-output low-rank adapter in the deployed rotated basis."""
+    def enable_lora(self, rank: int, alpha: float, *, init: str = "zero",
+                    residual: Optional[torch.Tensor] = None,
+                    oversample: int = 4, niter: int = 1,
+                    ) -> tuple[nn.Parameter, nn.Parameter]:
+        """Attach a low-rank adapter in the deployed rotated basis.
+
+        ``residual_svd`` initializes the adapter from a randomized low-rank
+        approximation of ``W_rotated - W_quantized``. This gives optimization a
+        useful nonzero starting point while preserving the exact packed base.
+        """
         if rank < 1 or alpha <= 0:
             raise ValueError("LoRA requires rank >= 1 and alpha > 0")
+        if init not in ("zero", "residual_svd"):
+            raise ValueError("LoRA init must be 'zero' or 'residual_svd'")
+        if rank > min(self.out_features, self.in_features):
+            raise ValueError("LoRA rank exceeds the matrix's smaller dimension")
+        if oversample < 0 or niter < 0:
+            raise ValueError("LoRA SVD oversample and iterations must be nonnegative")
         if self.lora_A is not None:
             if self.lora_rank != rank or self.lora_alpha != alpha:
                 raise ValueError("LoRA is already enabled with different settings")
             return self.lora_A, self.lora_B
         device = self.qweight.packed.data.device
-        self.lora_A = nn.Parameter(torch.empty(
-            rank, self.in_features, device=device, dtype=torch.float32))
-        self.lora_B = nn.Parameter(torch.zeros(
-            self.out_features, rank, device=device, dtype=torch.float32))
-        nn.init.kaiming_uniform_(self.lora_A, a=math.sqrt(5))
+        if init == "zero":
+            matrix_a = torch.empty(
+                rank, self.in_features, device=device, dtype=torch.float32)
+            matrix_b = torch.zeros(
+                self.out_features, rank, device=device, dtype=torch.float32)
+            nn.init.kaiming_uniform_(matrix_a, a=math.sqrt(5))
+        else:
+            if residual is None or tuple(residual.shape) != (
+                    self.out_features, self.in_features):
+                raise ValueError(
+                    "residual_svd LoRA requires an [out_features, in_features] "
+                    "residual")
+            work = residual.detach().float()
+            if work.device.type == "mps":
+                work = work.cpu()
+            q = min(rank + oversample, min(work.shape))
+            u, singular, v = torch.svd_lowrank(work, q=q, niter=niter)
+            u = u[:, :rank]
+            singular = singular[:rank].clamp_min(0).sqrt()
+            v = v[:, :rank]
+            # The runtime multiplies B@A by alpha/rank. Split the inverse
+            # coefficient evenly so the initial adapter equals the rank-r SVD.
+            coefficient = math.sqrt(rank / float(alpha))
+            matrix_b = (u * singular.unsqueeze(0) * coefficient).to(device)
+            matrix_a = (
+                singular.unsqueeze(1) * v.T * coefficient).to(device)
+        self.lora_A = nn.Parameter(matrix_a)
+        self.lora_B = nn.Parameter(matrix_b)
         self.lora_rank = rank
         self.lora_alpha = float(alpha)
         return self.lora_A, self.lora_B
@@ -253,6 +294,42 @@ class QuantLinear(nn.Module):
         return (self.lora_A.numel() * self.lora_A.element_size()
                 + self.lora_B.numel() * self.lora_B.element_size())
 
+    def retain_recovery_source(self, weight: torch.Tensor) -> None:
+        """Keep an fp16 CPU source solely for alternating code refresh."""
+        self._recovery_source_weight = weight.detach().to(
+            device="cpu", dtype=torch.float16).clone()
+
+    @torch.no_grad()
+    def refresh_quantization(self) -> None:
+        """Reassign packed codes for the current learned rotation and scales."""
+        if self._recovery_source_weight is None or self._quant_config is None:
+            raise ValueError("quantization refresh requires retained source weights")
+        device = self.qweight.packed.data.device
+        source = self._recovery_source_weight.to(device=device, dtype=torch.float32)
+        rotated = self.act_rotation.rotate_weight(source)
+        scales_override = None
+        if self._log_scale_multiplier is not None:
+            scales_override = (
+                self._scale_training_base
+                * self.scale_finetuning_multiplier()).detach()
+        self.qweight = Quantizer(self._quant_config).quantize_weight(
+            rotated, scales_override=scales_override)
+        if self._log_scale_multiplier is not None:
+            indices = unpack_indices(self.qweight.packed).reshape(
+                self.out_features, self.in_features)
+            centroids = self.qweight.codebook.centroids.to(indices.device)
+            self._scale_training_codes = centroids[indices].float()
+            self._scale_training_base = self.qweight.scales.detach().float().clone()
+            self._log_scale_multiplier.zero_()
+        self._fp_cache = None
+        if self.fallback:
+            self._fp_cache = self.qweight.dequantize()
+            if self._fallback_dtype is not None:
+                self._fp_cache = self._fp_cache.to(self._fallback_dtype)
+
+    def drop_recovery_source(self) -> None:
+        self._recovery_source_weight = None
+
     @classmethod
     def from_linear(cls, linear: nn.Linear, config: QuantConfig,
                     weight_rotation: Optional[Rotation] = None,
@@ -273,8 +350,11 @@ class QuantLinear(nn.Module):
         qw = Quantizer(config).quantize_weight(
             w, H=H, scales_override=scales_override)
         bias = linear.bias.data if linear.bias is not None else None
-        return cls(qw, act_rotation=act_rotation, bias=bias, fallback=fallback,
-                   fallback_dtype=fallback_dtype or linear.weight.dtype)
+        module = cls(
+            qw, act_rotation=act_rotation, bias=bias, fallback=fallback,
+            fallback_dtype=fallback_dtype or linear.weight.dtype)
+        module._quant_config = config
+        return module
 
     def packed_state_bytes(self) -> int:
         """Persistent storage in packed mode (codes + scales + sketch), in bytes.

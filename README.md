@@ -35,6 +35,15 @@ configs/        one YAML per experiment cell (E1..E8)
 results/       JSON per run + generated tables/figures
 ```
 
+The chronological [experiment log](docs/experiment_log.md) records successful
+and negative results, methodological caveats, and the decision taken after each
+trial. Update it alongside raw JSON results so development history remains
+paper-ready and reproducible.
+
+The [serving-backend matrix](docs/serving_backends.md) tracks which runtimes
+preserve the packed RotQuant representation, the extension point for each
+backend, and the conformance gates required before claiming support.
+
 ## Install
 
 ```bash
@@ -154,6 +163,30 @@ runs rather than compressed-memory or throughput measurements. Vision serving
 will additionally require the checkpoint's `AutoProcessor`; WikiText/C4 text
 perplexity uses its tokenizer directly.
 
+Rotation-aware cache experiments use true post-RoPE K/V states. The uniform
+control and held-out dynamic allocator are separate configs:
+
+```bash
+# Uniform 4-bit K/V quality and exact logical bytes.
+uv run python scripts/run_experiment.py configs/qwen35_4b_kv_mps.yaml
+
+# Same 4.25-bpv target, but allow 3/4/8-bit K and V independently per layer.
+uv run python scripts/run_experiment.py configs/qwen35_4b_dynamic_kv_mps.yaml
+```
+
+The dynamic selector uses C4 sequences disjoint from final evaluation, scores
+one K/V state at a time by global teacher KL per exact byte saved, measures the
+joint recipe, and restores the best same-budget uniform recipe if interactions
+make it worse. For native Metal cache throughput across context depths, run
+`scripts/benchmark_rotquant_kv.sh` after building the pinned llama.cpp fork.
+
+For the full CUDA study, open
+[`notebooks/qwen35_4b_kv_cache_matrix_colab.ipynb`](notebooks/qwen35_4b_kv_cache_matrix_colab.ipynb).
+It loads the 4-bit weight model only once per seed, runs all 16 K/V precision
+pairs plus codebook/group/rotation/dynamic-budget ablations, persists every
+trial to Drive, validates Pareto candidates across three seeds, and confirms the
+3-bit- and 4-bit-budget winners at 1,024-token context.
+
 For CUDA LoRA-QAT quality recovery, open
 [`notebooks/qwen35_4b_lora_qat_colab.ipynb`](notebooks/qwen35_4b_lora_qat_colab.ipynb)
 in Colab. It checks the GPU, establishes a matched CUDA source baseline, runs a
@@ -209,8 +242,19 @@ The returned model supports normal Transformers `forward` and `generate` calls.
 RotQuant still lacks a fused packed matmul, so the default compressed path
 transiently dequantizes each layer and prioritizes storage over throughput.
 Passing `fallback=True` caches fp16 weights and is faster, but forfeits the
-runtime-memory reduction. vLLM, SGLang, llama.cpp, and Unsloth do not understand
-this custom artifact without a backend plugin or format conversion.
+runtime-memory reduction. vLLM, SGLang, and Unsloth do not understand this
+custom artifact without a backend plugin.
+
+For llama.cpp, the repository now includes an experimental native GGUF v1
+exporter and pinned runtime patch. It preserves the packed 4-bit Gaussian
+codes, fp16 group scales, and learned butterfly rotations exactly—there is no
+dense reconstruction or second quantization pass. See
+[`integrations/llama.cpp/README.md`](integrations/llama.cpp/README.md) for the
+build, export, conformance-check, and OpenAI-compatible serving commands. The
+patched runtime now includes both a portable CPU reference and native Apple
+Metal kernels for the structured rotation and packed Gaussian-codebook
+matvec. The Metal path keeps RotQuant tensors on the GPU and never
+materializes dense projection weights.
 
 To reconstruct only the already-selected Qwen artifact in Colab without
 repeating the trial matrix, open

@@ -15,7 +15,7 @@ patch modes are exposed for E7:
 """
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Dict, Optional, Sequence
 
 import torch
@@ -55,6 +55,19 @@ class PatchConfig:
     exclude: Sequence[str] = ("lm_head", "embed_out")
     fallback: bool = False
     seed: int = 0
+    # Optional Unsloth-Dynamic-style, model-specific mixed-precision search.
+    # ``dynamic`` contains serializable search settings. ``layer_quant`` is
+    # populated by the runner with the resulting per-projection recipe and is
+    # intentionally excluded from normal config construction/representation.
+    dynamic: Optional[Dict] = None
+    layer_quant: Dict[str, QuantConfig] = field(
+        default_factory=dict, init=False, repr=False)
+
+
+def quant_config_for(cfg: PatchConfig, name: str) -> QuantConfig:
+    """Resolve a projection's selected quantizer configuration."""
+
+    return cfg.layer_quant.get(name, cfg.quant)
 
 
 def _get_parent(model: nn.Module, dotted: str):
@@ -152,6 +165,7 @@ def patch_model(model: nn.Module, cfg: PatchConfig,
 
     train_stats: list = []
     for i, (name, linear) in enumerate(targets):
+        layer_quant = quant_config_for(cfg, name)
         source_device = linear.weight.device
         source_dtype = linear.weight.dtype
         stage_on_cpu = source_device.type == "mps" and cfg.fallback
@@ -180,7 +194,7 @@ def patch_model(model: nn.Module, cfg: PatchConfig,
             train_weight = linear.weight if train_on_source else work_linear.weight
             layer_acts = activations.get(name)
             stats = train_layer_rotation(
-                weight_rot, train_weight, cfg.quant,
+                weight_rot, train_weight, layer_quant,
                 train_cfg, activations=layer_acts)
             if train_on_source:
                 weight_rot.to(device=work_linear.weight.device, dtype=torch.float32)
@@ -202,7 +216,7 @@ def patch_model(model: nn.Module, cfg: PatchConfig,
                     selection_acts = layer_acts
                     selection_tokens = train_cfg.max_tokens
                 selection = select_butterfly_checkpoint(
-                    weight_rot, reference_rot, work_linear.weight, cfg.quant,
+                    weight_rot, reference_rot, work_linear.weight, layer_quant,
                     selection_acts, max_tokens=selection_tokens,
                     min_improvement=train_cfg.selection_min_improvement)
                 stats.update(selection)
@@ -225,7 +239,7 @@ def patch_model(model: nn.Module, cfg: PatchConfig,
             # H' = R H R^T so GPTQ sees the consistent input statistics.
             R = weight_rot.as_matrix(device=H.device, dtype=torch.float64)
             H = (R @ H.to(torch.float64) @ R.transpose(-1, -2)).to(torch.float32)
-        qlin = QuantLinear.from_linear(work_linear, cfg.quant,
+        qlin = QuantLinear.from_linear(work_linear, layer_quant,
                                        weight_rotation=weight_rot,
                                        act_rotation=act_rot, H=H,
                                        fallback=cfg.fallback,

@@ -1,0 +1,39 @@
+# Qwen3.5-4B 4-bit RotQuant weights plus held-out mixed-precision K/V search.
+# Cached fp16 fallback makes this a CUDA quality/algorithm experiment; it is not
+# a packed-weight memory or throughput measurement. K/V byte accounting remains
+# exact because cache tensors are independently packed at the true cache boundary.
+experiment: QWEN35_DYNAMIC_KV_CUDA
+label: qwen35_4b_rotquant_dynamic_kv_cuda
+model: unsloth/Qwen3.5-4B
+model_loader: multimodal_lm
+device: cuda
+dtype: float16
+seed: 0
+quant:
+  bits: 4
+  codebook: gaussian
+  scale: mse_search
+  group_size: 128
+  error_comp: none
+patch:
+  rotation: fwht
+  block: 128
+  mode: consistent
+  fallback: true
+  include: [model.language_model.layers.]
+  exclude: [linear_attn.in_proj_a, linear_attn.in_proj_b]
+eval:
+  perplexity: false
+  zeroshot: false
+  kv_cache:
+    bits: 4
+    group_size: 64
+    rotation_block: 128
+    batches: 4
+    prompt_len: 256
+    continuation_len: 16
+    skip: 384
+    dynamic:
+      candidate_bits: [3, 4, 8]
+      target_bpv: 4.25
+      selection_batches: 4

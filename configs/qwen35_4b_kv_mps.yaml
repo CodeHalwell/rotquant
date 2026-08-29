@@ -1,0 +1,36 @@
+# Qwen3.5-4B 4-bit weight + 4-bit K/V cache quality simulation on Apple Silicon.
+# This evaluates true post-RoPE cache state. It reconstructs packed K/V for the
+# stock Transformers attention path, so quality and logical-byte results are
+# valid; throughput/resident memory still require the native fused runtime.
+experiment: QWEN35_KV
+label: qwen35_4b_rotquant_kv4_mps
+model: unsloth/Qwen3.5-4B
+model_loader: multimodal_lm
+device: mps
+dtype: float16
+seed: 0
+quant:
+  bits: 4
+  codebook: gaussian
+  scale: mse_search
+  group_size: 128
+  error_comp: none
+patch:
+  rotation: fwht
+  block: 128
+  mode: consistent
+  include: [model.language_model.layers.]
+  exclude: [linear_attn.in_proj_a, linear_attn.in_proj_b]
+eval:
+  perplexity: false
+  zeroshot: false
+  kv_cache:
+    bits: 4
+    key_bits: 4
+    value_bits: 4
+    group_size: 64
+    rotation_block: 128
+    batches: 2
+    prompt_len: 128
+    continuation_len: 8
+    skip: 384

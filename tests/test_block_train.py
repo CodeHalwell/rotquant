@@ -11,7 +11,13 @@ from rotquant.block_train import (
 )
 from rotquant.linear import QuantLinear
 from rotquant.patch import PatchConfig
-from rotquant.quantize import QuantConfig, _group_scales_rms, _storage_scales
+from rotquant.quantize import (
+    QuantConfig,
+    Quantizer,
+    _group_scales_rms,
+    _storage_scales,
+)
+from rotquant.rotate import ButterflyRotation, Identity
 
 
 class ToyBlock(nn.Module):
@@ -233,6 +239,11 @@ def test_end_to_end_distillation_commits_packed_parameters():
         "distill_lora_rank": 2,
         "distill_lora_alpha": 4.0,
         "distill_lora_lr": 1e-3,
+        "distill_lora_init": "residual_svd",
+        "distill_lora_svd_oversample": 1,
+        "distill_code_refresh_interval": 1,
+        "distill_existing_patterns": ["norm"],
+        "distill_existing_lr": 1e-4,
         "distill_train_rotations": False,
         "distill_train_scales": False,
     })
@@ -246,6 +257,9 @@ def test_end_to_end_distillation_commits_packed_parameters():
             <= distillation["initial_validation_loss"] + 1e-8)
     assert isinstance(distillation["accepted"], bool)
     assert distillation["lora_rank"] == 2
+    assert distillation["lora_init"] == "residual_svd"
+    assert distillation["code_refresh_interval"] == 1
+    assert distillation["existing_parameter_names"]
     assert not distillation["train_rotations"]
     assert not distillation["train_scales"]
     assert (distillation["adapter_parameter_bytes"] > 0
@@ -259,6 +273,39 @@ def test_end_to_end_distillation_commits_packed_parameters():
     assert all((module.lora_A is not None) == distillation["lora_retained"]
                for module in quant_linears)
     assert torch.isfinite(model(**batches[0]).logits).all()
+
+
+def test_residual_svd_lora_starts_closer_to_source_weight():
+    torch.manual_seed(9)
+    source = nn.Linear(16, 24, bias=False)
+    qlinear = QuantLinear.from_linear(
+        source, _qcfg(), weight_rotation=Identity(16),
+        act_rotation=Identity(16), fallback=True)
+    residual = source.weight.detach().float() - qlinear.qweight.dequantize().float()
+    baseline_error = residual.pow(2).mean()
+    matrix_a, matrix_b = qlinear.enable_lora(
+        4, 8.0, init="residual_svd", residual=residual,
+        oversample=2, niter=2)
+    recovered = matrix_b @ matrix_a * (qlinear.lora_alpha / qlinear.lora_rank)
+    assert (residual - recovered).pow(2).mean() < baseline_error
+
+
+def test_code_refresh_reassigns_for_current_rotation():
+    torch.manual_seed(10)
+    source = nn.Linear(16, 16, bias=False)
+    rotation = ButterflyRotation(16, block=16, seed=0)
+    qlinear = QuantLinear.from_linear(
+        source, _qcfg(), weight_rotation=rotation,
+        act_rotation=rotation, fallback=True)
+    qlinear.retain_recovery_source(source.weight)
+    with torch.no_grad():
+        rotation.theta.add_(0.05)
+    qlinear.refresh_quantization()
+    expected = Quantizer(_qcfg()).quantize_weight(
+        rotation.rotate_weight(source.weight.half().float())).dequantize()
+    assert torch.allclose(qlinear.qweight.dequantize(), expected)
+    qlinear.drop_recovery_source()
+    assert qlinear._recovery_source_weight is None
 
 
 def test_rejected_block_uses_parameter_free_fwht():
