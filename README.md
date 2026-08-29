@@ -187,6 +187,15 @@ pairs plus codebook/group/rotation/dynamic-budget ablations, persists every
 trial to Drive, validates Pareto candidates across three seeds, and confirms the
 3-bit- and 4-bit-budget winners at 1,024-token context.
 
+After that matrix completes, open
+[`notebooks/qwen35_4b_kv_frozen_transfer_colab.ipynb`](notebooks/qwen35_4b_kv_frozen_transfer_colab.ipynb)
+to test deployment-map transfer without rerunning candidate scoring. It replays
+the saved short- and long-context recipes, evaluates each fixed map on both
+held-out contexts, constructs a mixed-context map from selection metrics only,
+and recommends one universal map only when it beats uniform K3/V3 at no more
+exact bytes in both contexts. Frozen recipes require an exact layer match, so a
+missing or stale layer cannot silently fall back to uniform precision.
+
 For whole-system co-design, open
 [`notebooks/qwen35_4b_joint_rotquant_kv_colab.ipynb`](notebooks/qwen35_4b_joint_rotquant_kv_colab.ipynb).
 It screens uniform and mixed 2/3/4/8-bit weight recipes, crosses the viable

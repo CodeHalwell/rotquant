@@ -181,6 +181,72 @@ def test_uniform_and_dynamic_use_same_explicit_held_out_batches():
     assert dynamic["top1_agreement"] == uniform["top1_agreement"]
 
 
+def test_frozen_recipe_matches_explicit_uniform_profile():
+    batches = [
+        {"input_ids": (torch.arange(offset, offset + 24).reshape(1, -1) % 31)}
+        for offset in (1, 7)
+    ]
+    common = {
+        "bits": 4,
+        "group_size": 4,
+        "rotation_block": 8,
+        "batches": 1,
+        "eval_offset_batches": 1,
+        "prompt_len": 8,
+        "continuation_len": 2,
+        "skip": 0,
+    }
+    uniform = evaluate_kv_cache(
+        _CacheModel(), batches,
+        KVCacheEvalConfig(**common, key_bits=2, value_bits=4), "cpu")
+    frozen = evaluate_kv_cache(
+        _CacheModel(), batches,
+        KVCacheEvalConfig(**common, frozen_recipe=[{
+            "layer": 0, "key_bits": 2, "value_bits": 4,
+        }]),
+        "cpu",
+    )
+
+    assert frozen["frozen_recipe"]["validated_layers"] == 1
+    assert frozen["key_bits"] == 2
+    assert frozen["value_bits"] == 4
+    assert frozen["mean_teacher_kl"] == uniform["mean_teacher_kl"]
+    assert frozen["nll_delta"] == uniform["nll_delta"]
+    assert frozen["top1_agreement"] == uniform["top1_agreement"]
+
+
+def test_frozen_recipe_requires_exact_cache_layers():
+    batch = {"input_ids": torch.arange(1, 25).reshape(1, -1) % 31}
+    config = KVCacheEvalConfig(
+        group_size=4,
+        rotation_block=8,
+        batches=1,
+        prompt_len=8,
+        continuation_len=2,
+        skip=0,
+        frozen_recipe=[{"layer": 1, "key_bits": 3, "value_bits": 3}],
+    )
+    try:
+        evaluate_kv_cache(_CacheModel(), [batch], config, "cpu")
+    except ValueError as error:
+        assert "missing layers [0]" in str(error)
+        assert "unknown layers [1]" in str(error)
+    else:
+        raise AssertionError("mismatched frozen recipe was accepted")
+
+
+def test_frozen_recipe_and_dynamic_are_mutually_exclusive():
+    try:
+        KVCacheEvalConfig(
+            dynamic={"candidate_bits": [4], "target_bpv": 4.25},
+            frozen_recipe=[{"layer": 0, "key_bits": 4, "value_bits": 4}],
+        )
+    except ValueError as error:
+        assert "mutually exclusive" in str(error)
+    else:
+        raise AssertionError("dynamic and frozen recipes were accepted together")
+
+
 def test_dynamic_cache_config_rejects_invalid_candidate_subset():
     try:
         KVDynamicConfig(candidate_bits=(3, 4), key_candidate_bits=(8,))

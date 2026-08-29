@@ -143,6 +143,7 @@ remain explicitly quality-only.
 | 2026-08-29 | Real Transformers KV-cache boundary smoke | tiny random Llama, 16-token prefill + 2 decode tokens | Passed: top-1 1.0, KL 8.43e-7, logical cache 4096 -> 1024 bytes |
 | 2026-08-29 | Held-out dynamic K/V rate allocation | Unit suite plus real runner smoke with disjoint selection/eval batches | Passed: exact 6.0 effective bpv target, logical cache 4096 -> 768 bytes, top-1 1.0, KL 1.24e-6 |
 | 2026-08-29 | Direct prefill K/V NMSE and whole-system CUDA matrix | 131 tests; 98 parsed weight/KV configurations; 47-cell nbformat/AST validation | Structurally passed; Qwen CUDA execution pending |
+| 2026-08-29 | Strict frozen K/V recipes and cross-context transfer notebook | 134 tests; ruff; 33-cell nbformat/AST validation | Structurally passed; six Qwen CUDA transfer trials pending |
 
 The first full Qwen3.5-4B dynamic-K/V MPS attempt was manually stopped during
 the one-time weight patch at 48/200 projections. It produced no quality result;

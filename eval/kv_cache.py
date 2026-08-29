@@ -44,6 +44,7 @@ class KVCacheEvalConfig:
     temperature: float = 1.0
     seed: int = 0
     dynamic: dict[str, Any] | None = None
+    frozen_recipe: list[dict[str, int]] | None = None
 
     def __post_init__(self) -> None:
         if self.batches < 1:
@@ -54,6 +55,10 @@ class KVCacheEvalConfig:
             raise ValueError("KV-cache eval_offset_batches must be nonnegative")
         if self.skip < 0 or self.temperature <= 0:
             raise ValueError("KV-cache skip must be nonnegative and temperature positive")
+        if self.dynamic is not None and self.frozen_recipe is not None:
+            raise ValueError("dynamic and frozen_recipe are mutually exclusive")
+        if self.frozen_recipe is not None and not self.frozen_recipe:
+            raise ValueError("frozen_recipe must contain at least one layer")
 
     def quant_config(self, *, seed: int | None = None) -> KVQuantConfig:
         return KVQuantConfig(
@@ -395,6 +400,42 @@ def _uniform_recipe(
     }
 
 
+def _materialize_frozen_recipe(
+    records: list[dict[str, int]],
+    layers: list[int],
+    base: KVQuantConfig,
+) -> dict[int, KVQuantConfig]:
+    """Validate and materialize a serialized per-layer K/V bit recipe."""
+    recipe: dict[int, KVQuantConfig] = {}
+    for record in records:
+        missing = {"layer", "key_bits", "value_bits"} - set(record)
+        if missing:
+            raise ValueError(
+                "frozen_recipe entry is missing: " + ", ".join(sorted(missing)))
+        layer = int(record["layer"])
+        if layer in recipe:
+            raise ValueError(f"frozen_recipe contains duplicate layer {layer}")
+        key_bits = int(record["key_bits"])
+        value_bits = int(record["value_bits"])
+        if not 1 <= key_bits <= 16 or not 1 <= value_bits <= 16:
+            raise ValueError("frozen_recipe bits must be in [1, 16]")
+        recipe[layer] = replace(
+            base, key_bits=key_bits, value_bits=value_bits)
+
+    expected = set(layers)
+    actual = set(recipe)
+    if actual != expected:
+        missing = sorted(expected - actual)
+        extra = sorted(actual - expected)
+        details = []
+        if missing:
+            details.append(f"missing layers {missing}")
+        if extra:
+            details.append(f"unknown layers {extra}")
+        raise ValueError("frozen_recipe does not match cache: " + "; ".join(details))
+    return recipe
+
+
 @torch.inference_mode()
 def select_dynamic_kv_quantization(
     model: torch.nn.Module,
@@ -582,9 +623,21 @@ def evaluate_kv_cache(
             raise ValueError(
                 f"KV evaluation requires {required} batches, got {len(batches)}")
         evaluation = batches[config.eval_offset_batches:required]
-        return _evaluate_kv_cache(
-            model, evaluation,
-            replace(config, eval_offset_batches=0), device)
+        evaluation_config = replace(config, eval_offset_batches=0)
+        layer_configs = None
+        if config.frozen_recipe is not None:
+            layers = _discover_kv_layers(
+                model, evaluation[0], evaluation_config, device)
+            layer_configs = _materialize_frozen_recipe(
+                config.frozen_recipe, layers, evaluation_config.quant_config())
+        metrics: dict[str, Any] = _evaluate_kv_cache(
+            model, evaluation, evaluation_config, device, layer_configs)
+        if config.frozen_recipe is not None:
+            metrics["frozen_recipe"] = {
+                "recipe": [dict(record) for record in config.frozen_recipe],
+                "validated_layers": len(layer_configs or {}),
+            }
+        return metrics
     dynamic = KVDynamicConfig(**config.dynamic)
     evaluation_offset = max(
         dynamic.selection_batches, config.eval_offset_batches)
@@ -596,7 +649,7 @@ def evaluate_kv_cache(
     evaluation = batches[evaluation_offset:required]
     recipe, stats = select_dynamic_kv_quantization(
         model, selection, config, device)
-    final = _evaluate_kv_cache(
+    final: dict[str, Any] = _evaluate_kv_cache(
         model, evaluation,
         replace(config, dynamic=None, eval_offset_batches=0), device, recipe)
     final["dynamic"] = stats
