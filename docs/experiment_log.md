@@ -273,6 +273,14 @@ by only 1.30%. Decision: promote the saved mixed recipe as the universal frozen
 K/V candidate in the whole-system weight-plus-cache matrix, while retaining
 dynamic per-weight allocation as an ablation.
 
+The first launch of the promoted whole-system matrix exited during the initial
+source-weight control before writing a result. The notebook's original
+`subprocess.run(check=True)` wrapper surfaced only `CalledProcessError`, so the
+underlying child traceback was not retained and this attempt carries no quality
+measurement. The launcher now streams combined stdout/stderr to the notebook,
+persists `subprocess.log` inside the content-addressed trial directory, and
+includes its last 120 lines and exit code in any raised error.
+
 ## Native K/V cache benchmark notes
 
 Command family:
