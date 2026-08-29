@@ -1,6 +1,7 @@
 """End-to-end tests for Transformers-style cache simulation."""
 from types import SimpleNamespace
 
+import pytest
 import torch
 
 from eval.kv_cache import (
@@ -115,6 +116,102 @@ def test_end_to_end_cache_eval_reports_global_quality_and_bytes():
     assert metrics["mean_teacher_kl"] >= 0
     assert 0 <= metrics["top1_agreement"] <= 1
     assert metrics["source_total_cache_bytes"] > metrics["deployed_total_cache_bytes"]
+
+
+def test_cache_eval_supplies_absolute_decode_positions_when_supported():
+    class PositionAwareCacheModel(_CacheModel):
+        def __init__(self):
+            super().__init__()
+            self.decode_positions = []
+
+        def forward(self, input_ids, attention_mask=None, past_key_values=None,
+                    position_ids=None, use_cache=True):
+            if past_key_values is not None:
+                expected = past_key_values.layers[0].keys.shape[-2]
+                assert position_ids is not None
+                assert position_ids.shape == (input_ids.shape[0], 1)
+                assert position_ids.eq(expected).all()
+                self.decode_positions.append(expected)
+            return super().forward(
+                input_ids, attention_mask=attention_mask,
+                past_key_values=past_key_values, use_cache=use_cache)
+
+    ids = torch.arange(1, 25).reshape(1, -1) % 31
+    model = PositionAwareCacheModel()
+    config = KVCacheEvalConfig(
+        bits=4,
+        group_size=4,
+        rotation_block=8,
+        batches=1,
+        prompt_len=8,
+        continuation_len=3,
+        skip=0,
+    )
+
+    evaluate_kv_cache(model, [{"input_ids": ids}], config, "cpu")
+
+    assert model.decode_positions == [8, 8, 9, 9, 10, 10]
+
+
+def test_qwen35_multimodal_stale_rope_state_accepts_cached_decode():
+    qwen35 = pytest.importorskip("transformers.models.qwen3_5")
+    text_config = qwen35.Qwen3_5TextConfig(
+        vocab_size=64,
+        hidden_size=32,
+        intermediate_size=64,
+        num_hidden_layers=4,
+        num_attention_heads=4,
+        num_key_value_heads=2,
+        head_dim=8,
+        layer_types=["linear_attention"] * 3 + ["full_attention"],
+        linear_num_key_heads=4,
+        linear_num_value_heads=4,
+        linear_key_head_dim=8,
+        linear_value_head_dim=8,
+        linear_conv_kernel_dim=4,
+        eos_token_id=63,
+        pad_token_id=63,
+    )
+    vision_config = qwen35.Qwen3_5VisionConfig(
+        depth=1,
+        hidden_size=32,
+        intermediate_size=64,
+        num_heads=4,
+        out_hidden_size=32,
+        patch_size=2,
+        spatial_merge_size=1,
+        temporal_patch_size=1,
+        num_position_embeddings=16,
+    )
+    config = qwen35.Qwen3_5Config(
+        text_config=text_config,
+        vision_config=vision_config,
+        image_token_id=60,
+        video_token_id=61,
+        vision_start_token_id=62,
+        vision_end_token_id=63,
+    )
+    model = qwen35.Qwen3_5ForConditionalGeneration(config).eval()
+    # ``generate`` leaves this multimodal RoPE state populated. Without an
+    # explicit one-token position the wrapper expands positions to the full
+    # attention-mask width during the next independent cache evaluation.
+    model.model.rope_deltas = torch.zeros((1, 1), dtype=torch.long)
+    ids = torch.arange(1, 25).reshape(1, -1) % 50
+    eval_config = KVCacheEvalConfig(
+        bits=4,
+        group_size=4,
+        rotation_block=8,
+        batches=1,
+        prompt_len=8,
+        continuation_len=2,
+        skip=0,
+    )
+
+    metrics = evaluate_kv_cache(
+        model, [{"input_ids": ids}], eval_config, "cpu")
+
+    assert metrics["evaluated_tokens"] == 2
+    assert metrics["kv_layers"] == 1
 
 
 def test_dynamic_cache_allocator_uses_disjoint_selection_and_exact_budget():

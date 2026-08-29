@@ -273,13 +273,16 @@ by only 1.30%. Decision: promote the saved mixed recipe as the universal frozen
 K/V candidate in the whole-system weight-plus-cache matrix, while retaining
 dynamic per-weight allocation as an ablation.
 
-The first launch of the promoted whole-system matrix exited during the initial
-source-weight control before writing a result. The notebook's original
-`subprocess.run(check=True)` wrapper surfaced only `CalledProcessError`, so the
-underlying child traceback was not retained and this attempt carries no quality
-measurement. The launcher now streams combined stdout/stderr to the notebook,
-persists `subprocess.log` inside the content-addressed trial directory, and
-includes its last 120 lines and exit code in any raised error.
+The first two launches of the promoted whole-system matrix exited during the
+initial source-weight control before writing a result, so neither attempt
+carries a quality measurement. The first exposed only `CalledProcessError`; the
+new persistent log on the second identified a Qwen3.5 multimodal RoPE shape
+mismatch. Trajectory generation had populated the wrapper's `rope_deltas`, then
+the independent K/V evaluator supplied a one-token query with a full-cache
+attention mask and allowed the wrapper to infer positions. It consequently
+constructed 257 positions for one query token. Cached text decode now supplies
+the explicit absolute one-token `position_ids`. A tiny real Qwen3.5 multimodal
+regression reproduces the stale-RoPE condition and passes with the fix.
 
 ## Native K/V cache benchmark notes
 

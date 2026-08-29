@@ -9,6 +9,7 @@ the native fused runtime is developed.
 from __future__ import annotations
 
 import copy
+import inspect
 import types
 from dataclasses import asdict, dataclass, replace
 from typing import Any
@@ -261,6 +262,14 @@ def _mean(items: list[float]) -> float:
     return sum(items) / max(len(items), 1)
 
 
+def _accepts_position_ids(model: torch.nn.Module) -> bool:
+    """Whether the public model forward accepts explicit absolute positions."""
+    try:
+        return "position_ids" in inspect.signature(model.forward).parameters
+    except (TypeError, ValueError):
+        return False
+
+
 @torch.inference_mode()
 def _evaluate_kv_cache(
     model: torch.nn.Module,
@@ -279,6 +288,7 @@ def _evaluate_kv_cache(
     quant_nll: list[float] = []
     size_metrics: list[dict[str, float | int]] = []
     evaluated_tokens = 0
+    explicit_decode_positions = _accepts_position_ids(model)
 
     for batch_idx, batch in enumerate(batches[:config.batches]):
         ids = batch["input_ids"].to(device)
@@ -308,17 +318,30 @@ def _evaluate_kv_cache(
             target = ids[:, position + 1]
             attention_mask = torch.ones(
                 ids.shape[0], position + 1, dtype=torch.long, device=device)
+            decode_kwargs: dict[str, torch.Tensor] = {}
+            if explicit_decode_positions:
+                # Unified multimodal wrappers such as Qwen3.5 retain M-RoPE
+                # state after ``generate``.  If they infer positions from the
+                # full cache attention mask, a one-token decode can incorrectly
+                # receive ``position_ids`` with ``position + 1`` entries.  The
+                # evaluator is text-only, so provide its unambiguous absolute
+                # one-token position and avoid stateful wrapper inference.
+                decode_kwargs["position_ids"] = torch.full(
+                    (ids.shape[0], 1), position,
+                    dtype=torch.long, device=device)
             source = model(
                 input_ids=current,
                 attention_mask=attention_mask,
                 past_key_values=source_cache,
                 use_cache=True,
+                **decode_kwargs,
             )
             candidate = model(
                 input_ids=current,
                 attention_mask=attention_mask,
                 past_key_values=packed_cache,
                 use_cache=True,
+                **decode_kwargs,
             )
             source_cache = source.past_key_values
             packed_cache = candidate.past_key_values
