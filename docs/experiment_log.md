@@ -284,6 +284,32 @@ constructed 257 positions for one query token. Cached text decode now supplies
 the explicit absolute one-token `position_ids`. A tiny real Qwen3.5 multimodal
 regression reproduces the stale-RoPE condition and passes with the fix.
 
+### Qwen3.5-4B whole-system weight screen (partial)
+
+The corrected CUDA run at Git SHA `8d9676f109fa` completed its seed-0 weight
+screen with a matched source PPL of 13.9001 (WikiText-2, 64 samples, 256-token
+sequences). Only two quantized recipes passed the predeclared 10% seed-0 gate:
+
+| Weight recipe | PPL | Relative PPL | Estimated complete weights | Reduction | Effective weight bpw |
+|---|---:|---:|---:|---:|---:|
+| Uniform W4 | **14.7029** | **+5.78%** | 4.0277 GB | 56.78% | 4.125 |
+| Dynamic 4.125-bpw | 14.9976 | +7.90% | **4.0238 GB** | **56.83%** | 4.116 |
+
+Dynamic 4.125-bpw saved only 3.93 MB (0.098%) relative to uniform W4 while
+raising PPL by a further 2.00%, so the seed-0 screen currently favors uniform
+W4. Uniform W3 (+28.74%), dynamic 2.75 (+66.53%), dynamic 3.25 (+21.20%),
+dynamic 3.625 (+12.07%), and guarded dynamic 3.25 (+36.02%) all failed the 10%
+gate. The joint stage therefore retained only `uniform_w4` and
+`dynamic_w4.125` rather than filling the nominal three-finalist allowance.
+
+K/V reconstruction NMSE remained approximately 0.009 for every weight recipe.
+The cache KL values use each weight model as its own full-cache teacher, so they
+measure that model's sensitivity to K/V quantization and must not be interpreted
+as cross-weight accuracy against the FP16 source. Likewise, trajectory agreement
+is based on only 32 continuation tokens at this screening stage. Final claims
+remain pending the K/V cross, recovery, three-seed release validation, and
+long-context confirmation.
+
 ## Native K/V cache benchmark notes
 
 Command family:
