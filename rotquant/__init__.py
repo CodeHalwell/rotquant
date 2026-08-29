@@ -25,6 +25,9 @@ from .block_train import (
     collect_teacher_calls,
     find_transformer_blocks, train_and_patch_blocks,
 )
+from .checkpoint import (
+    checkpoint_manifest, load_packed_model, save_packed_checkpoint,
+)
 
 __all__ = [
     "BitBudget", "set_seed", "environment_record", "get_logger",
@@ -44,4 +47,5 @@ __all__ = [
     "BlockCall", "TeacherCall", "BlockRotationTrainConfig",
     "collect_block_calls", "collect_teacher_calls",
     "find_transformer_blocks", "train_and_patch_blocks",
+    "checkpoint_manifest", "load_packed_model", "save_packed_checkpoint",
 ]

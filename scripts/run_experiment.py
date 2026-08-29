@@ -301,7 +301,10 @@ def footprint_metrics(model: torch.nn.Module, cfg_model: Dict[str, Any]) -> Dict
 
 def run(config_path: str, output_dir: str = "results",
         overrides: Optional[Dict[str, Any]] = None,
-        sets: Optional[List] = None) -> Dict[str, Any]:
+        sets: Optional[List] = None,
+        export_dir: Optional[str] = None,
+        export_overwrite: bool = False,
+        export_processor: bool = False) -> Dict[str, Any]:
     cfg = load_config(config_path)
     overrides = overrides or {}
     sets = list(sets or [])
@@ -477,6 +480,35 @@ def run(config_path: str, output_dir: str = "results",
                                        device=device,
                                        limit=eval_cfg.get("limit"))
 
+    if export_dir:
+        processor = None
+        if export_processor:
+            try:
+                from transformers import AutoProcessor
+                processor = AutoProcessor.from_pretrained(model_name)
+            except Exception as exc:
+                logger.warning(
+                    "could not save AutoProcessor metadata for %s: %s",
+                    model_name, exc)
+        from rotquant.checkpoint import save_packed_checkpoint
+        with Timer() as t:
+            export_metrics = save_packed_checkpoint(
+                model,
+                export_dir,
+                base_model=model_name,
+                model_loader=selected_loader,
+                tokenizer=tokenizer,
+                processor=processor,
+                overwrite=export_overwrite,
+            )
+        export_metrics["seconds"] = t.elapsed
+        metrics["packed_checkpoint"] = export_metrics
+        logger.info(
+            "exported packed checkpoint to %s (%.3f GB)",
+            export_dir,
+            export_metrics["artifact_bytes"] / 1e9,
+        )
+
     payload = {
         "run_id": run_id,
         "config": cfg,
@@ -503,6 +535,21 @@ def main(argv: Optional[List[str]] = None) -> None:
                     help="override any dotted config key, YAML-typed value "
                          "(repeatable), e.g. --set patch.rotation=dense "
                          "--set quant.bits=4")
+    ap.add_argument(
+        "--export-dir",
+        default=None,
+        help="write a self-contained packed safetensors checkpoint after the run",
+    )
+    ap.add_argument(
+        "--export-overwrite",
+        action="store_true",
+        help="allow replacing files in a non-empty export directory",
+    )
+    ap.add_argument(
+        "--export-processor",
+        action="store_true",
+        help="also save AutoProcessor metadata for multimodal serving",
+    )
     args = ap.parse_args(argv)
     sets = []
     for item in args.sets:
@@ -512,7 +559,10 @@ def main(argv: Optional[List[str]] = None) -> None:
         sets.append((key.strip(), yaml.safe_load(raw) if raw.strip() else None))
     run(args.config, args.output_dir,
         overrides={"model": args.model, "device": args.device, "seed": args.seed},
-        sets=sets)
+        sets=sets,
+        export_dir=args.export_dir,
+        export_overwrite=args.export_overwrite,
+        export_processor=args.export_processor)
 
 
 if __name__ == "__main__":

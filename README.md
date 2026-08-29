@@ -171,6 +171,51 @@ persistent quality/size report. It also includes one seed-0 3-bit LoRA-QAT probe
 on the same medium-data recipe. Expensive fallback arms are skipped when an
 earlier recipe already passes its held-out and deployed-PPL gates.
 
+### Packed checkpoint export and Transformers loading
+
+`QuantLinear` codes are not part of a normal PyTorch `state_dict`. Export the
+selected model explicitly during its final reconstruction run:
+
+```bash
+python scripts/run_experiment.py configs/qwen35_4b_lora_qat_cuda.yaml \
+  --device cuda --seed 0 \
+  --set patch.train_rotation.distill_steps=0 \
+  --set eval.perplexity=false \
+  --set eval.zeroshot=false \
+  --export-dir /path/to/qwen35-4b-rotquant \
+  --export-processor
+```
+
+The directory is self-contained and pickle-free. It stores ordinary
+Transformers state, packed codes/scales/codebooks, rotation parameters, model
+configuration, tokenizer, and (when requested) multimodal processor metadata.
+The quality-only fp16 fallback cache is never serialized. Reload it as a normal
+Transformers model object:
+
+```python
+import torch
+from transformers import AutoProcessor, AutoTokenizer
+from rotquant.checkpoint import load_packed_model
+
+checkpoint = "/path/to/qwen35-4b-rotquant"
+model = load_packed_model(checkpoint, device="cuda", dtype=torch.float16)
+tokenizer = AutoTokenizer.from_pretrained(checkpoint)
+processor = AutoProcessor.from_pretrained(checkpoint)
+```
+
+For a text-generation smoke test, run
+`python scripts/generate_packed.py /path/to/qwen35-4b-rotquant --device cuda`.
+The returned model supports normal Transformers `forward` and `generate` calls.
+RotQuant still lacks a fused packed matmul, so the default compressed path
+transiently dequantizes each layer and prioritizes storage over throughput.
+Passing `fallback=True` caches fp16 weights and is faster, but forfeits the
+runtime-memory reduction. vLLM, SGLang, llama.cpp, and Unsloth do not understand
+this custom artifact without a backend plugin or format conversion.
+
+To reconstruct only the already-selected Qwen artifact in Colab without
+repeating the trial matrix, open
+[`notebooks/qwen35_4b_export_colab.ipynb`](notebooks/qwen35_4b_export_colab.ipynb).
+
 Each run writes `results/<run_id>.json` with the config, git SHA, library
 versions, GPU, all metrics (including true bits/weight and packed-vs-fp16
 footprint for every run; `eval: {throughput: ...}` adds greedy-decode tokens/s
