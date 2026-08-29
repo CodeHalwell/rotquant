@@ -162,6 +162,15 @@ bounded smoke trial, then exposes the full 4-bit rank-4 recovery experiment from
 cached fp16 fallback to accelerate training on high-memory GPUs; its peak VRAM
 is not the packed deployment footprint.
 
+After the first rank-4 result, use
+[`notebooks/qwen35_4b_lora_trial_matrix_colab.ipynb`](notebooks/qwen35_4b_lora_trial_matrix_colab.ipynb)
+for the release decision. It runs matched source/FWHT/block-only controls,
+increases disjoint LoRA calibration data before rank, conditionally promotes to
+rank 8, validates the selected 4-bit recipe across three seeds, and writes a
+persistent quality/size report. It also includes one seed-0 3-bit LoRA-QAT probe
+on the same medium-data recipe. Expensive fallback arms are skipped when an
+earlier recipe already passes its held-out and deployed-PPL gates.
+
 Each run writes `results/<run_id>.json` with the config, git SHA, library
 versions, GPU, all metrics (including true bits/weight and packed-vs-fp16
 footprint for every run; `eval: {throughput: ...}` adds greedy-decode tokens/s
