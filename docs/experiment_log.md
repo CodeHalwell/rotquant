@@ -197,6 +197,28 @@ This is a real multi-objective tradeoff rather than an unconditional codebook
 win. Decision: promote dynamic 3.25 bpv to seeds 1/2 and 1,024-token validation;
 do not spend more cache bits unless those checks overturn the seed-0 frontier.
 
+### Qwen3.5-4B three-seed K/V validation
+
+Seeds 1 and 2 confirmed the seed-0 ranking. Dynamic 3.25 bpv had the lowest
+held-out KL in every seed. Seed 2's discrete allocator used 3.125 effective bpv,
+slightly below the nominal budget. Dynamic 2.25 bpv again exactly reproduced
+uniform K2/V2 in both seeds, providing two more endpoint-equivalence checks.
+
+| Cache recipe | Seed 0 KL | Seed 1 KL | Seed 2 KL | Mean KL | Sample std |
+|---|---:|---:|---:|---:|---:|
+| Uniform K2/V2 | 0.575244 | 0.790700 | 0.620100 | 0.662015 | 0.113679 |
+| Uniform K2/V3 | 0.538010 | 0.922300 | 0.554800 | 0.671703 | 0.217185 |
+| Dynamic 3.25 bpv | **0.448988** | **0.711100** | **0.545300** | **0.568463** | 0.132582 |
+| Uniform K3/V3 | 0.572863 | 0.886000 | 0.594300 | 0.684388 | 0.174930 |
+| Uniform K4/V4 | 0.548273 | 0.843600 | 0.678700 | 0.690191 | 0.147998 |
+
+Across seeds, dynamic 3.25 bpv reduced mean KL by 14.1% relative to the best
+uniform mean (K2/V2) and by 16.9% relative to same-budget uniform K3/V3. The
+paired per-seed wins are more important than the absolute cross-seed KL shift,
+because each seed selects different held-out calls. Decision: retain dynamic
+3.25 bpv as the K/V candidate and proceed to the pre-registered 1,024-token
+validation before treating it as the final cache profile.
+
 ## Native K/V cache benchmark notes
 
 Command family:
