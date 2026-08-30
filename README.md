@@ -214,6 +214,14 @@ It then tests block-and-scale recovery on the actual uniform-W4/frozen-map
 winner and spends four additional confirmation runs only when seed-0 recovery
 passes its predeclared PPL, cache, size, and no-adapter gates.
 
+Once those matched gates pass, open
+[`notebooks/qwen35_4b_joint_winner_export_colab.ipynb`](notebooks/qwen35_4b_joint_winner_export_colab.ipynb).
+It reconstructs the released uniform-W4/FWHT seed-0 weights, pins the current
+Hub revision, embeds the validated frozen mixed 3.25-bpv Gaussian K/V map in
+the packed manifest, confirms the released seed-0 perplexity, audits actual
+safetensors bytes and forbidden fallback keys, writes SHA-256 checksums, and
+reloads the checkpoint in a fresh process before it can be published.
+
 For CUDA LoRA-QAT quality recovery, open
 [`notebooks/qwen35_4b_lora_qat_colab.ipynb`](notebooks/qwen35_4b_lora_qat_colab.ipynb)
 in Colab. It checks the GPU, establishes a matched CUDA source baseline, runs a
@@ -245,6 +253,12 @@ python scripts/run_experiment.py configs/qwen35_4b_lora_qat_cuda.yaml \
   --export-dir /path/to/qwen35-4b-rotquant \
   --export-processor
 ```
+
+Use `--export-deployment-metadata deployment.json` to embed a plain JSON object
+in `rotquant_config.json`. This is used by the joint-winner export notebook to
+keep its validated K/V cache map and release provenance with the weight
+artifact. Metadata is declarative: consumers must still apply the K/V recipe
+in their cache runtime.
 
 The directory is self-contained and pickle-free. It stores ordinary
 Transformers state, packed codes/scales/codebooks, rotation parameters, model
@@ -286,6 +300,9 @@ materializes dense projection weights.
 To reconstruct only the already-selected Qwen artifact in Colab without
 repeating the trial matrix, open
 [`notebooks/qwen35_4b_export_colab.ipynb`](notebooks/qwen35_4b_export_colab.ipynb).
+That notebook preserves the earlier block-only export workflow. For the newer
+whole-system release winner, use
+[`notebooks/qwen35_4b_joint_winner_export_colab.ipynb`](notebooks/qwen35_4b_joint_winner_export_colab.ipynb).
 
 Each run writes `results/<run_id>.json` with the config, git SHA, library
 versions, GPU, all metrics (including true bits/weight and packed-vs-fp16

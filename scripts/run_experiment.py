@@ -25,6 +25,7 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+import json
 import os
 import re
 import sys
@@ -198,7 +199,7 @@ def resolve_model_loader(config, requested: str = "auto") -> str:
 
 
 def load_hf_model(model_name: str, dtype: torch.dtype, device,
-                  model_loader: str = "auto"):
+                  model_loader: str = "auto", model_revision: str | None = None):
     """Load a text or unified multimodal Hugging Face model plus tokenizer.
 
     RotQuant's language-quality harness intentionally uses the tokenizer and
@@ -207,7 +208,7 @@ def load_hf_model(model_name: str, dtype: torch.dtype, device,
     """
     from transformers import AutoConfig, AutoModelForCausalLM, AutoTokenizer
 
-    config = AutoConfig.from_pretrained(model_name)
+    config = AutoConfig.from_pretrained(model_name, revision=model_revision)
     selected = resolve_model_loader(config, model_loader)
     if selected == "causal_lm":
         model_cls = AutoModelForCausalLM
@@ -221,9 +222,10 @@ def load_hf_model(model_name: str, dtype: torch.dtype, device,
         model_cls = AutoModelForMultimodalLM
 
     logger.info("loading %s with %s", model_name, model_cls.__name__)
-    tokenizer = AutoTokenizer.from_pretrained(model_name, use_fast=True)
+    tokenizer = AutoTokenizer.from_pretrained(
+        model_name, use_fast=True, revision=model_revision)
     model = model_cls.from_pretrained(
-        model_name, config=config, dtype=dtype).to(device)
+        model_name, config=config, dtype=dtype, revision=model_revision).to(device)
     return model, tokenizer, selected
 
 
@@ -308,7 +310,8 @@ def run(config_path: str, output_dir: str = "results",
         sets: Optional[List] = None,
         export_dir: Optional[str] = None,
         export_overwrite: bool = False,
-        export_processor: bool = False) -> Dict[str, Any]:
+        export_processor: bool = False,
+        export_deployment_metadata: Optional[str] = None) -> Dict[str, Any]:
     cfg = load_config(config_path)
     overrides = overrides or {}
     sets = list(sets or [])
@@ -332,7 +335,8 @@ def run(config_path: str, output_dir: str = "results",
                 run_id, model_name, device, dtype, seed)
 
     model, tokenizer, selected_loader = load_hf_model(
-        model_name, dtype, device, cfg.get("model_loader", "auto"))
+        model_name, dtype, device, cfg.get("model_loader", "auto"),
+        cfg.get("model_revision"))
     model.eval()
 
     # Let a per-block ``seed:`` override the top-level one, but don't explode if
@@ -570,11 +574,19 @@ def run(config_path: str, output_dir: str = "results",
                                        limit=eval_cfg.get("limit"))
 
     if export_dir:
+        deployment_metadata = None
+        if export_deployment_metadata:
+            with open(export_deployment_metadata, encoding="utf-8") as handle:
+                deployment_metadata = json.load(handle)
+            if not isinstance(deployment_metadata, dict):
+                raise TypeError(
+                    "--export-deployment-metadata must contain a JSON object")
         processor = None
         if export_processor:
             try:
                 from transformers import AutoProcessor
-                processor = AutoProcessor.from_pretrained(model_name)
+                processor = AutoProcessor.from_pretrained(
+                    model_name, revision=cfg.get("model_revision"))
             except Exception as exc:
                 logger.warning(
                     "could not save AutoProcessor metadata for %s: %s",
@@ -585,9 +597,11 @@ def run(config_path: str, output_dir: str = "results",
                 model,
                 export_dir,
                 base_model=model_name,
+                base_model_revision=cfg.get("model_revision"),
                 model_loader=selected_loader,
                 tokenizer=tokenizer,
                 processor=processor,
+                deployment_metadata=deployment_metadata,
                 overwrite=export_overwrite,
             )
         export_metrics["seconds"] = t.elapsed
@@ -639,6 +653,13 @@ def main(argv: Optional[List[str]] = None) -> None:
         action="store_true",
         help="also save AutoProcessor metadata for multimodal serving",
     )
+    ap.add_argument(
+        "--export-deployment-metadata",
+        default=None,
+        metavar="JSON",
+        help=("embed a JSON object in the packed manifest, for example a "
+              "validated K/V cache deployment recipe"),
+    )
     args = ap.parse_args(argv)
     sets = []
     for item in args.sets:
@@ -651,7 +672,8 @@ def main(argv: Optional[List[str]] = None) -> None:
         sets=sets,
         export_dir=args.export_dir,
         export_overwrite=args.export_overwrite,
-        export_processor=args.export_processor)
+        export_processor=args.export_processor,
+        export_deployment_metadata=args.export_deployment_metadata)
 
 
 if __name__ == "__main__":

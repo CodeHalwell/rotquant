@@ -35,6 +35,11 @@ def main() -> None:
         action="store_true",
         help="cache dequantized weights (faster, but forfeits compressed memory)",
     )
+    parser.add_argument(
+        "--audit-no-fallback-cache",
+        action="store_true",
+        help="fail unless every restored QuantLinear starts without an fp cache",
+    )
     parser.add_argument("--trust-remote-code", action="store_true")
     args = parser.parse_args()
 
@@ -51,6 +56,21 @@ def main() -> None:
         fallback=args.fallback,
         trust_remote_code=args.trust_remote_code,
     )
+    if args.audit_no_fallback_cache:
+        from rotquant.linear import QuantLinear
+
+        quantized = [
+            module for module in model.modules() if isinstance(module, QuantLinear)
+        ]
+        if not quantized:
+            raise RuntimeError("packed checkpoint restored no QuantLinear modules")
+        cached = [module for module in quantized if module._fp_cache is not None]
+        if cached:
+            raise RuntimeError(
+                f"{len(cached)} of {len(quantized)} QuantLinear modules restored "
+                "with fallback caches"
+            )
+        print(f"Fallback-cache audit: PASS ({len(quantized)} packed modules)")
     tokenizer = AutoTokenizer.from_pretrained(
         args.checkpoint, trust_remote_code=args.trust_remote_code
     )

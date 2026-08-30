@@ -251,19 +251,29 @@ def save_packed_checkpoint(
     output_dir: str | Path,
     *,
     base_model: str | None = None,
+    base_model_revision: str | None = None,
     model_loader: str = "auto",
     tokenizer=None,
     processor=None,
+    deployment_metadata: dict[str, Any] | None = None,
     overwrite: bool = False,
 ) -> dict[str, Any]:
     """Save a self-contained, pickle-free packed model artifact.
 
     ``model`` must already contain ``QuantLinear`` modules.  The cached
     dequantized fallback weights are ordinary Python attributes and are not
-    written.  The manifest is saved last so a partially written directory is
-    never mistaken for a complete checkpoint.
+    written. Optional deployment metadata must be a plain JSON object and is
+    embedded in the manifest. The manifest is saved last so a partially written
+    directory is never mistaken for a complete checkpoint.
     """
     _, _, save_file, save_model = _require_safetensors()
+    serialized_deployment = None
+    if deployment_metadata is not None:
+        if not isinstance(deployment_metadata, dict):
+            raise TypeError("deployment_metadata must be a JSON object")
+        # Reject tensors and other process-local values before writing files,
+        # while detaching the artifact from a caller-owned mutable object.
+        serialized_deployment = json.loads(json.dumps(deployment_metadata))
     output = Path(output_dir)
     if output.exists() and any(output.iterdir()) and not overwrite:
         raise FileExistsError(
@@ -324,16 +334,19 @@ def save_packed_checkpoint(
         metadata={"format": "pt", "rotquant_format": str(FORMAT_VERSION)},
     )
 
-    manifest = {
+    manifest: dict[str, Any] = {
         "format": FORMAT_NAME,
         "format_version": FORMAT_VERSION,
         "base_model": base_model,
+        "base_model_revision": base_model_revision,
         "model_loader": model_loader,
         "torch_dtype": _dtype_name(_first_float_dtype(model)),
         "model_state": MODEL_STATE_NAME,
         "packed_state": PACKED_STATE_NAME,
         "quantized_modules": modules,
     }
+    if serialized_deployment is not None:
+        manifest["deployment"] = serialized_deployment
     with (output / MANIFEST_NAME).open("w", encoding="utf-8") as handle:
         json.dump(manifest, handle, indent=2)
         handle.write("\n")

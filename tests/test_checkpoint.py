@@ -119,5 +119,47 @@ def test_manifest_is_plain_json_and_records_loader(tmp_path):
     assert manifest["format"] == "rotquant-packed"
     assert manifest["format_version"] == 1
     assert manifest["model_loader"] == "causal_lm"
+    assert manifest["base_model_revision"] is None
     assert manifest["quantized_modules"]
     assert json.loads((export_dir / MANIFEST_NAME).read_text()) == manifest
+
+
+def test_manifest_preserves_json_deployment_metadata(tmp_path):
+    model = _tiny_packed_llama()
+    export_dir = tmp_path / "packed"
+    deployment = {
+        "recipe": "uniform_w4__frozen_mixed_3.25",
+        "kv_cache": {
+            "codebook": "gaussian",
+            "group_size": 64,
+            "frozen_recipe": [
+                {"layer": 3, "key_bits": 2, "value_bits": 2},
+            ],
+        },
+    }
+    save_packed_checkpoint(
+        model,
+        export_dir,
+        base_model_revision="abc123",
+        model_loader="causal_lm",
+        deployment_metadata=deployment,
+    )
+    deployment["kv_cache"]["group_size"] = 128
+
+    manifest = checkpoint_manifest(export_dir)
+    assert manifest["deployment"]["recipe"] == (
+        "uniform_w4__frozen_mixed_3.25"
+    )
+    assert manifest["base_model_revision"] == "abc123"
+    assert manifest["deployment"]["kv_cache"]["group_size"] == 64
+
+
+def test_checkpoint_rejects_non_json_deployment_metadata(tmp_path):
+    model = _tiny_packed_llama()
+    with pytest.raises(TypeError, match="JSON serializable"):
+        save_packed_checkpoint(
+            model,
+            tmp_path / "packed",
+            deployment_metadata={"tensor": torch.tensor(1)},
+        )
+    assert not (tmp_path / "packed").exists()

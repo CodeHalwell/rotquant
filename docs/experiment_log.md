@@ -402,6 +402,15 @@ release decision only: complete sizes remain logical estimates under CUDA
 fallback, and long-context perplexity, retrieval, packed runtime memory, and
 throughput remain unverified.
 
+The dedicated export and verification workflow is now implemented in
+`notebooks/qwen35_4b_joint_winner_export_colab.ipynb`. It fails closed on stale
+release inputs or weight-code drift, pins and records the Hub revision used for
+reconstruction, embeds the frozen K/V map as deployment metadata, requires the
+seed-0 PPL to match the released row, audits actual artifact bytes and tensor
+keys, writes checksums, and reloads without persistent fallback caches in a
+fresh process. The Colab export has not yet been run, so no artifact byte or
+runtime claim is recorded here yet.
+
 ## Native K/V cache benchmark notes
 
 Command family:
