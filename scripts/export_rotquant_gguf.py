@@ -26,6 +26,7 @@ from rotquant.checkpoint import (
     _build_rotation,
     _read_quantized_weight,
 )
+from rotquant.format import validate_checkpoint_manifest
 from rotquant.gguf import (
     FORMAT_NAME,
     FORMAT_VERSION,
@@ -36,6 +37,95 @@ from rotquant.gguf import (
 )
 
 PINNED_LLAMA_CPP_COMMIT = "17252c769a63c1cb650ce98ae309cf4de0da7778"
+
+KV_CACHE_FORMAT_VERSION = 1
+KV_CACHE_LAYER_COUNT = 32
+KV_CACHE_GROUP_SIZE = 64
+KV_CACHE_ROTATION_BLOCK = 128
+KV_CACHE_KEY_SEED = 0
+KV_CACHE_VALUE_SEED = 1
+KV_CACHE_FULL_LAYERS = tuple(range(3, KV_CACHE_LAYER_COUNT, 4))
+
+
+def _with_kv_cache_config(manifest: dict, config: dict) -> dict:
+    """Return a manifest copy with an explicit deployment KV contract."""
+    cache = config.get("kv_cache", config)
+    if not isinstance(cache, dict):
+        raise TypeError("KV cache config must be an object")
+    result = dict(manifest)
+    deployment = dict(result.get("deployment") or {})
+    deployment["kv_cache"] = cache
+    result["deployment"] = deployment
+    return result
+
+
+def _kv_cache_metadata(manifest: dict) -> dict | None:
+    """Validate and flatten the deployable frozen KV recipe for GGUF."""
+    deployment = manifest.get("deployment")
+    if not isinstance(deployment, dict):
+        return None
+    cache = deployment.get("kv_cache")
+    if not isinstance(cache, dict) or not cache.get("frozen_recipe"):
+        return None
+
+    codebook = cache.get("codebook")
+    if codebook not in {"gaussian", "lloyd_max_gaussian"}:
+        raise ValueError(
+            "native frozen KV cache requires the Lloyd-Max Gaussian codebook"
+        )
+    if int(cache.get("group_size", 0)) != KV_CACHE_GROUP_SIZE:
+        raise ValueError(
+            f"native frozen KV cache requires group_size={KV_CACHE_GROUP_SIZE}"
+        )
+
+    recipe = cache["frozen_recipe"]
+    if not isinstance(recipe, list):
+        raise TypeError("frozen KV recipe must be a list")
+    by_layer = {}
+    for item in recipe:
+        if not isinstance(item, dict):
+            raise TypeError("frozen KV recipe entries must be objects")
+        layer = int(item.get("layer", -1))
+        if layer in by_layer:
+            raise ValueError(f"duplicate frozen KV recipe layer: {layer}")
+        key_bits = int(item.get("key_bits", 0))
+        value_bits = int(item.get("value_bits", 0))
+        if key_bits not in {2, 3, 4} or value_bits not in {2, 3, 4}:
+            raise ValueError("frozen KV key/value bits must be in {2, 3, 4}")
+        by_layer[layer] = (key_bits, value_bits)
+
+    if tuple(sorted(by_layer)) != KV_CACHE_FULL_LAYERS:
+        raise ValueError(
+            "frozen KV recipe must cover Qwen3.5 full-attention layers "
+            f"{list(KV_CACHE_FULL_LAYERS)} exactly"
+        )
+
+    key_bits = [0] * KV_CACHE_LAYER_COUNT
+    value_bits = [0] * KV_CACHE_LAYER_COUNT
+    for layer, (key, value) in by_layer.items():
+        key_bits[layer] = key
+        value_bits[layer] = value
+
+    raw_bpv = sum(key_bits) + sum(value_bits)
+    effective_bpv = raw_bpv / (2 * len(KV_CACHE_FULL_LAYERS))
+    effective_bpv += 16.0 / KV_CACHE_GROUP_SIZE
+    declared_bpv = float(cache.get("effective_bpv", effective_bpv))
+    if abs(declared_bpv - effective_bpv) > 1e-9:
+        raise ValueError(
+            "frozen KV effective_bpv does not match its bit map and fp16 scales"
+        )
+
+    return {
+        "version": KV_CACHE_FORMAT_VERSION,
+        "codebook": "lloyd_max_gaussian",
+        "group_size": KV_CACHE_GROUP_SIZE,
+        "rotation_block_size": KV_CACHE_ROTATION_BLOCK,
+        "key_seed": KV_CACHE_KEY_SEED,
+        "value_seed": KV_CACHE_VALUE_SEED,
+        "key_bits": key_bits,
+        "value_bits": value_bits,
+        "effective_bpv": effective_bpv,
+    }
 
 
 def _resolve_checkpoint(value: str, revision: str | None) -> Path:
@@ -129,6 +219,7 @@ def _make_converter(base_class, gguf, checkpoint: Path, manifest: dict,
     packed_state_path = checkpoint / manifest["packed_state"]
     quantized_names = {item["name"] for item in manifest["quantized_modules"]}
     base_model_arch = base_class.model_arch
+    kv_cache_metadata = _kv_cache_metadata(manifest)
 
     class RotQuantQwen35Model(base_class):
         # llama.cpp's converter validates that concrete subclasses declare this
@@ -284,6 +375,36 @@ def _make_converter(base_class, gguf, checkpoint: Path, manifest: dict,
             self.gguf_writer.add_string(
                 "rotquant.required_llama_cpp_commit", PINNED_LLAMA_CPP_COMMIT
             )
+            if kv_cache_metadata is not None:
+                prefix = "rotquant.kv_cache."
+                self.gguf_writer.add_uint32(
+                    prefix + "version", kv_cache_metadata["version"])
+                self.gguf_writer.add_string(
+                    prefix + "codebook", kv_cache_metadata["codebook"])
+                self.gguf_writer.add_uint32(
+                    prefix + "group_size", kv_cache_metadata["group_size"])
+                self.gguf_writer.add_uint32(
+                    prefix + "rotation_block_size",
+                    kv_cache_metadata["rotation_block_size"])
+                self.gguf_writer.add_uint32(
+                    prefix + "key_seed", kv_cache_metadata["key_seed"])
+                self.gguf_writer.add_uint32(
+                    prefix + "value_seed", kv_cache_metadata["value_seed"])
+                self.gguf_writer.add_key_value(
+                    prefix + "key_bits",
+                    kv_cache_metadata["key_bits"],
+                    gguf.GGUFValueType.ARRAY,
+                    gguf.GGUFValueType.UINT32,
+                )
+                self.gguf_writer.add_key_value(
+                    prefix + "value_bits",
+                    kv_cache_metadata["value_bits"],
+                    gguf.GGUFValueType.ARRAY,
+                    gguf.GGUFValueType.UINT32,
+                )
+                self.gguf_writer.add_float32(
+                    prefix + "effective_bpv",
+                    kv_cache_metadata["effective_bpv"])
 
     return RotQuantQwen35Model
 
@@ -300,6 +421,11 @@ def main() -> None:
     )
     parser.add_argument("--revision", default=None, help="optional Hub revision")
     parser.add_argument("--model-name", default="Qwen3.5-4B-RotQuant")
+    parser.add_argument(
+        "--kv-cache-config",
+        type=Path,
+        help="JSON frozen KV recipe to validate and embed in the GGUF",
+    )
     parser.add_argument("--use-temp-file", action="store_true")
     parser.add_argument(
         "--quantize-tied-embedding", action="store_true",
@@ -314,8 +440,11 @@ def main() -> None:
     checkpoint = _resolve_checkpoint(args.checkpoint, args.revision)
     with (checkpoint / MANIFEST_NAME).open(encoding="utf-8") as handle:
         manifest = json.load(handle)
-    if manifest.get("format") != "rotquant-packed":
-        raise ValueError("checkpoint is not a RotQuant packed artifact")
+    validate_checkpoint_manifest(manifest)
+    if args.kv_cache_config is not None:
+        with args.kv_cache_config.open(encoding="utf-8") as handle:
+            kv_cache_config = json.load(handle)
+        manifest = _with_kv_cache_config(manifest, kv_cache_config)
     if manifest.get("model_loader") != "multimodal_lm":
         raise ValueError(
             "native GGUF v1 currently targets Qwen3.5 multimodal artifacts"

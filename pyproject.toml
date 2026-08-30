@@ -49,3 +49,4 @@ packages = ["rotquant", "eval"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+pythonpath = ["."]

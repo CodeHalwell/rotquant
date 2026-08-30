@@ -20,6 +20,14 @@ size 128. It does not yet export the vision tower or retained LoRA adapters.
 The input checkpoint must therefore report `lora_rank: 0` for every packed
 projection.
 
+The joint-release extension also supports its exact frozen mixed K/V recipe:
+Gaussian 2/3/4-bit codes, group size 64, one fp16 RMS scale per group, and
+randomized FWHT-128 independently for keys and values. The eight
+full-attention layers use the embedded maps and average 3.25 bits per value
+including scale overhead. Persistent cache rows stay packed; each attention
+layer is dequantized into transient fp16 graph storage before the existing
+flash-attention operator. Cache shifting and non-flash V layouts fail closed.
+
 The native operator has two implementations:
 
 - a portable scalar CPU reference path; and
@@ -57,21 +65,24 @@ Set `ROTQUANT_LLAMA_METAL=OFF` for a CPU-only build.
 ```bash
 uv sync --extra eval
 uv run python scripts/export_rotquant_gguf.py \
-  HallD/qwen35-4b-rotquant \
-  qwen35-4b-rotquant-native.gguf \
+  HallD/qwen35-4b-rotquant-joint \
+  qwen35-4b-rotquant-joint-kv3p25-native.gguf \
   --llama-cpp-dir third_party/llama.cpp
 ```
 
 The exporter downloads a Hub checkpoint when given a model ID. For a local
 artifact, pass its directory instead. It stores the tied text embedding once
 and omits optional Qwen MTP weights that are not present in the checkpoint.
+The joint checkpoint's deployment manifest supplies the frozen K/V map. For a
+compatible checkpoint without embedded deployment metadata, pass
+`--kv-cache-config configs/qwen35_4b_frozen_mixed_kv_3p25.json`.
 
 For a release artifact, verify all native tensors against the source:
 
 ```bash
 uv run python scripts/verify_rotquant_gguf.py \
-  HallD/qwen35-4b-rotquant \
-  qwen35-4b-rotquant-native.gguf \
+  HallD/qwen35-4b-rotquant-joint \
+  qwen35-4b-rotquant-joint-kv3p25-native.gguf \
   --llama-cpp-dir third_party/llama.cpp
 ```
 
@@ -85,7 +96,7 @@ instead of llama.cpp's automatic four 262k-token slots, disables reasoning, and
 caps default output at 64 tokens:
 
 ```bash
-scripts/serve_rotquant_gguf.sh qwen35-4b-rotquant-native.gguf 8085
+scripts/serve_rotquant_gguf.sh qwen35-4b-rotquant-joint-kv3p25-native.gguf 8085
 ```
 
 Set `ROTQUANT_GPU_LAYERS=0` for the all-CPU reference path. First test the
@@ -130,6 +141,8 @@ and clear the system prompt when measuring raw model latency.
 ## Format notes
 
 The GGUF contains `rotquant.format=rotquant-gguf`, `rotquant.version=1`, and
-the exact format constants. llama.cpp may report a misleading model parameter
+the exact format constants. A frozen-cache artifact additionally contains the
+versioned `rotquant.kv_cache.*` contract, including 32-entry K/V bit maps.
+llama.cpp may report a misleading model parameter
 count or aggregate BPW because it sees opaque byte tensors rather than their
 logical 4-bit matrix shapes. The on-disk file size is authoritative.

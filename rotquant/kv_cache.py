@@ -37,6 +37,8 @@ class KVQuantConfig:
     codebook: str = "gaussian"
     rotation_block: int = 128
     seed: int = 0
+    codebook_dim: int | None = None
+    bias_correction: str = "none"
 
     def bits_for(self, *, value: bool = False) -> int:
         selected = self.value_bits if value else self.key_bits
@@ -48,8 +50,10 @@ class KVQuantConfig:
             group_size=self.group_size,
             scale_bits=self.scale_bits,
             codebook=self.codebook,
+            codebook_dim=self.codebook_dim or self.group_size,
             scale="rms",
             error_comp="none",
+            bias_correction=self.bias_correction,
             seed=self.seed,
         )
 
@@ -127,13 +131,155 @@ def rotquant_attention(queries: torch.Tensor, keys: torch.Tensor,
     return output, packed_keys, packed_values
 
 
+@torch.no_grad()
+def retrieval_rotquant_decode(
+    queries: torch.Tensor,
+    keys: torch.Tensor,
+    values: torch.Tensor,
+    key_rotation: Rotation,
+    value_rotation: Rotation,
+    config: KVQuantConfig,
+    *,
+    retrieval_k: int,
+    recent_window: int = 0,
+    sink_tokens: int = 0,
+) -> tuple[torch.Tensor, torch.Tensor, QuantizedKV, QuantizedKV]:
+    """Decode attention by scanning packed keys and gathering selected values.
+
+    This is the reference semantics for a TurboVec-like cache path.  A production
+    kernel would score code indices directly and dequantize only the selected V
+    rows; this Python oracle materializes reconstructed keys solely to keep the
+    quality experiment independent of a future SIMD/CUDA implementation.
+
+    ``retrieval_k`` is the total candidate budget.  The newest
+    ``recent_window`` positions and first ``sink_tokens`` positions are forced
+    into that budget, then approximate key scores fill the remaining slots.
+    """
+    if queries.shape[-2] != 1:
+        raise ValueError("retrieval attention currently supports decode queries only")
+    if keys.shape[:-2] != queries.shape[:-2] or values.shape[:-2] != keys.shape[:-2]:
+        raise ValueError("queries, keys, and values must share batch/head dimensions")
+    if keys.shape[-2] != values.shape[-2] or keys.shape[-1] != values.shape[-1]:
+        raise ValueError("keys and values must have matching sequence/head dimensions")
+    sequence_length = keys.shape[-2]
+    if not 1 <= retrieval_k <= sequence_length:
+        raise ValueError("retrieval_k must be in [1, cache sequence length]")
+    if recent_window < 0 or sink_tokens < 0:
+        raise ValueError("recent_window and sink_tokens must be nonnegative")
+
+    packed_keys = quantize_kv(keys, key_rotation, config)
+    packed_values = quantize_kv(values, value_rotation, config, value=True)
+    rotated_queries = key_rotation.rotate_activation(queries.float())
+    reconstructed_keys = packed_keys.dequantize()
+    scores = torch.matmul(
+        rotated_queries, reconstructed_keys.transpose(-1, -2)
+    ) / math.sqrt(queries.shape[-1])
+
+    forced = torch.zeros(sequence_length, dtype=torch.bool, device=scores.device)
+    forced[:min(sink_tokens, sequence_length)] = True
+    if recent_window:
+        forced[max(0, sequence_length - recent_window):] = True
+    forced_count = int(forced.sum().item())
+    if forced_count > retrieval_k:
+        raise ValueError(
+            "retrieval_k is smaller than the mandatory sink/recent candidate set")
+    forced_shape = (1,) * (scores.ndim - 1) + (sequence_length,)
+    ranking_scores = scores.masked_fill(forced.reshape(forced_shape), torch.inf)
+    selected = torch.topk(
+        ranking_scores, k=retrieval_k, dim=-1, sorted=False
+    ).indices
+    selected_scores = torch.gather(scores, -1, selected)
+    weights = F.softmax(selected_scores, dim=-1)
+
+    reconstructed_values = packed_values.dequantize()
+    expanded_values = reconstructed_values.unsqueeze(-3).expand(
+        *reconstructed_values.shape[:-2],
+        queries.shape[-2],
+        sequence_length,
+        reconstructed_values.shape[-1],
+    )
+    selected_values = torch.gather(
+        expanded_values,
+        -2,
+        selected.unsqueeze(-1).expand(
+            *selected.shape, reconstructed_values.shape[-1]
+        ),
+    )
+    rotated_output = (weights.unsqueeze(-1) * selected_values).sum(dim=-2)
+    output = value_rotation.inverse_activation(rotated_output)
+    return output, selected, packed_keys, packed_values
+
+
+@torch.no_grad()
+def kv_retrieval_metrics(
+    queries: torch.Tensor,
+    keys: torch.Tensor,
+    values: torch.Tensor,
+    config: KVQuantConfig,
+    *,
+    retrieval_k: int,
+    recent_window: int = 0,
+    sink_tokens: int = 0,
+) -> dict[str, float | int]:
+    """Evaluate selective KV retrieval against full-precision dense attention."""
+    key_rotation = build_kv_rotation(keys.shape[-1], config, device=keys.device)
+    value_rotation = build_kv_rotation(
+        values.shape[-1], config, value=True, device=values.device)
+    reference = reference_attention(queries, keys, values, causal=True)
+    candidate, selected, packed_keys, packed_values = retrieval_rotquant_decode(
+        queries,
+        keys,
+        values,
+        key_rotation,
+        value_rotation,
+        config,
+        retrieval_k=retrieval_k,
+        recent_window=recent_window,
+        sink_tokens=sink_tokens,
+    )
+    dense_weights = _attention_weights(queries, keys, causal=True)
+    selected_mass = torch.gather(dense_weights, -1, selected).sum(dim=-1)
+    denominator = reference.square().mean().clamp_min(1e-12)
+    return {
+        "retrieval_k": retrieval_k,
+        "sequence_length": keys.shape[-2],
+        "selected_fraction": retrieval_k / keys.shape[-2],
+        "recent_window": recent_window,
+        "sink_tokens": sink_tokens,
+        "reference_attention_mass_coverage": float(selected_mass.mean().item()),
+        "relative_attention_mse": float(
+            ((candidate - reference).square().mean() / denominator).item()),
+        "cosine": float(F.cosine_similarity(
+            candidate.reshape(-1, candidate.shape[-1]),
+            reference.reshape(-1, reference.shape[-1]),
+            dim=-1,
+        ).mean().item()),
+        "packed_kv_bytes": (
+            packed_keys.packed_state_bytes() + packed_values.packed_state_bytes()),
+        # K is scanned; only this fraction of V vectors needs to cross the
+        # dequantization/value-accumulation path in a fused implementation.
+        "value_vector_read_fraction": retrieval_k / keys.shape[-2],
+    }
+
+
 def _fake_quant(tensor: torch.Tensor, config: KVQuantConfig,
                 *, value: bool = False) -> torch.Tensor:
     rows = tensor.reshape(-1, tensor.shape[-1])
     scales = _group_scales_rms(rows, config.group_size)
+    spherical = config.codebook.lower() in {
+        "sphere", "spherical", "beta", "finite_beta"}
+    dimension = (config.codebook_dim or config.group_size) if spherical else None
     codebook = build_scalar_codebook(
-        config.codebook, 1 << config.bits_for(value=value))
+        config.codebook, 1 << config.bits_for(value=value), dimension)
     quantized, _ = _quantize_groups(rows, scales, codebook, config.group_size)
+    if config.bias_correction == "length":
+        energy = rows.square().sum(dim=1)
+        alignment = (rows * quantized).sum(dim=1)
+        usable = (energy > 0) & (
+            alignment > torch.finfo(rows.dtype).eps * energy)
+        correction = torch.ones_like(energy)
+        correction[usable] = energy[usable] / alignment[usable]
+        quantized = quantized * correction.unsqueeze(1)
     quantized = quantized.reshape_as(tensor)
     return tensor + (quantized - tensor).detach()
 
@@ -229,6 +375,28 @@ def kv_fidelity_metrics(queries: torch.Tensor, keys: torch.Tensor,
     candidate, packed_keys, packed_values = rotquant_attention(
         queries, keys, values, key_rotation, value_rotation, config,
         causal=causal)
+    reconstructed_keys = packed_keys.dequantize(original_basis=True).float()
+    reconstructed_values = packed_values.dequantize(original_basis=True).float()
+    scale = math.sqrt(queries.shape[-1])
+    reference_logits = torch.matmul(
+        queries.float(), keys.float().transpose(-1, -2)) / scale
+    candidate_logits = torch.matmul(
+        queries.float(), reconstructed_keys.transpose(-1, -2)) / scale
+    if causal:
+        n_query, n_key = reference_logits.shape[-2:]
+        diagonal = 1 + n_key - n_query
+        valid = ~torch.ones(
+            n_query, n_key, device=queries.device, dtype=torch.bool
+        ).triu(diagonal)
+        reference_logit_values = reference_logits[..., valid]
+        candidate_logit_values = candidate_logits[..., valid]
+    else:
+        reference_logit_values = reference_logits.reshape(-1)
+        candidate_logit_values = candidate_logits.reshape(-1)
+    logit_error = candidate_logit_values - reference_logit_values
+    logit_energy = reference_logit_values.square().sum().clamp_min(1e-12)
+    key_energy = keys.float().square().sum().clamp_min(1e-12)
+    value_energy = values.float().square().sum().clamp_min(1e-12)
     denominator = reference.pow(2).mean().clamp_min(1e-12)
     fp16_bytes = (keys.numel() + values.numel()) * 2
     packed_bytes_total = (
@@ -240,6 +408,21 @@ def kv_fidelity_metrics(queries: torch.Tensor, keys: torch.Tensor,
         "group_size": config.group_size,
         "relative_attention_mse": float(
             ((candidate - reference).pow(2).mean() / denominator).item()),
+        "relative_attention_logit_mse": float(
+            logit_error.square().sum().div(logit_energy).item()),
+        "attention_logit_bias": float(logit_error.mean().item()),
+        "attention_logit_mae": float(logit_error.abs().mean().item()),
+        "key_nmse": float(
+            (reconstructed_keys - keys.float()).square().sum().div(
+                key_energy).item()),
+        "value_nmse": float(
+            (reconstructed_values - values.float()).square().sum().div(
+                value_energy).item()),
+        "key_self_dot_ratio": float(
+            (keys.float() * reconstructed_keys).sum().div(key_energy).item()),
+        "value_self_dot_ratio": float(
+            (values.float() * reconstructed_values).sum().div(
+                value_energy).item()),
         "cosine": float(F.cosine_similarity(
             candidate.reshape(-1, candidate.shape[-1]),
             reference.reshape(-1, reference.shape[-1]), dim=-1).mean().item()),

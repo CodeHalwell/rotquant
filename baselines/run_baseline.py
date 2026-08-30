@@ -13,13 +13,13 @@ from __future__ import annotations
 import argparse
 import os
 import sys
-from typing import Any, Dict, Optional
+from typing import Any
 
 import torch
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from rotquant.utils import environment_record, get_logger, write_result  # noqa: E402
+from rotquant.utils import environment_record, get_logger, write_result
 
 logger = get_logger()
 
@@ -35,14 +35,23 @@ INSTALL_HINTS = {
 IMPLEMENTED_BACKENDS = ("gptq", "awq", "aqlm")
 
 
-def baseline_run_id(backend: str, model: str, bits: int, group_size: int,
-                    prequantized: bool, device: str) -> str:
+def baseline_run_id(
+    backend: str,
+    model: str,
+    bits: int,
+    group_size: int,
+    prequantized: bool,
+    device: str,
+    protocol_slug: str | None = None,
+) -> str:
     """Build an artifact id from every CLI option that can change the result."""
     model_slug = model.rstrip("/").split("/")[-1]
     source = "prequantized" if prequantized else "quantized"
     device_slug = device.replace(":", "-").replace("/", "-")
-    return (f"baseline_{backend}_{model_slug}_{bits}bit_"
-            f"g{group_size}_{source}_{device_slug}")
+    run_id = (
+        f"baseline_{backend}_{model_slug}_{bits}bit_g{group_size}_{source}_{device_slug}"
+    )
+    return f"{run_id}_{protocol_slug}" if protocol_slug else run_id
 
 
 def _require(module: str, backend: str):
@@ -79,29 +88,37 @@ def load_baseline(backend: str, model_name: str, bits: int, device: str,
     *requires* ``prequantized``.
     """
     backend = backend.lower()
+    revision = kwargs.get("revision")
+    resolved_model = model_name
+    if revision is not None:
+        from huggingface_hub import snapshot_download
+        resolved_model = snapshot_download(repo_id=model_name, revision=revision)
     if backend == "gptq":
         _require("gptqmodel", backend)
         from gptqmodel import GPTQModel, QuantizeConfig
         from transformers import AutoTokenizer
-        tok = AutoTokenizer.from_pretrained(model_name, use_fast=True)
+        tok = AutoTokenizer.from_pretrained(resolved_model, use_fast=True)
         if prequantized:
-            model = GPTQModel.load(model_name, device=device)
+            model = GPTQModel.load(resolved_model, device=device)
         else:
             qcfg = QuantizeConfig(bits=bits, group_size=kwargs.get("group_size", 128))
-            model = GPTQModel.load(model_name, qcfg)
+            model = GPTQModel.load(resolved_model, qcfg)
             logger.info("gptq: quantising %s at %d bits on C4 calibration data",
                         model_name, bits)
-            model.quantize(_calib_texts())
+            model.quantize(_calib_texts(
+                n=int(kwargs.get("calib_n", 256)),
+                min_chars=int(kwargs.get("calib_min_chars", 2048)),
+            ))
         return getattr(model, "model", model), tok
     if backend == "awq":
         _require("awq", backend)
         from awq import AutoAWQForCausalLM
         from transformers import AutoTokenizer
-        tok = AutoTokenizer.from_pretrained(model_name, use_fast=True)
+        tok = AutoTokenizer.from_pretrained(resolved_model, use_fast=True)
         if prequantized:
-            model = AutoAWQForCausalLM.from_quantized(model_name)
+            model = AutoAWQForCausalLM.from_quantized(resolved_model)
         else:
-            model = AutoAWQForCausalLM.from_pretrained(model_name)
+            model = AutoAWQForCausalLM.from_pretrained(resolved_model)
             logger.info("awq: quantising %s at %d bits", model_name, bits)
             model.quantize(tok, quant_config={
                 "w_bit": bits, "q_group_size": kwargs.get("group_size", 128),
@@ -114,8 +131,8 @@ def load_baseline(backend: str, model_name: str, bits: int, device: str,
                 "AQLM quantisation takes GPU-days; pass --prequantized with an "
                 "AQLM checkpoint id (e.g. ISTA-DASLab/Llama-2-7b-AQLM-2Bit-1x16-hf).")
         from transformers import AutoModelForCausalLM, AutoTokenizer
-        tok = AutoTokenizer.from_pretrained(model_name, use_fast=True)
-        model = AutoModelForCausalLM.from_pretrained(model_name).to(device)
+        tok = AutoTokenizer.from_pretrained(resolved_model, use_fast=True)
+        model = AutoModelForCausalLM.from_pretrained(resolved_model).to(device)
         return model, tok
     if backend in ("quip", "qtip", "higgs"):
         raise NotImplementedError(
@@ -129,11 +146,22 @@ def main() -> None:
     ap.add_argument("--backend", required=True,
                     choices=IMPLEMENTED_BACKENDS)
     ap.add_argument("--model", required=True)
+    ap.add_argument("--revision",
+                    help="immutable Hub revision for the source or prequantized checkpoint")
     ap.add_argument("--bits", type=int, default=4)
     ap.add_argument("--group-size", type=int, default=128)
     ap.add_argument("--device", default="cuda" if torch.cuda.is_available() else "cpu")
     ap.add_argument("--output-dir", default="results")
     ap.add_argument("--zeroshot", action="store_true")
+    ap.add_argument("--datasets", nargs="+", default=["wikitext2", "c4"])
+    ap.add_argument("--ppl-seq-len", type=int, default=2048)
+    ap.add_argument("--ppl-stride", type=int)
+    ap.add_argument("--ppl-max-samples", type=int)
+    ap.add_argument("--tasks", nargs="+")
+    ap.add_argument("--zeroshot-limit", type=int)
+    ap.add_argument("--zeroshot-batch-size", type=int, default=8)
+    ap.add_argument("--calib-n", type=int, default=256)
+    ap.add_argument("--calib-min-chars", type=int, default=2048)
     ap.add_argument("--prequantized", action="store_true",
                     help="--model is an already-quantised checkpoint; load as-is "
                          "instead of quantising here (required for aqlm)")
@@ -141,25 +169,58 @@ def main() -> None:
 
     model, tok = load_baseline(args.backend, args.model, args.bits, args.device,
                                prequantized=args.prequantized,
-                               group_size=args.group_size)
+                               group_size=args.group_size,
+                               revision=args.revision,
+                               calib_n=args.calib_n,
+                               calib_min_chars=args.calib_min_chars)
     model.eval()
 
-    from eval.perplexity import perplexity, PPLConfig
-    metrics: Dict[str, Any] = {}
-    for ds in ("wikitext2", "c4"):
-        metrics[f"ppl_{ds}"] = perplexity(model, tok, ds, PPLConfig(), args.device)
+    from eval.perplexity import PPLConfig, perplexity
+
+    metrics: dict[str, Any] = {}
+    ppl_config = PPLConfig(
+        seq_len=args.ppl_seq_len,
+        stride=args.ppl_stride,
+        max_samples=args.ppl_max_samples,
+    )
+    for ds in args.datasets:
+        metrics[f"ppl_{ds}"] = perplexity(model, tok, ds, ppl_config, args.device)
     if args.zeroshot:
         from eval.zeroshot import zeroshot
-        metrics["zeroshot"] = zeroshot(model, tok, device=args.device)
+        metrics["zeroshot"] = zeroshot(
+            model,
+            tok,
+            tasks=args.tasks,
+            batch_size=args.zeroshot_batch_size,
+            device=args.device,
+            limit=args.zeroshot_limit,
+        )
 
+    samples_slug = "full" if args.ppl_max_samples is None else f"n{args.ppl_max_samples}"
+    protocol_slug = f"ppl{args.ppl_seq_len}_{samples_slug}"
+    if args.zeroshot:
+        protocol_slug += "_zs"
     run_id = baseline_run_id(args.backend, args.model, args.bits, args.group_size,
-                             args.prequantized, args.device)
+                             args.prequantized, args.device, protocol_slug)
     write_result(os.path.join(args.output_dir, f"{run_id}.json"), {
         "run_id": run_id,
         "config": {"experiment": "baseline", "backend": args.backend,
                    "model": args.model, "bits": args.bits,
                    "group_size": args.group_size,
                    "prequantized": args.prequantized,
+                   "revision": args.revision,
+                   "calib_n": args.calib_n,
+                   "calib_min_chars": args.calib_min_chars,
+                   "eval": {
+                       "datasets": args.datasets,
+                       "ppl_seq_len": args.ppl_seq_len,
+                       "ppl_stride": args.ppl_stride,
+                       "ppl_max_samples": args.ppl_max_samples,
+                       "zeroshot": args.zeroshot,
+                       "tasks": args.tasks,
+                       "zeroshot_limit": args.zeroshot_limit,
+                       "zeroshot_batch_size": args.zeroshot_batch_size,
+                   },
                    "device": args.device, "label": run_id},
         "metrics": metrics,
         "environment": environment_record(),

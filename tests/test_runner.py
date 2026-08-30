@@ -125,6 +125,9 @@ def test_baseline_run_id_includes_quantization_options():
         "gptq", "org/model", 4, 128, True, "cuda:0") != base
     assert baseline_mod.baseline_run_id(
         "gptq", "org/model", 4, 128, False, "cpu") != base
+    assert baseline_mod.baseline_run_id(
+        "gptq", "org/model", 4, 128, False, "cuda:0", "ppl2048_full_zs"
+    ).endswith("_ppl2048_full_zs")
     assert baseline_mod.IMPLEMENTED_BACKENDS == ("gptq", "awq", "aqlm")
 
 

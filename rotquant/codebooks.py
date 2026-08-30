@@ -4,6 +4,9 @@ Scalar grids (fully implemented and unit-tested on a unit Gaussian):
 
 * :func:`lloyd_max_gaussian` -- MSE-optimal scalar grid for a unit Gaussian
   (the HIGGS / TurboQuant-MSE grid). Anchors the source-coding test.
+* :func:`lloyd_max_spherical` -- dimension-aware grid for a coordinate of a
+  uniformly rotated, RMS-normalised vector (the finite-dimensional TurboQuant
+  distribution, rather than its Gaussian limit).
 * :func:`uniform_signed`     -- symmetric uniform signed grid.
 * :func:`normal_float`       -- NormalFloat (NF) reference grid (bitsandbytes style).
 
@@ -18,8 +21,6 @@ from __future__ import annotations
 
 import functools
 import math
-from dataclasses import dataclass
-from typing import Optional, Tuple
 
 import numpy as np
 import torch
@@ -43,6 +44,38 @@ def turboquant_mse_bound(bits: float) -> float:
 
 def _normal_pdf(x: np.ndarray) -> np.ndarray:
     return np.exp(-0.5 * x * x) / math.sqrt(2 * math.pi)
+
+
+def _lloyd_max_grid(
+    xs: np.ndarray,
+    weights: np.ndarray,
+    levels: int,
+    *,
+    initial: np.ndarray,
+    iters: int,
+) -> np.ndarray:
+    """Solve a one-dimensional Lloyd-Max problem on a weighted grid."""
+    if levels < 1:
+        raise ValueError("levels must be >= 1")
+    centroids = np.asarray(initial, dtype=np.float64).copy()
+    if centroids.shape != (levels,):
+        raise ValueError("initial centroids must contain exactly levels entries")
+    for _ in range(iters):
+        bounds = (centroids[:-1] + centroids[1:]) / 2.0
+        indices = np.searchsorted(bounds, xs, side="right")
+        new_centroids = centroids.copy()
+        for index in range(levels):
+            mask = indices == index
+            mass = weights[mask].sum()
+            if mass > 0:
+                new_centroids[index] = (
+                    xs[mask] * weights[mask]
+                ).sum() / mass
+        if np.allclose(new_centroids, centroids, atol=1e-10, rtol=0.0):
+            centroids = new_centroids
+            break
+        centroids = new_centroids
+    return np.sort(centroids)
 
 
 # --------------------------------------------------------------------------- #
@@ -80,6 +113,100 @@ def lloyd_max_gaussian(levels: int, iters: int = 200, grid: int = 200_001,
             break
         centroids = new_centroids
     return np.sort(centroids)
+
+
+def spherical_coordinate_grid(
+    dimension: int, grid: int = 200_001
+) -> tuple[np.ndarray, np.ndarray]:
+    """Return a grid and masses for an RMS-normalised spherical coordinate.
+
+    If ``u`` is uniform on the unit sphere in ``dimension`` dimensions, then
+    ``sqrt(dimension) * u[0]`` has unit variance and bounded support
+    ``[-sqrt(dimension), sqrt(dimension)]``.  This is the exact marginal used by
+    TurboQuant before taking its high-dimensional Gaussian approximation.
+
+    Dimensions below three have discrete or endpoint-singular special cases and
+    are not useful model rotation blocks, so they are rejected deliberately.
+    """
+    if not isinstance(dimension, int) or isinstance(dimension, bool) or dimension < 3:
+        raise ValueError("spherical codebooks require an integer dimension >= 3")
+    if grid < 3:
+        raise ValueError("grid must be >= 3")
+    radius = math.sqrt(dimension)
+    xs = np.linspace(-radius, radius, grid, dtype=np.float64)
+    unit = xs / radius
+    exponent = (dimension - 3) / 2.0
+    if exponent == 0:
+        density = np.ones_like(xs)
+    else:
+        # The normalising constant cancels during Lloyd updates.  Computing the
+        # bounded kernel directly is also stable for large model dimensions.
+        density = np.maximum(1.0 - unit * unit, 0.0) ** exponent
+    dx = xs[1] - xs[0]
+    masses = density * dx
+    masses /= masses.sum()
+    return xs, masses
+
+
+def lloyd_max_spherical(
+    levels: int,
+    dimension: int,
+    iters: int = 200,
+    grid: int = 200_001,
+) -> np.ndarray:
+    """Finite-dimensional TurboQuant scalar centroids with unit RMS.
+
+    The result approaches :func:`lloyd_max_gaussian` as ``dimension`` grows but
+    preserves the correct bounded tails at the relatively small block/head
+    dimensions used by real model kernels.
+    """
+    xs, masses = spherical_coordinate_grid(dimension, grid=grid)
+    gaussian = lloyd_max_gaussian(levels, iters=iters, grid=grid)
+    initial = np.clip(gaussian, xs[0], xs[-1])
+    return _lloyd_max_grid(
+        xs, masses, levels, initial=initial, iters=iters
+    )
+
+
+def quantizer_mse_spherical(
+    centroids: np.ndarray,
+    dimension: int,
+    grid: int = 200_001,
+) -> float:
+    """Expected MSE of ``centroids`` on the unit-RMS spherical marginal."""
+    xs, masses = spherical_coordinate_grid(dimension, grid=grid)
+    sorted_centroids = np.sort(np.asarray(centroids, dtype=np.float64))
+    bounds = (sorted_centroids[:-1] + sorted_centroids[1:]) / 2.0
+    indices = np.searchsorted(bounds, xs, side="right")
+    return float(((xs - sorted_centroids[indices]) ** 2 * masses).sum())
+
+
+def lloyd_max_samples(samples, levels: int, iters: int = 200) -> np.ndarray:
+    """Fit deterministic Lloyd-Max centroids to representative scalar samples.
+
+    Callers should pass values in the same normalised, rotated domain consumed
+    by the quantizer.  This is the inexpensive calibrated tier: the resulting
+    centroids use the existing artifact/runtime format and require no per-weight
+    metadata.
+    """
+    if levels < 1:
+        raise ValueError("levels must be >= 1")
+    if isinstance(samples, torch.Tensor):
+        values = samples.detach().float().cpu().numpy().reshape(-1)
+    else:
+        values = np.asarray(samples, dtype=np.float64).reshape(-1)
+    values = values[np.isfinite(values)].astype(np.float64, copy=False)
+    if values.size < levels:
+        raise ValueError("calibration requires at least levels finite samples")
+    probabilities = (np.arange(levels, dtype=np.float64) + 0.5) / levels
+    centroids = np.quantile(values, probabilities)
+    # Samples have equal mass.  Sorting once keeps the repeated cell reductions
+    # deterministic across platforms and avoids a dense probability grid.
+    values.sort()
+    weights = np.ones_like(values)
+    return _lloyd_max_grid(
+        values, weights, levels, initial=centroids, iters=iters
+    )
 
 
 def quantizer_mse(centroids: np.ndarray, grid: int = 200_001,
@@ -158,11 +285,11 @@ class ScalarCodebook:
     def decode(self, idx: torch.Tensor) -> torch.Tensor:
         return self.centroids.to(idx.device)[idx]
 
-    def quantize(self, x: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
+    def quantize(self, x: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
         idx = self.encode(x)
         return self.decode(idx), idx
 
-    def to(self, device) -> "ScalarCodebook":
+    def to(self, device) -> ScalarCodebook:
         """Return a *new* codebook on ``device``.
 
         Non-mutating on purpose: codebooks are built once and shared across many
@@ -176,9 +303,11 @@ class ScalarCodebook:
         return out
 
 
-@functools.lru_cache(maxsize=None)
-def build_scalar_codebook(kind: str, levels: int) -> ScalarCodebook:
-    """Build (or return the cached) codebook for ``(kind, levels)``.
+@functools.cache
+def build_scalar_codebook(
+    kind: str, levels: int, dimension: int | None = None
+) -> ScalarCodebook:
+    """Build (or return the cached) codebook for its complete specification.
 
     Cached because Lloyd-Max solves a 200k-point Lloyd iteration -- re-running it
     for every one of a model's hundreds of linears wastes minutes per run. The
@@ -188,11 +317,25 @@ def build_scalar_codebook(kind: str, levels: int) -> ScalarCodebook:
     kind = kind.lower()
     if kind in ("gaussian", "lloyd", "lloyd_max", "mse"):
         return ScalarCodebook(lloyd_max_gaussian(levels), name="gaussian")
+    if kind in ("sphere", "spherical", "beta", "finite_beta"):
+        if dimension is None:
+            raise ValueError("spherical codebooks require a dimension")
+        return ScalarCodebook(
+            lloyd_max_spherical(levels, dimension),
+            name=f"spherical_d{dimension}",
+        )
     if kind == "uniform":
         return ScalarCodebook(uniform_signed(levels), name="uniform")
     if kind in ("nf", "normalfloat", "normal_float"):
         return ScalarCodebook(normal_float(levels), name="nf")
     raise ValueError(f"unknown scalar codebook kind: {kind}")
+
+
+def fit_scalar_codebook(
+    samples, levels: int, *, name: str = "calibrated"
+) -> ScalarCodebook:
+    """Build a deployable scalar codebook from representative normalised values."""
+    return ScalarCodebook(lloyd_max_samples(samples, levels), name=name)
 
 
 # --------------------------------------------------------------------------- #
@@ -257,7 +400,7 @@ class TrellisCodebook:
     def __init__(self, **kwargs):
         try:  # pragma: no cover - requires the external QTIP repo
             import qtip  # noqa: F401  type: ignore
-        except Exception as exc:  # pragma: no cover
+        except ImportError as exc:  # pragma: no cover
             raise NotImplementedError(
                 "TrellisCodebook bridges to QTIP, which is a repo not a package. "
                 "Clone it and add to PYTHONPATH:\n"

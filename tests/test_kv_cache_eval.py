@@ -354,6 +354,14 @@ def test_dynamic_cache_config_rejects_invalid_candidate_subset():
 
 
 def test_cache_eval_seed_is_forwarded_to_quant_config():
-    config = KVCacheEvalConfig(seed=17)
+    config = KVCacheEvalConfig(
+        seed=17,
+        codebook="spherical",
+        codebook_dim=64,
+        bias_correction="length",
+    )
     assert config.quant_config().seed == 17
     assert config.quant_config(seed=23).seed == 23
+    assert config.quant_config().codebook == "spherical"
+    assert config.quant_config().codebook_dim == 64
+    assert config.quant_config().bias_correction == "length"

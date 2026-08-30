@@ -4,9 +4,11 @@ The packed code buffer is the storage primitive the whole footprint argument
 rests on; if pack/unpack isn't lossless (or silently allocates on the wrong
 device) every GPU run is wrong, so this is a guard test.
 """
+import pytest
 import torch
 
-from rotquant.pack import pack_indices, unpack_indices, packed_bytes
+from rotquant.format import packed_word_count
+from rotquant.pack import PackedTensor, pack_indices, packed_bytes, unpack_indices
 
 
 def _roundtrip(idx, bits):
@@ -22,6 +24,16 @@ def test_pack_roundtrip_all_bitwidths():
     for bits in range(1, 17):
         idx = torch.randint(0, 1 << bits, (37, 53), dtype=torch.int64)
         _roundtrip(idx, bits)
+
+
+@pytest.mark.parametrize("bits", range(1, 9))
+@pytest.mark.parametrize("numel", [0, 1, 7, 31, 32, 33, 65, 257])
+def test_optimized_profile_packing_has_exact_word_count(bits, numel):
+    torch.manual_seed(bits * 1000 + numel)
+    idx = torch.randint(0, 1 << bits, (numel,), dtype=torch.int64)
+    packed = _roundtrip(idx, bits)
+    assert packed.data.numel() == packed_word_count(numel, bits)
+    assert packed_bytes(packed) == packed_word_count(numel, bits) * 4
 
 
 def test_pack_roundtrip_boundary_straddle():
@@ -46,6 +58,30 @@ def test_pack_rejects_out_of_range():
     except ValueError:
         raised = True
     assert raised
+
+
+@pytest.mark.parametrize("dtype", [torch.float16, torch.float32, torch.bool])
+def test_pack_rejects_non_integer_indices(dtype):
+    values = torch.zeros(4, dtype=dtype)
+    with pytest.raises(TypeError, match="integer dtype"):
+        pack_indices(values, 2)
+
+
+def test_packed_tensor_validates_storage_contract():
+    with pytest.raises(TypeError, match="int32"):
+        PackedTensor(
+            data=torch.zeros(1, dtype=torch.int64),
+            shape=(1,),
+            bits=4,
+            numel=1,
+        )
+    with pytest.raises(ValueError, match="expected 2"):
+        PackedTensor(
+            data=torch.zeros(1, dtype=torch.int32),
+            shape=(9,),
+            bits=4,
+            numel=9,
+        )
 
 
 def test_packed_bytes_is_true_footprint():
