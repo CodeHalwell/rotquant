@@ -11,6 +11,8 @@ Each backend is imported lazily and raises an informative error (with the instal
 from __future__ import annotations
 
 import argparse
+import hashlib
+import json
 import os
 import sys
 from typing import Any
@@ -42,16 +44,29 @@ def baseline_run_id(
     group_size: int,
     prequantized: bool,
     device: str,
-    protocol_slug: str | None = None,
+    run_options: dict[str, Any] | None = None,
 ) -> str:
-    """Build an artifact id from every CLI option that can change the result."""
+    """Build a readable, collision-resistant ID from all result inputs."""
     model_slug = model.rstrip("/").split("/")[-1]
     source = "prequantized" if prequantized else "quantized"
     device_slug = device.replace(":", "-").replace("/", "-")
-    run_id = (
+    prefix = (
         f"baseline_{backend}_{model_slug}_{bits}bit_g{group_size}_{source}_{device_slug}"
     )
-    return f"{run_id}_{protocol_slug}" if protocol_slug else run_id
+    identity = {
+        "backend": backend,
+        "model": model,
+        "bits": bits,
+        "group_size": group_size,
+        "prequantized": prequantized,
+        "device": device,
+        "run_options": run_options or {},
+    }
+    canonical = json.dumps(
+        identity, sort_keys=True, separators=(",", ":"), ensure_ascii=True
+    )
+    digest = hashlib.sha256(canonical.encode()).hexdigest()[:12]
+    return f"{prefix}_{digest}"
 
 
 def _require(module: str, backend: str):
@@ -196,12 +211,24 @@ def main() -> None:
             limit=args.zeroshot_limit,
         )
 
-    samples_slug = "full" if args.ppl_max_samples is None else f"n{args.ppl_max_samples}"
-    protocol_slug = f"ppl{args.ppl_seq_len}_{samples_slug}"
-    if args.zeroshot:
-        protocol_slug += "_zs"
+    eval_config = {
+        "datasets": args.datasets,
+        "ppl_seq_len": args.ppl_seq_len,
+        "ppl_stride": args.ppl_stride,
+        "ppl_max_samples": args.ppl_max_samples,
+        "zeroshot": args.zeroshot,
+        "tasks": args.tasks,
+        "zeroshot_limit": args.zeroshot_limit,
+        "zeroshot_batch_size": args.zeroshot_batch_size,
+    }
+    run_options = {
+        "revision": args.revision,
+        "calib_n": args.calib_n,
+        "calib_min_chars": args.calib_min_chars,
+        "eval": eval_config,
+    }
     run_id = baseline_run_id(args.backend, args.model, args.bits, args.group_size,
-                             args.prequantized, args.device, protocol_slug)
+                             args.prequantized, args.device, run_options)
     write_result(os.path.join(args.output_dir, f"{run_id}.json"), {
         "run_id": run_id,
         "config": {"experiment": "baseline", "backend": args.backend,
@@ -211,16 +238,7 @@ def main() -> None:
                    "revision": args.revision,
                    "calib_n": args.calib_n,
                    "calib_min_chars": args.calib_min_chars,
-                   "eval": {
-                       "datasets": args.datasets,
-                       "ppl_seq_len": args.ppl_seq_len,
-                       "ppl_stride": args.ppl_stride,
-                       "ppl_max_samples": args.ppl_max_samples,
-                       "zeroshot": args.zeroshot,
-                       "tasks": args.tasks,
-                       "zeroshot_limit": args.zeroshot_limit,
-                       "zeroshot_batch_size": args.zeroshot_batch_size,
-                   },
+                   "eval": eval_config,
                    "device": args.device, "label": run_id},
         "metrics": metrics,
         "environment": environment_record(),

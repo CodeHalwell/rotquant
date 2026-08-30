@@ -92,6 +92,11 @@ class AdapterRegistry:
             raise ValueError("adapter name must not be empty")
         if adapter.name in self._adapters and not replace:
             raise ValueError(f"adapter is already registered: {adapter.name}")
+        existing = self._adapters.get(adapter.name)
+        if existing is not None and existing.fallback and not adapter.fallback:
+            raise ValueError(
+                "cannot replace the registry fallback with a non-fallback adapter"
+            )
         if adapter.fallback and any(
             current.fallback and current.name != adapter.name
             for current in self._adapters.values()

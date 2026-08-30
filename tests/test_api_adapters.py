@@ -47,6 +47,9 @@ def test_adapter_registry_is_extensible_and_rejects_collisions() -> None:
     assert registry.resolve(TinyModel("other")).name == "fallback"
     with pytest.raises(ValueError, match="already registered"):
         registry.register(ModelAdapter("custom"))
+    with pytest.raises(ValueError, match="fallback"):
+        registry.register(ModelAdapter("fallback"), replace=True)
+    assert registry.resolve(TinyModel("other")).name == "fallback"
 
 
 def test_model_inspection_is_non_mutating() -> None:

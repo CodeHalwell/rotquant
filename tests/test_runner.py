@@ -117,17 +117,58 @@ def test_long_run_id_is_bounded_hashed_and_keeps_seed_suffix():
 
 
 def test_baseline_run_id_includes_quantization_options():
-    base = baseline_mod.baseline_run_id("gptq", "org/model", 4, 128, False, "cuda:0")
-    assert base == "baseline_gptq_model_4bit_g128_quantized_cuda-0"
+    protocol = {
+        "revision": "abc123",
+        "calib_n": 256,
+        "calib_min_chars": 2048,
+        "eval": {
+            "datasets": ["wikitext2", "c4"],
+            "ppl_seq_len": 2048,
+            "ppl_stride": 1024,
+            "ppl_max_samples": 32,
+            "zeroshot": True,
+            "tasks": ["boolq", "piqa"],
+            "zeroshot_limit": 100,
+            "zeroshot_batch_size": 8,
+        },
+    }
+    base = baseline_mod.baseline_run_id(
+        "gptq", "org/model", 4, 128, False, "cuda:0", protocol)
+    assert base.startswith("baseline_gptq_model_4bit_g128_quantized_cuda-0_")
+    assert len(base.rsplit("_", 1)[-1]) == 12
     assert baseline_mod.baseline_run_id(
-        "gptq", "org/model", 4, 64, False, "cuda:0") != base
+        "gptq", "org/model", 4, 64, False, "cuda:0", protocol) != base
     assert baseline_mod.baseline_run_id(
-        "gptq", "org/model", 4, 128, True, "cuda:0") != base
+        "gptq", "org/model", 4, 128, True, "cuda:0", protocol) != base
     assert baseline_mod.baseline_run_id(
-        "gptq", "org/model", 4, 128, False, "cpu") != base
+        "gptq", "org/model", 4, 128, False, "cpu", protocol) != base
     assert baseline_mod.baseline_run_id(
-        "gptq", "org/model", 4, 128, False, "cuda:0", "ppl2048_full_zs"
-    ).endswith("_ppl2048_full_zs")
+        "gptq", "other-org/model", 4, 128, False, "cuda:0", protocol) != base
+    assert baseline_mod.baseline_run_id(
+        "gptq", "org/model", 4, 128, False, "cuda:0",
+        {"eval": protocol["eval"], "calib_min_chars": 2048,
+         "calib_n": 256, "revision": "abc123"},
+    ) == base
+    changed_protocols = [
+        {**protocol, "revision": "def456"},
+        {**protocol, "calib_n": 128},
+        {**protocol, "calib_min_chars": 1024},
+        {**protocol, "eval": {**protocol["eval"], "datasets": ["c4"]}},
+        {**protocol, "eval": {**protocol["eval"], "ppl_seq_len": 1024}},
+        {**protocol, "eval": {**protocol["eval"], "ppl_stride": 512}},
+        {**protocol, "eval": {**protocol["eval"], "ppl_max_samples": 16}},
+        {**protocol, "eval": {**protocol["eval"], "zeroshot": False}},
+        {**protocol, "eval": {**protocol["eval"], "tasks": ["boolq"]}},
+        {**protocol, "eval": {**protocol["eval"], "zeroshot_limit": 50}},
+        {**protocol, "eval": {
+            **protocol["eval"], "zeroshot_batch_size": 4}},
+    ]
+    assert all(
+        baseline_mod.baseline_run_id(
+            "gptq", "org/model", 4, 128, False, "cuda:0", changed
+        ) != base
+        for changed in changed_protocols
+    )
     assert baseline_mod.IMPLEMENTED_BACKENDS == ("gptq", "awq", "aqlm")
 
 
