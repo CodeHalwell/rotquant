@@ -15,16 +15,21 @@ patch modes are exposed for E7:
 """
 from __future__ import annotations
 
+from collections.abc import Sequence
 from dataclasses import dataclass, field
-from typing import Dict, Optional, Sequence
 
 import torch
-import torch.nn as nn
+from torch import nn
 
+from .adapters import resolve_model_adapter
 from .linear import QuantLinear
 from .quantize import QuantConfig
 from .rotate import (
-    ButterflyRotation, Identity, LearnedRotation, Rotation, build_rotation,
+    ButterflyRotation,
+    Identity,
+    LearnedRotation,
+    Rotation,
+    build_rotation,
 )
 from .utils import get_logger
 
@@ -46,8 +51,10 @@ class PatchConfig:
     # {"steps": 200, "lr": 1e-3}). Only meaningful with rotation="learned":
     # theta is optimised per layer (data-free, alternating minimisation) before
     # quantisation. None leaves theta at its ~identity init (and warns).
-    train_rotation: Optional[Dict] = None
-    include: Optional[Sequence[str]] = None
+    train_rotation: dict | None = None
+    include: Sequence[str] | None = None
+    # Explicit registry adapter, or None to resolve from model.config.model_type.
+    adapter: str | None = None
     # Substrings of layer names to leave in fp16. The default keeps the output
     # head (and its tied embedding) unquantised -- the convention every baseline
     # (GPTQ/AWQ/QuIP#/AQLM) follows, so results stay comparable. Pass () to
@@ -59,8 +66,8 @@ class PatchConfig:
     # ``dynamic`` contains serializable search settings. ``layer_quant`` is
     # populated by the runner with the resulting per-projection recipe and is
     # intentionally excluded from normal config construction/representation.
-    dynamic: Optional[Dict] = None
-    layer_quant: Dict[str, QuantConfig] = field(
+    dynamic: dict | None = None
+    layer_quant: dict[str, QuantConfig] = field(
         default_factory=dict, init=False, repr=False)
 
 
@@ -110,16 +117,20 @@ def _cpu_staging_linear(linear: nn.Linear) -> nn.Linear:
                        bias=linear.bias is not None, device="cpu",
                        dtype=torch.float32)
     with torch.no_grad():
-        staged.weight.copy_(linear.weight.detach().to(device="cpu", dtype=torch.float32))
+        staged.weight.copy_(
+            linear.weight.detach().to(device="cpu", dtype=torch.float32)
+        )
         if linear.bias is not None:
-            staged.bias.copy_(linear.bias.detach().to(device="cpu", dtype=torch.float32))
+            staged.bias.copy_(
+                linear.bias.detach().to(device="cpu", dtype=torch.float32)
+            )
     return staged
 
 
 def patch_model(model: nn.Module, cfg: PatchConfig,
-                hessians: Optional[Dict[str, torch.Tensor]] = None,
-                activations: Optional[Dict[str, torch.Tensor]] = None,
-                stats_out: Optional[Dict] = None) -> nn.Module:
+                hessians: dict[str, torch.Tensor] | None = None,
+                activations: dict[str, torch.Tensor] | None = None,
+                stats_out: dict | None = None) -> nn.Module:
     """Replace targeted ``nn.Linear`` layers with ``QuantLinear`` in-place.
 
     ``stats_out``: optional dict filled with patching side-info (currently
@@ -145,26 +156,42 @@ def patch_model(model: nn.Module, cfg: PatchConfig,
             "no-rotation control, not a learned rotation.")
     if (cfg.train_rotation or {}).get("objective") == "activation" \
             and cfg.mode not in ("consistent", "fused_inverse"):
-        raise ValueError("activation-aware rotation training requires a consistent mode")
+        raise ValueError(
+            "activation-aware rotation training requires a consistent mode"
+        )
     hessians = hessians or {}
     activations = activations or {}
 
     include_terms = tuple(cfg.include) if cfg.include is not None else None
     exclude_terms = tuple(cfg.exclude or ())
-    targets = [(n, m) for n, m in model.named_modules()
-               if isinstance(m, nn.Linear)
-               and (include_terms is None or any(k in n for k in include_terms))
-               and not any(k in n for k in exclude_terms)]
+    adapter = resolve_model_adapter(model, cfg.adapter)
+    support = adapter.inspect(model)
+    if stats_out is not None:
+        stats_out["model_support"] = support.to_dict()
+    targets = [
+        (name, module)
+        for name, module in adapter.iter_quantizable_modules(model)
+        if (include_terms is None or any(term in name for term in include_terms))
+        and not any(term in name for term in exclude_terms)
+    ]
     if not targets:
         logger.warning(
-            "patch_model found NO nn.Linear layers to quantise (include=%s, "
-            "exclude=%s). GPT-2-style models use transformers Conv1D, which is "
-            "not supported -- the model is still full-precision!",
-            include_terms, exclude_terms)
+            "patch_model found NO nn.Linear or adapter-specific quantizable "
+            "modules through adapter=%s "
+            "(include=%s, exclude=%s). The model is still full-precision!",
+            adapter.name, include_terms, exclude_terms)
         return model
 
+    model.__dict__["_rotquant_adapter_name"] = adapter.name
+
     train_stats: list = []
-    for i, (name, linear) in enumerate(targets):
+    for i, (name, source_module) in enumerate(targets):
+        linear = adapter.to_linear(source_module)
+        if not isinstance(linear, nn.Linear):
+            raise TypeError(
+                f"adapter {adapter.name!r} returned {type(linear).__name__} "
+                f"from to_linear(); expected nn.Linear"
+            )
         layer_quant = quant_config_for(cfg, name)
         source_device = linear.weight.device
         source_dtype = linear.weight.dtype
@@ -187,12 +214,18 @@ def patch_model(model: nn.Module, cfg: PatchConfig,
         if isinstance(weight_rot, (LearnedRotation, ButterflyRotation)) \
                 and cfg.train_rotation is not None:
             from .train_rotation import (
-                RotationTrainConfig, select_butterfly_checkpoint,
+                RotationTrainConfig,
+                select_butterfly_checkpoint,
                 train_layer_rotation,
             )
             train_cfg = RotationTrainConfig(**cfg.train_rotation)
             train_weight = linear.weight if train_on_source else work_linear.weight
             layer_acts = activations.get(name)
+            if train_cfg.objective == "activation" and layer_acts is None:
+                raise ValueError(
+                    f"activation-aware rotation training requires captured "
+                    f"activations for {name}"
+                )
             stats = train_layer_rotation(
                 weight_rot, train_weight, layer_quant,
                 train_cfg, activations=layer_acts)
@@ -200,6 +233,7 @@ def patch_model(model: nn.Module, cfg: PatchConfig,
                 weight_rot.to(device=work_linear.weight.device, dtype=torch.float32)
             if isinstance(weight_rot, ButterflyRotation) \
                     and train_cfg.objective == "activation":
+                assert layer_acts is not None
                 reference_rot = ButterflyRotation(
                     work_linear.in_features, block=cfg.block,
                     seed=cfg.seed + i, device=work_linear.weight.device)
@@ -247,7 +281,9 @@ def patch_model(model: nn.Module, cfg: PatchConfig,
         if stage_on_cpu:
             qlin = qlin.to(device=source_device, dtype=source_dtype)
         parent, attr = _get_parent(model, name)
-        setattr(parent, attr, qlin)
+        adapter.replace_quantized_module(
+            parent, attr, source_module, qlin
+        )
         if i == 0 or (i + 1) % 8 == 0:
             logger.info("patched %d/%d layers (last: %s)", i + 1, len(targets), name)
 
@@ -258,9 +294,15 @@ def patch_model(model: nn.Module, cfg: PatchConfig,
             "objective": train_stats[0]["objective"],
             "tokens": train_stats[0]["tokens"],
             "selection_tokens": train_stats[0].get("selection_tokens", 0),
-            "mean_best_step": sum(s["best_step"] for s in train_stats) / len(train_stats),
-            "mean_initial_mse": sum(s["initial_mse"] for s in train_stats) / len(train_stats),
-            "mean_final_mse": sum(s["final_mse"] for s in train_stats) / len(train_stats),
+            "mean_best_step": (
+                sum(s["best_step"] for s in train_stats) / len(train_stats)
+            ),
+            "mean_initial_mse": (
+                sum(s["initial_mse"] for s in train_stats) / len(train_stats)
+            ),
+            "mean_final_mse": (
+                sum(s["final_mse"] for s in train_stats) / len(train_stats)
+            ),
         }
         agg["mean_relative_improvement"] = (
             (agg["mean_initial_mse"] - agg["mean_final_mse"])
@@ -282,6 +324,6 @@ def patch_model(model: nn.Module, cfg: PatchConfig,
         if stats_out is not None:
             stats_out["rotation_train"] = agg
 
-    logger.info("Patched %d linear layers (rotation=%s, mode=%s)",
-                len(targets), cfg.rotation, cfg.mode)
+    logger.info("Patched %d modules (adapter=%s, rotation=%s, mode=%s)",
+                len(targets), adapter.name, cfg.rotation, cfg.mode)
     return model

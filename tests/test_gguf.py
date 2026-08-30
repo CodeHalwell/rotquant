@@ -3,20 +3,88 @@
 from __future__ import annotations
 
 import numpy as np
+import pytest
 import torch
 
 from rotquant.gguf import (
     GROUP_SIZE,
-    native_tied_tensor,
     native_tensor,
+    native_tied_tensor,
     pack_qdata,
-    reference_linear,
     reference_embedding,
+    reference_linear,
     unpack_qdata,
 )
 from rotquant.linear import QuantLinear
 from rotquant.quantize import QuantConfig, Quantizer
 from rotquant.rotate import ButterflyRotation
+from scripts.export_rotquant_gguf import _kv_cache_metadata, _with_kv_cache_config
+
+FROZEN_MIXED_RECIPE = [
+    {"layer": 3, "key_bits": 2, "value_bits": 2},
+    {"layer": 7, "key_bits": 4, "value_bits": 4},
+    {"layer": 11, "key_bits": 3, "value_bits": 3},
+    {"layer": 15, "key_bits": 4, "value_bits": 2},
+    {"layer": 19, "key_bits": 3, "value_bits": 3},
+    {"layer": 23, "key_bits": 3, "value_bits": 2},
+    {"layer": 27, "key_bits": 4, "value_bits": 3},
+    {"layer": 31, "key_bits": 2, "value_bits": 4},
+]
+
+
+def _manifest_with_frozen_kv(**overrides):
+    cache = {
+        "codebook": "gaussian",
+        "group_size": 64,
+        "effective_bpv": 3.25,
+        "frozen_recipe": FROZEN_MIXED_RECIPE,
+    }
+    cache.update(overrides)
+    return {"deployment": {"kv_cache": cache}}
+
+
+def test_frozen_mixed_kv_metadata_is_exact_release_contract():
+    metadata = _kv_cache_metadata(_manifest_with_frozen_kv())
+    assert metadata is not None
+    assert metadata["effective_bpv"] == 3.25
+    assert metadata["key_bits"] == [
+        0, 0, 0, 2, 0, 0, 0, 4, 0, 0, 0, 3, 0, 0, 0, 4,
+        0, 0, 0, 3, 0, 0, 0, 3, 0, 0, 0, 4, 0, 0, 0, 2,
+    ]
+    assert metadata["value_bits"] == [
+        0, 0, 0, 2, 0, 0, 0, 4, 0, 0, 0, 3, 0, 0, 0, 2,
+        0, 0, 0, 3, 0, 0, 0, 2, 0, 0, 0, 3, 0, 0, 0, 4,
+    ]
+
+
+def test_explicit_kv_config_preserves_other_deployment_metadata():
+    manifest = {"deployment": {"recipe": "uniform_w4"}}
+    config = _manifest_with_frozen_kv()["deployment"]["kv_cache"]
+    updated = _with_kv_cache_config(manifest, config)
+    assert updated["deployment"]["recipe"] == "uniform_w4"
+    assert updated["deployment"]["kv_cache"] == config
+    assert "kv_cache" not in manifest["deployment"]
+
+
+@pytest.mark.parametrize(
+    ("override", "match"),
+    [
+        ({"group_size": 128}, "group_size=64"),
+        ({"codebook": "uniform"}, "Gaussian"),
+        ({"frozen_recipe": FROZEN_MIXED_RECIPE[:-1]}, "cover.*exactly"),
+        ({"effective_bpv": 3.0}, "does not match"),
+        ({
+            "effective_bpv": 4.25,
+            "frozen_recipe": [
+                {"layer": layer, "key_bits": 4, "value_bits": 4}
+                for layer in range(3, 32, 4)
+            ],
+        }, "requires effective_bpv=3.25"),
+    ],
+)
+def test_frozen_mixed_kv_metadata_rejects_contract_drift(override, match):
+    with pytest.raises(ValueError, match=match):
+        _kv_cache_metadata(_manifest_with_frozen_kv(**override))
 
 
 def _layer(out_features: int = 5, in_features: int = 256):

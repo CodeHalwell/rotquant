@@ -46,6 +46,8 @@ class KVCacheEvalConfig:
     seed: int = 0
     dynamic: dict[str, Any] | None = None
     frozen_recipe: list[dict[str, int]] | None = None
+    codebook_dim: int | None = None
+    bias_correction: str = "none"
 
     def __post_init__(self) -> None:
         if self.batches < 1:
@@ -71,6 +73,8 @@ class KVCacheEvalConfig:
             codebook=self.codebook,
             rotation_block=self.rotation_block,
             seed=self.seed if seed is None else seed,
+            codebook_dim=self.codebook_dim,
+            bias_correction=self.bias_correction,
         )
 
 

@@ -18,6 +18,8 @@ import pytest
 import torch
 
 from rotquant.codebooks import turboquant_mse_bound
+from rotquant.linear import QuantLinear
+from rotquant.pack import unpack_indices
 from rotquant.quantize import (
     QuantConfig,
     QuantizedWeight,
@@ -25,8 +27,6 @@ from rotquant.quantize import (
     _generate_sketch_matrix,
 )
 from rotquant.rotate import RandomizedHadamard
-from rotquant.linear import QuantLinear
-import rotquant.linear as _lin_mod
 
 
 # --------------------------------------------------------------------------- #
@@ -122,6 +122,42 @@ class TestTurboQuantScale:
         assert qw.sketch is None
         assert qw.sketch_row_norms is None
         assert qw.sketch_k == 0
+
+
+class TestLengthRenormalization:
+    def test_fixes_row_self_dot_without_changing_codes_or_rate(self):
+        torch.manual_seed(12)
+        weight = torch.randn(24, 128)
+        common = {
+            "bits": 2,
+            "codebook": "spherical",
+            "codebook_dim": 128,
+            "scale": "rms",
+            "group_size": 128,
+        }
+        plain = Quantizer(QuantConfig(
+            bias_correction="none", **common)).quantize_weight(weight)
+        corrected = Quantizer(QuantConfig(
+            bias_correction="length", **common)).quantize_weight(weight)
+        assert torch.equal(
+            unpack_indices(plain.packed), unpack_indices(corrected.packed))
+        assert plain.bit_budget().bits_per_weight == (
+            corrected.bit_budget().bits_per_weight)
+        reconstructed = corrected.dequantize()
+        ratios = (weight * reconstructed).sum(dim=1) / weight.square().sum(dim=1)
+        assert torch.allclose(ratios, torch.ones_like(ratios), atol=1e-3)
+
+    def test_zero_rows_remain_finite(self):
+        weight = torch.zeros(3, 16)
+        quantized = Quantizer(QuantConfig(
+            bits=2, group_size=8, bias_correction="length"
+        )).quantize_weight(weight)
+        assert torch.isfinite(quantized.scales).all()
+        assert torch.isfinite(quantized.dequantize()).all()
+
+    def test_bad_mode_is_rejected(self):
+        with pytest.raises(ValueError, match="bias_correction"):
+            QuantConfig(bias_correction="unknown")
 
 
 # --------------------------------------------------------------------------- #

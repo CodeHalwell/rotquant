@@ -118,6 +118,11 @@ def test_manifest_is_plain_json_and_records_loader(tmp_path):
     manifest = checkpoint_manifest(export_dir)
     assert manifest["format"] == "rotquant-packed"
     assert manifest["format_version"] == 1
+    assert manifest["packing"]["word_bits"] == 32
+    assert manifest["packing"]["bit_order"] == "lsb_first"
+    assert manifest["packing"]["optimized_profile_bits"] == list(range(1, 9))
+    assert manifest["architecture"]["adapter"] == "dense-decoder"
+    assert manifest["architecture"]["model_type"] == "llama"
     assert manifest["model_loader"] == "causal_lm"
     assert manifest["base_model_revision"] is None
     assert manifest["quantized_modules"]

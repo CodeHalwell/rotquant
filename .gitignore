@@ -2,9 +2,14 @@ __pycache__/
 *.pyc
 .pytest_cache/
 *.egg-info/
+.idea/
 build/
 dist/
+third_party/
+*.gguf
+codex-*.md
 results/*.json
 results/*.md
 results/*.png
+results/*.csv
 !results/.gitkeep

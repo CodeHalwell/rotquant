@@ -1,0 +1,15 @@
+{
+  "codebook": "gaussian",
+  "group_size": 64,
+  "effective_bpv": 3.25,
+  "frozen_recipe": [
+    {"layer": 3, "key_bits": 2, "value_bits": 2},
+    {"layer": 7, "key_bits": 4, "value_bits": 4},
+    {"layer": 11, "key_bits": 3, "value_bits": 3},
+    {"layer": 15, "key_bits": 4, "value_bits": 2},
+    {"layer": 19, "key_bits": 3, "value_bits": 3},
+    {"layer": 23, "key_bits": 3, "value_bits": 2},
+    {"layer": 27, "key_bits": 4, "value_bits": 3},
+    {"layer": 31, "key_bits": 2, "value_bits": 4}
+  ]
+}

@@ -6,20 +6,56 @@ true bits/weight via :class:`~rotquant.utils.BitBudget`.
 """
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass
-from typing import Tuple
 
 import torch
 
+from .format import packed_word_count, validate_storage_bits
 from .utils import BitBudget
 
 
 @dataclass
 class PackedTensor:
     data: torch.Tensor          # packed buffer of int32 words (uint32 bit patterns)
-    shape: Tuple[int, ...]      # logical shape of the index tensor
+    shape: tuple[int, ...]      # logical shape of the index tensor
     bits: int                   # bits per code
     numel: int                  # number of codes
+
+    def __post_init__(self) -> None:
+        self.validate()
+
+    def validate(self) -> None:
+        """Validate the in-memory representation against the v1 bitstream."""
+
+        if not isinstance(self.data, torch.Tensor):
+            raise TypeError("packed data must be a torch.Tensor")
+        if self.data.dtype != torch.int32:
+            raise TypeError("packed data must use int32 storage words")
+        if self.data.ndim != 1:
+            raise ValueError("packed data must be a one-dimensional word buffer")
+        validate_storage_bits(self.bits)
+        if not isinstance(self.shape, tuple):
+            raise TypeError("packed logical shape must be a tuple")
+        if any(
+            isinstance(dim, bool) or not isinstance(dim, int) or dim < 0
+            for dim in self.shape
+        ):
+            raise ValueError("packed logical shape must contain non-negative integers")
+        if isinstance(self.numel, bool) or not isinstance(self.numel, int):
+            raise TypeError("packed numel must be an integer")
+        logical_numel = math.prod(self.shape)
+        if self.numel != logical_numel:
+            raise ValueError(
+                f"packed numel {self.numel} does not match logical shape "
+                f"({logical_numel})"
+            )
+        expected_words = packed_word_count(self.numel, self.bits)
+        if self.data.numel() != expected_words:
+            raise ValueError(
+                f"packed buffer has {self.data.numel()} words; expected "
+                f"{expected_words}"
+            )
 
     def bit_budget(self, group_size: int, scale_bits: float = 16.0,
                    sign_bits: float = 0.0) -> BitBudget:
@@ -33,8 +69,13 @@ def pack_indices(idx: torch.Tensor, bits: int) -> PackedTensor:
     Lossless for any ``bits`` in ``[1, 16]``. Used so the packed path never holds
     a dequantised fp16 copy.
     """
-    if bits < 1 or bits > 16:
-        raise ValueError("bits must be in [1, 16]")
+    validate_storage_bits(bits)
+    if not isinstance(idx, torch.Tensor):
+        raise TypeError("idx must be a torch.Tensor")
+    try:
+        torch.iinfo(idx.dtype)
+    except TypeError as exc:
+        raise TypeError("idx must use an integer dtype") from exc
     output_device = idx.device
     # MPS executes int64 shifts/scatter_add pathologically slowly for model-sized
     # tensors. Packing is a one-time serialization step, so do its integer work on
@@ -45,8 +86,7 @@ def pack_indices(idx: torch.Tensor, bits: int) -> PackedTensor:
     if flat.numel() and (flat.min() < 0 or flat.max() >= (1 << bits)):
         raise ValueError("index out of range for given bits")
     n = flat.numel()
-    total_bits = n * bits
-    words = (total_bits + 31) // 32
+    words = packed_word_count(n, bits)
     out = torch.zeros(words, dtype=torch.int64, device=device)
     bit_positions = torch.arange(n, dtype=torch.int64, device=device) * bits
     word_idx = bit_positions // 32

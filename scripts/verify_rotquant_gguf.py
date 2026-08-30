@@ -19,6 +19,7 @@ from rotquant.checkpoint import (
     _build_rotation,
     _read_quantized_weight,
 )
+from rotquant.format import validate_checkpoint_manifest
 from rotquant.gguf import native_tensor, native_tied_tensor
 from scripts.export_rotquant_gguf import _qwen_permutations, _resolve_checkpoint
 
@@ -69,6 +70,7 @@ def main() -> None:
     checkpoint = _resolve_checkpoint(args.checkpoint, args.revision)
     with (checkpoint / MANIFEST_NAME).open(encoding="utf-8") as handle:
         manifest = json.load(handle)
+    validate_checkpoint_manifest(manifest)
     with (checkpoint / "config.json").open(encoding="utf-8") as handle:
         config = json.load(handle)
     hparams = {**config, **config.get("text_config", {})}

@@ -26,7 +26,7 @@ real models with fixed metrics:
 ## Layout
 
 ```
-rotquant/      core library  (rotate, codebooks, quantize, pack, linear, calibrate, patch, train_rotation, utils)
+rotquant/      core library  (api, adapters, format, quantize, pack, linear, rotate, patch, calibration)
 eval/          fixed eval protocol (perplexity, zeroshot, layer_mse)
 baselines/     working GPTQ/AWQ/AQLM wrappers through the same evaluation harness
 tests/         correctness tests that must pass before trusting any experiment
@@ -43,6 +43,14 @@ paper-ready and reproducible.
 The [serving-backend matrix](docs/serving_backends.md) tracks which runtimes
 preserve the packed RotQuant representation, the extension point for each
 backend, and the conformance gates required before claiming support.
+
+The [packed checkpoint v1 specification](docs/packed_format_v1.md) fixes the
+word layout, bit order, compatibility rules, and native-runtime conformance
+boundary for all 1–8-bit production profiles.
+
+The [native runtime v2 contract](docs/native_runtime_v2.md) generalises native
+weight blocks and fail-closed kernel dispatch across 1–8 bits while preserving
+the deployed 4-bit GGUF v1 bytes exactly.
 
 ## Install
 
@@ -74,6 +82,100 @@ source .venv/bin/activate
 
 The **core foundation + correctness tests run on CPU with just `torch`, `numpy`,
 `scipy`** — no GPU, model download, or CUDA kernel needed.
+
+## Library API
+
+The production-facing API validates kernel-targeted profiles from 1 through 8
+bits, resolves an architecture adapter, and optimises the supplied model in
+place so a large model is never duplicated implicitly:
+
+```python
+from rotquant import RotQuantConfig, inspect_model, optimize_model
+
+support = inspect_model(model)
+print(support.to_dict())
+
+model = optimize_model(
+    model,
+    RotQuantConfig(bits=4, group_size=128, rotation="fwht"),
+)
+```
+
+Finite-dimensional TurboQuant codebooks and its inexpensive self-dot correction
+are opt-in so they can be evaluated against the Gaussian/MSE default at exactly
+the same packed rate:
+
+```python
+model = optimize_model(
+    model,
+    RotQuantConfig(
+        bits=3,
+        group_size=128,
+        rotation_block=128,
+        codebook="spherical",
+        codebook_dim=128,
+        bias_correction="length",
+    ),
+)
+```
+
+`spherical` uses the exact unit-RMS coordinate marginal for the requested
+dimension instead of its asymptotic Gaussian approximation. `length` folds a
+rowwise self-dot correction into the existing fp16 scales, so codes, artifact
+shape and bits/weight do not change. It deliberately remains optional: it fixes
+inner-product shrinkage but can increase ordinary reconstruction MSE. Use
+`eval.quantization.compare_quantizers` and the KV attention-logit metrics to
+choose it from held-out results rather than enabling it globally.
+
+For calibrated experiments, `fit_scalar_codebook(normalized_samples, levels)`
+returns a normal packed `ScalarCodebook`; pass it to
+`Quantizer(config, codebook=...)`. No runtime or checkpoint format extension is
+needed because centroid values already travel with native-v2 artifacts.
+
+Use `save_pretrained(model, output_dir, ...)` and
+`from_pretrained(output_dir, ...)` for the pickle-free packed checkpoint. New
+artifacts embed the exact int32/LSB-first packing contract; legacy v1 artifacts
+without that explicit metadata remain loadable. Architecture discovery is
+extensible through `register_model_adapter`, while unfamiliar models safely
+fall back to ordinary `nn.Linear` discovery rather than being labelled as a
+validated architecture.
+
+The portable native reference can be benchmarked independently of a serving
+backend:
+
+```bash
+uv run python scripts/benchmark_native_reference.py --bits 1 2 3 4 5 6 7 8
+```
+
+A dependency-free C++17 implementation now provides compiled native-v2
+dequantization and streaming matmul for all 1–8-bit profiles. It includes the
+portable scalar correctness floor plus capability-gated ARM NEON and x86 AVX2
+paths, with no unreported SIMD or dense fallback:
+
+```bash
+cmake -S native -B build/native -DCMAKE_BUILD_TYPE=Release
+cmake --build build/native --parallel
+ctest --test-dir build/native --output-on-failure
+build/native/rotquant-native-cli --capabilities
+build/native/rotquant-native-bench --iterations 10
+```
+
+See [`native/README.md`](native/README.md) for embedding and installation.
+The runtime can be built as either a static C++ library or a shared library with
+a versioned C ABI for llama.cpp-style integrations and foreign-function
+bindings. `NativeRuntimeLibrary(path)` loads that ABI explicitly and can
+register its resolved scalar, NEON, or AVX2 implementation as a fail-closed
+`KernelRegistry` backend.
+
+## Selective KV retrieval
+
+`retrieval_rotquant_decode` is a quality oracle for a decode-only cache path
+that scans compressed keys but gathers only a selected set of value vectors.
+Its candidate budget can reserve recent positions and attention sinks, while
+`kv_retrieval_metrics` reports full-precision attention-mass coverage, output
+error and the fraction of V rows a fused runtime would read. The Python oracle
+materialises keys for correctness; it is not a throughput claim. See
+[`docs/kv_retrieval.md`](docs/kv_retrieval.md) for the intended packed runtime.
 
 ## Correctness first
 
@@ -179,6 +281,10 @@ one K/V state at a time by global teacher KL per exact byte saved, measures the
 joint recipe, and restores the best same-budget uniform recipe if interactions
 make it worse. For native Metal cache throughput across context depths, run
 `scripts/benchmark_rotquant_kv.sh` after building the pinned llama.cpp fork.
+The joint release GGUF embeds the validated frozen 3.25-bpv map. The patched
+runtime stores its eight full-attention K/V layers in true Gaussian 2/3/4-bit
+rows with fp16 group scales and rejects non-flash-attention execution rather
+than silently replacing the recipe.
 
 For the full CUDA study, open
 [`notebooks/qwen35_4b_kv_cache_matrix_colab.ipynb`](notebooks/qwen35_4b_kv_cache_matrix_colab.ipynb).

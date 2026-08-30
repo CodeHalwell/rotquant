@@ -43,6 +43,7 @@ Google Drive.
 | 2026-08-29 | Qwen3.5-4B / CUDA pilot | Source | WikiText-2 subset | 17.8458 | Pilot source reference. |
 | 2026-08-29 | Qwen3.5-4B / CUDA pilot | 4-bit RotQuant + attempted LoRA-QAT | Same | 18.7075 (+4.83%) | Passed 5% quality gate, but LoRA was not retained; this measured RotQuant/block recovery rather than useful LoRA. |
 | 2026-08-30 | Qwen3.5-4B / CUDA joint matrix + matched follow-up | Uniform W4 + frozen mixed 3.25-bpv K/V | WikiText-2, 256, 64 samples, seeds 0/1/2 | **14.5548 mean PPL (+4.71%)** | Passed the matched development release gates at 56.78% estimated weight reduction; worst candidate/control cache-KL ratio was 0.835. |
+| 2026-08-30 | Qwen3.5-4B / exported checkpoints | Pinned source vs joint RotQuant artifact | Exact tensor and snapshot bytes; native value conformance | **59.336% tensor-file reduction** | 200 packed projections, no LoRA, and all native packed codes/scales/rotations verified against the exact producer revision. |
 
 ### Qwen3.5-4B CUDA trial matrix
 
@@ -408,8 +409,41 @@ release inputs or weight-code drift, pins and records the Hub revision used for
 reconstruction, embeds the frozen K/V map as deployment metadata, requires the
 seed-0 PPL to match the released row, audits actual artifact bytes and tensor
 keys, writes checksums, and reloads without persistent fallback caches in a
-fresh process. The Colab export has not yet been run, so no artifact byte or
-runtime claim is recorded here yet.
+fresh process. The completed export is audited in the following entry.
+
+### Qwen3.5-4B exported artifact audit
+
+The winner export was subsequently published as the private checkpoint
+`HallD/qwen35-4b-rotquant-joint` at revision
+`986ed9839cd3396d538aa567ba254ba13403ea9c`. The deployment manifest pins the
+source checkpoint `unsloth/Qwen3.5-4B` at revision
+`3764fa359b9082ea5a1e4a5e3ac3aaf6e9671636`, records the matched release
+metrics, contains the exact frozen 3.25-bpv K/V map, and reports no retained
+LoRA adapter.
+
+The cached checkpoints now provide a like-for-like file audit:
+
+| Artifact | Tensor bytes | Complete snapshot bytes |
+|---|---:|---:|
+| Pinned source checkpoint | 9,319,737,856 | 9,348,509,644 |
+| Packed RotQuant checkpoint | 3,789,750,560 | 3,809,973,748 |
+| Reduction | **59.336%** | **59.245%** |
+
+The packed checkpoint contains 200 quantized projections. The earlier 4.0277-GB
+and 56.78% figures remain useful logical CUDA estimates, but actual tensor-file
+bytes now supersede them for storage reporting. Resident and peak transient
+memory are still unmeasured.
+
+The joint native GGUF is 3,146,308,736 bytes with SHA-256
+`ac70480575ce94d482402ac575e75e12bd01125a85cc32711af13bbd4491ecba`.
+`scripts/verify_rotquant_gguf.py` compared it with the exact joint producer
+revision and passed all 200 projections: every packed code, fp16 scale, and
+rotation value matched. The native artifact omits the vision tower, so its file
+size is not used as a like-for-like multimodal storage comparison.
+
+Decision: actual exported checkpoint storage and native weight conformance are
+now verified. Keep resident-memory, fused-cache execution, full quality, and
+throughput claims open.
 
 ## Native K/V cache benchmark notes
 
@@ -439,8 +473,8 @@ codebook against an exact Gaussian RotQuant cache kernel.
 
 ## Open experiments
 
-- Export the unrecovered `uniform_w4__frozen_mixed_3.25` winner and replace
-  logical size estimates with actual artifact and resident-memory measurements.
+- Measure packed checkpoint and native process resident memory and peak
+  transient memory; artifact and tensor-file bytes are now verified.
 - Measure longer trajectory agreement, long-context perplexity, and retrieval
   for the matched-gate winner and its controls.
 - Revisit dynamic weight allocation only if a sensitivity objective can beat
@@ -450,8 +484,6 @@ codebook against an exact Gaussian RotQuant cache kernel.
   fuse cache read, dequantization, and attention on CUDA/Metal.
 - Benchmark the packed tied vocabulary and native linear kernels against source
   and standard GGUF quantization.
-- Replace estimated complete sizes with actual artifacts and resident-memory
-  measurements.
 - Implement the canonical Transformers quantization-config contract, then a
   vLLM out-of-tree quantization plugin and the corresponding SGLang method; see
   `docs/serving_backends.md` for acceptance gates.

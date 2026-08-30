@@ -5,7 +5,8 @@ aggregator seeing nested (zero-shot) metrics.
 """
 import importlib.util
 import os
-from types import SimpleNamespace
+import sys
+from types import ModuleType, SimpleNamespace
 
 import pytest
 import torch
@@ -117,15 +118,121 @@ def test_long_run_id_is_bounded_hashed_and_keeps_seed_suffix():
 
 
 def test_baseline_run_id_includes_quantization_options():
-    base = baseline_mod.baseline_run_id("gptq", "org/model", 4, 128, False, "cuda:0")
-    assert base == "baseline_gptq_model_4bit_g128_quantized_cuda-0"
+    protocol = {
+        "revision": "abc123",
+        "calib_n": 256,
+        "calib_min_chars": 2048,
+        "eval": {
+            "datasets": ["wikitext2", "c4"],
+            "ppl_seq_len": 2048,
+            "ppl_stride": 1024,
+            "ppl_max_samples": 32,
+            "zeroshot": True,
+            "tasks": ["boolq", "piqa"],
+            "zeroshot_limit": 100,
+            "zeroshot_batch_size": 8,
+        },
+    }
+    base = baseline_mod.baseline_run_id(
+        "gptq", "org/model", 4, 128, False, "cuda:0", protocol)
+    assert base.startswith("baseline_gptq_model_4bit_g128_quantized_cuda-0_")
+    assert len(base.rsplit("_", 1)[-1]) == 12
     assert baseline_mod.baseline_run_id(
-        "gptq", "org/model", 4, 64, False, "cuda:0") != base
+        "gptq", "org/model", 4, 64, False, "cuda:0", protocol) != base
     assert baseline_mod.baseline_run_id(
-        "gptq", "org/model", 4, 128, True, "cuda:0") != base
+        "gptq", "org/model", 4, 128, True, "cuda:0", protocol) != base
     assert baseline_mod.baseline_run_id(
-        "gptq", "org/model", 4, 128, False, "cpu") != base
+        "gptq", "org/model", 4, 128, False, "cpu", protocol) != base
+    assert baseline_mod.baseline_run_id(
+        "gptq", "other-org/model", 4, 128, False, "cuda:0", protocol) != base
+    assert baseline_mod.baseline_run_id(
+        "gptq", "org/model", 4, 128, False, "cuda:0",
+        {"eval": protocol["eval"], "calib_min_chars": 2048,
+         "calib_n": 256, "revision": "abc123"},
+    ) == base
+    changed_protocols = [
+        {**protocol, "revision": "def456"},
+        {**protocol, "calib_n": 128},
+        {**protocol, "calib_min_chars": 1024},
+        {**protocol, "eval": {**protocol["eval"], "datasets": ["c4"]}},
+        {**protocol, "eval": {**protocol["eval"], "ppl_seq_len": 1024}},
+        {**protocol, "eval": {**protocol["eval"], "ppl_stride": 512}},
+        {**protocol, "eval": {**protocol["eval"], "ppl_max_samples": 16}},
+        {**protocol, "eval": {**protocol["eval"], "zeroshot": False}},
+        {**protocol, "eval": {**protocol["eval"], "tasks": ["boolq"]}},
+        {**protocol, "eval": {**protocol["eval"], "zeroshot_limit": 50}},
+        {**protocol, "eval": {
+            **protocol["eval"], "zeroshot_batch_size": 4}},
+    ]
+    assert all(
+        baseline_mod.baseline_run_id(
+            "gptq", "org/model", 4, 128, False, "cuda:0", changed
+        ) != base
+        for changed in changed_protocols
+    )
     assert baseline_mod.IMPLEMENTED_BACKENDS == ("gptq", "awq", "aqlm")
+
+
+def test_awq_receives_the_recorded_calibration_protocol(monkeypatch):
+    calls = {}
+    tokenizer = object()
+
+    class FakeAWQModel:
+        def __init__(self):
+            self.model = nn.Identity()
+
+        def quantize(self, received_tokenizer, **kwargs):
+            calls["tokenizer"] = received_tokenizer
+            calls.update(kwargs)
+
+    fake_model = FakeAWQModel()
+
+    class FakeAutoAWQ:
+        @staticmethod
+        def from_pretrained(model_name):
+            calls["model_name"] = model_name
+            return fake_model
+
+    class FakeTokenizer:
+        @staticmethod
+        def from_pretrained(model_name, **kwargs):
+            calls["tokenizer_model"] = model_name
+            calls["tokenizer_kwargs"] = kwargs
+            return tokenizer
+
+    awq_module = ModuleType("awq")
+    awq_module.AutoAWQForCausalLM = FakeAutoAWQ
+    transformers_module = ModuleType("transformers")
+    transformers_module.AutoTokenizer = FakeTokenizer
+    monkeypatch.setitem(sys.modules, "awq", awq_module)
+    monkeypatch.setitem(sys.modules, "transformers", transformers_module)
+
+    def fake_calib_texts(n, min_chars):
+        calls["calibration_request"] = (n, min_chars)
+        return ["sample-a", "sample-b"]
+
+    monkeypatch.setattr(baseline_mod, "_calib_texts", fake_calib_texts)
+    model, received_tokenizer = baseline_mod.load_baseline(
+        "awq",
+        "org/model",
+        4,
+        "cpu",
+        group_size=64,
+        calib_n=17,
+        calib_min_chars=333,
+    )
+
+    assert model is fake_model.model
+    assert received_tokenizer is tokenizer
+    assert calls["calibration_request"] == (17, 333)
+    assert calls["calib_data"] == ["sample-a", "sample-b"]
+    assert calls["max_calib_samples"] == 17
+    assert calls["quant_config"] == {
+        "w_bit": 4,
+        "q_group_size": 64,
+        "zero_point": True,
+        "version": "GEMM",
+    }
 
 
 def test_apply_set_overrides_types_and_nesting():

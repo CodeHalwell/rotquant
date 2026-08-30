@@ -1,0 +1,53 @@
+name: Native runtime
+
+"on":
+  push:
+    paths:
+      - ".github/workflows/native-runtime.yml"
+      - "native/**"
+  pull_request:
+    paths:
+      - ".github/workflows/native-runtime.yml"
+      - "native/**"
+
+permissions:
+  contents: read
+
+jobs:
+  compiled-conformance:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, macos-14]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Configure
+        run: >-
+          cmake -S native -B build/native
+          -DCMAKE_BUILD_TYPE=Release
+          -DBUILD_SHARED_LIBS=ON
+          -DROTQUANT_NATIVE_WARNINGS_AS_ERRORS=ON
+      - name: Build
+        run: cmake --build build/native --parallel
+      - name: Test C and C++ APIs
+        run: ctest --test-dir build/native --output-on-failure
+      - name: Inspect kernels
+        run: build/native/rotquant-native-cli --capabilities
+      - name: Exercise compiled SIMD benchmark
+        shell: bash
+        run: |
+          capabilities="$(build/native/rotquant-native-cli --capabilities)"
+          if [[ "${capabilities}" == *'"kernel":"avx2"'* ]]; then
+            build/native/rotquant-native-bench \
+              --out-features 64 --in-features 257 --group-size 128 \
+              --batch 2 --iterations 3 --kernel avx2
+          elif [[ "${capabilities}" == *'"kernel":"neon"'* ]]; then
+            build/native/rotquant-native-bench \
+              --out-features 64 --in-features 257 --group-size 128 \
+              --batch 2 --iterations 3 --kernel neon
+          else
+            build/native/rotquant-native-bench \
+              --out-features 64 --in-features 257 --group-size 128 \
+              --batch 2 --iterations 3 --kernel scalar
+          fi

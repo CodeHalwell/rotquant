@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-MODEL="${1:-qwen35-4b-rotquant-native.gguf}"
+MODEL="${1:-qwen35-4b-rotquant-joint-kv3p25-native.gguf}"
 PORT="${2:-8085}"
 SERVER="${ROTQUANT_LLAMA_SERVER:-third_party/llama.cpp/build-rotquant/bin/llama-server}"
 
@@ -18,6 +18,7 @@ fi
 exec "${SERVER}" \
   -m "${MODEL}" \
   -ngl "${ROTQUANT_GPU_LAYERS:-99}" \
+  --flash-attn on \
   -c "${ROTQUANT_CONTEXT:-4096}" \
   -np 1 \
   -n "${ROTQUANT_MAX_TOKENS:-64}" \

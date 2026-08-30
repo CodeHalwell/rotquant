@@ -2,7 +2,7 @@
 
 Pluggable along four axes, matching the experiment matrix:
 
-* **codebook**       -- ``gaussian`` | ``uniform`` | ``nf`` (see :mod:`codebooks`)
+* **codebook**       -- ``gaussian`` | ``spherical`` | ``uniform`` | ``nf``
 * **scale strategy** -- ``rms`` | ``mse_search`` | ``turboquant``
 * **group size**     -- per-group scales along the input dimension
 * **error comp**     -- ``none`` | ``gptq`` | ``residual`` | ``qjl`` | ``turboquant``
@@ -27,8 +27,7 @@ module quantises an (already-rotated) ``[out, in]`` weight matrix.
 from __future__ import annotations
 
 import math
-from dataclasses import dataclass, field
-from typing import Optional, Tuple
+from dataclasses import dataclass
 
 import torch
 
@@ -68,6 +67,8 @@ class QuantConfig:
     seed: int = 0
     scale_bits: float = 16.0
     sketch_k: int = 64                  # QJL projection dimension (error_comp="turboquant")
+    codebook_dim: int | None = None      # spherical marginal dimension; defaults to group_size
+    bias_correction: str = "none"       # none | length (rowwise shrinkage correction)
 
     def __post_init__(self) -> None:
         if not isinstance(self.bits, int) or not 1 <= self.bits <= 16:
@@ -78,9 +79,16 @@ class QuantConfig:
             raise ValueError("group_size must be >= 1")
         if self.codebook.lower() not in {
             "gaussian", "lloyd", "lloyd_max", "mse",
+            "sphere", "spherical", "beta", "finite_beta",
             "uniform", "nf", "normalfloat", "normal_float",
         }:
             raise ValueError(f"unknown scalar codebook kind: {self.codebook}")
+        if self.codebook_dim is not None and (
+            isinstance(self.codebook_dim, bool)
+            or not isinstance(self.codebook_dim, int)
+            or self.codebook_dim < 3
+        ):
+            raise ValueError("codebook_dim must be an integer >= 3")
         if self.scale not in {"rms", "mse_search", "turboquant"}:
             raise ValueError(f"unknown scale strategy: {self.scale}")
         if self.error_comp not in {"none", "gptq", "residual", "qjl", "turboquant"}:
@@ -112,28 +120,31 @@ class QuantConfig:
             raise ValueError("mse_search bounds must satisfy 0 < lo <= hi")
         if self.error_comp == "turboquant" and self.sketch_k < 1:
             raise ValueError("sketch_k must be >= 1 for TurboQuant correction")
+        if self.bias_correction not in {"none", "length"}:
+            raise ValueError(
+                "bias_correction must be one of {'none', 'length'}")
 
 
 @dataclass
 class QuantizedWeight:
     packed: PackedTensor
-    scales: Optional[torch.Tensor]       # [out, n_groups]; [out, 1] for TurboQuant per-row
+    scales: torch.Tensor | None       # [out, n_groups]; [out, 1] for TurboQuant per-row
     codebook: ScalarCodebook
     group_size: int
     out_features: int
     in_features: int
-    residual_packed: Optional[PackedTensor] = None
-    residual_scales: Optional[torch.Tensor] = None
-    residual_codebook: Optional[ScalarCodebook] = None
+    residual_packed: PackedTensor | None = None
+    residual_scales: torch.Tensor | None = None
+    residual_codebook: ScalarCodebook | None = None
     # TurboQuant Stage-2 QJL sketch for inner-product bias correction (error_comp="turboquant")
-    sketch: Optional[PackedTensor] = None
-    sketch_row_norms: Optional[torch.Tensor] = None  # [out_features] fp16
+    sketch: PackedTensor | None = None
+    sketch_row_norms: torch.Tensor | None = None  # [out_features] fp16
     sketch_k: int = 0
     sketch_seed: int = 0
     # Effective group size for scale metadata (None → same as group_size).
     # TurboQuant uses scale_group_size=in_features (one scale per output row), which
     # gives (scale_bits / in_features) bpw overhead instead of (scale_bits / group_size).
-    scale_group_size: Optional[int] = None
+    scale_group_size: int | None = None
 
     def dequantize(self) -> torch.Tensor:
         idx = unpack_indices(self.packed).reshape(self.out_features, self.in_features)
@@ -200,7 +211,7 @@ class QuantizedWeight:
 
 def _expand_scales(scales: torch.Tensor, group_size: int, in_features: int) -> torch.Tensor:
     """[out, n_groups] -> [out, in_features] by repeating each group scale."""
-    out, ng = scales.shape
+    out, _ng = scales.shape
     rep = scales.repeat_interleave(group_size, dim=1)
     if rep.shape[1] < in_features:  # last partial group
         rep = torch.cat([rep, rep[:, -1:].expand(out, in_features - rep.shape[1])], dim=1)
@@ -216,8 +227,8 @@ def _group_counts(in_features: int, group_size: int, device) -> torch.Tensor:
     return counts
 
 
-def _storage_scales(scales: Optional[torch.Tensor],
-                    scale_bits: float) -> Optional[torch.Tensor]:
+def _storage_scales(scales: torch.Tensor | None,
+                    scale_bits: float) -> torch.Tensor | None:
     """Round scales to the precision the bit accounting claims.
 
     The protocol charges ``scale_bits`` (default 16) per scale, so the stored
@@ -248,19 +259,19 @@ def _group_scales_rms(w: torch.Tensor, group_size: int) -> torch.Tensor:
     return rms  # [out, ng]
 
 
-def _quantize_groups(w: torch.Tensor, scales: Optional[torch.Tensor],
+def _quantize_groups(w: torch.Tensor, scales: torch.Tensor | None,
                      codebook: ScalarCodebook,
-                     group_size: int) -> Tuple[torch.Tensor, torch.Tensor]:
+                     group_size: int) -> tuple[torch.Tensor, torch.Tensor]:
     """Return (dequantized weight, integer indices).
 
-    When ``scales`` is ``None`` (TurboQuant mode) the codebook is applied directly
-    to ``w`` without any normalisation -- the Hadamard rotation has already made
-    the distribution universal.
+    When ``scales`` is ``None`` the codebook is applied directly to ``w``
+    without any normalisation. Scale selection, including TurboQuant's per-row
+    scale, happens before this helper is called.
     """
     if scales is None:
         q, idx = codebook.quantize(w)
         return q, idx
-    out, inf = w.shape
+    _out, inf = w.shape
     sc = _expand_scales(scales, group_size, inf)
     normed = w / sc
     q, idx = codebook.quantize(normed)
@@ -268,14 +279,21 @@ def _quantize_groups(w: torch.Tensor, scales: Optional[torch.Tensor],
 
 
 class Quantizer:
-    def __init__(self, config: QuantConfig):
+    def __init__(self, config: QuantConfig, *, codebook: ScalarCodebook | None = None):
         self.cfg = config
-        self.codebook = build_scalar_codebook(config.codebook, 2 ** config.bits)
+        spherical = config.codebook.lower() in {
+            "sphere", "spherical", "beta", "finite_beta"}
+        dimension = (config.codebook_dim or config.group_size) if spherical else None
+        self.codebook = codebook or build_scalar_codebook(
+            config.codebook, 2 ** config.bits, dimension)
+        if self.codebook.levels != 2 ** config.bits:
+            raise ValueError(
+                "codebook override must contain exactly 2**bits centroids")
 
     # ------------------------------------------------------------------ #
     # scale selection
     # ------------------------------------------------------------------ #
-    def _select_scales(self, w: torch.Tensor) -> Optional[torch.Tensor]:
+    def _select_scales(self, w: torch.Tensor) -> torch.Tensor | None:
         if self.cfg.scale == "turboquant":
             # Per-row RMS: one scale per output neuron, amortised over in_features weights.
             # After Hadamard rotation the distribution *shape* is universal (Gaussian) but
@@ -322,8 +340,8 @@ class Quantizer:
     # main entry
     # ------------------------------------------------------------------ #
     def quantize_weight(self, weight: torch.Tensor,
-                        H: Optional[torch.Tensor] = None,
-                        scales_override: Optional[torch.Tensor] = None,
+                        H: torch.Tensor | None = None,
+                        scales_override: torch.Tensor | None = None,
                         ) -> QuantizedWeight:
         """Quantize ``weight``, optionally using explicit deployable scales.
 
@@ -361,6 +379,27 @@ class Quantizer:
         else:
             q_w, idx = _quantize_groups(w, scales, self.codebook, self.cfg.group_size)
 
+        if self.cfg.bias_correction == "length":
+            # Scalar quantisation shortens reconstructed directions.  The
+            # self-dot multiplier ||w||^2/<w,q(w)> is TurboVec's length
+            # renormalisation expressed in our already-scaled domain.
+            # Fold it into every scale in the row: codes and storage size remain
+            # unchanged, and existing runtimes need no new metadata or branch.
+            energy = w.square().sum(dim=1)
+            alignment = (w * q_w).sum(dim=1)
+            usable = (energy > 0) & (alignment > torch.finfo(w.dtype).eps * energy)
+            correction = torch.ones_like(energy)
+            correction[usable] = energy[usable] / alignment[usable]
+            corrected_scales = _storage_scales(
+                scales.float() * correction.unsqueeze(1), self.cfg.scale_bits)
+            expanded = _expand_scales(
+                corrected_scales,
+                inf if self.cfg.scale == "turboquant" else self.cfg.group_size,
+                inf,
+            )
+            q_w = self.codebook.centroids.to(w.device)[idx] * expanded
+            scales = corrected_scales
+
         packed = pack_indices(idx.reshape(-1), self.cfg.bits)
         # TurboQuant uses one scale per output row; pass scale_group_size=in_features
         # so dequantize() and bit_budget() use the right expansion factor.
@@ -382,7 +421,7 @@ class Quantizer:
     # GPTQ error feedback
     # ------------------------------------------------------------------ #
     def _gptq(self, w: torch.Tensor, scales: torch.Tensor,
-              H: Optional[torch.Tensor]) -> Tuple[torch.Tensor, torch.Tensor]:
+              H: torch.Tensor | None) -> tuple[torch.Tensor, torch.Tensor]:
         """Blocked GPTQ (lazy batch updates, as in the reference implementation).
 
         Columns inside a ``gptq_block``-wide block are processed sequentially with
@@ -474,7 +513,7 @@ class Quantizer:
         qw.scale_bits_residual = self.cfg.scale_bits
 
     def _qjl_residual(self, r: torch.Tensor,
-                      rscales: torch.Tensor) -> Tuple[ScalarCodebook, torch.Tensor]:
+                      rscales: torch.Tensor) -> tuple[ScalarCodebook, torch.Tensor]:
         """Stochastic 1-bit residual. Two levels at +-1; rounding is *stochastic*,
         which injects variance the deterministic pass avoids -> it loses at equal bits.
         """

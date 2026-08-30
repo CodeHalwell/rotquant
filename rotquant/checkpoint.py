@@ -19,7 +19,14 @@ from typing import Any
 import torch
 from torch import nn
 
+from .adapters import resolve_model_adapter
 from .codebooks import ScalarCodebook
+from .format import (
+    CURRENT_PACKING,
+    FORMAT_NAME,
+    FORMAT_VERSION,
+    validate_checkpoint_manifest,
+)
 from .linear import QuantLinear
 from .pack import PackedTensor
 from .quantize import QuantizedWeight
@@ -32,8 +39,6 @@ from .rotate import (
     Rotation,
 )
 
-FORMAT_NAME = "rotquant-packed"
-FORMAT_VERSION = 1
 MANIFEST_NAME = "rotquant_config.json"
 MODEL_STATE_NAME = "rotquant_model.safetensors"
 PACKED_STATE_NAME = "rotquant_packed.safetensors"
@@ -219,10 +224,14 @@ def _read_codebook(
 
 
 def _read_quantized_weight(handle, spec: dict[str, Any]) -> QuantizedWeight:
+    packed = _read_packed(handle, spec["packed"])
+    codebook = _read_codebook(handle, spec["codebook"])
+    if packed is None or codebook is None:
+        raise ValueError("primary packed tensor and codebook are required")
     return QuantizedWeight(
-        packed=_read_packed(handle, spec["packed"]),
+        packed=packed,
         scales=_read_tensor(handle, spec.get("scales")),
-        codebook=_read_codebook(handle, spec["codebook"]),
+        codebook=codebook,
         group_size=int(spec["group_size"]),
         out_features=int(spec["out_features"]),
         in_features=int(spec["in_features"]),
@@ -313,7 +322,9 @@ def save_packed_checkpoint(
 
     config = getattr(model, "config", None)
     if config is None or not hasattr(config, "save_pretrained"):
-        raise TypeError("packed checkpoint export requires model.config.save_pretrained")
+        raise TypeError(
+            "packed checkpoint export requires model.config.save_pretrained"
+        )
     config.save_pretrained(output)
     generation_config = getattr(model, "generation_config", None)
     if generation_config is not None and hasattr(generation_config, "save_pretrained"):
@@ -337,6 +348,7 @@ def save_packed_checkpoint(
     manifest: dict[str, Any] = {
         "format": FORMAT_NAME,
         "format_version": FORMAT_VERSION,
+        "packing": CURRENT_PACKING.to_manifest(),
         "base_model": base_model,
         "base_model_revision": base_model_revision,
         "model_loader": model_loader,
@@ -345,8 +357,15 @@ def save_packed_checkpoint(
         "packed_state": PACKED_STATE_NAME,
         "quantized_modules": modules,
     }
+    adapter_name = getattr(model, "_rotquant_adapter_name", None)
+    adapter = resolve_model_adapter(model, adapter_name)
+    manifest["architecture"] = {
+        "adapter": adapter.name,
+        "model_type": adapter.model_type(model),
+    }
     if serialized_deployment is not None:
         manifest["deployment"] = serialized_deployment
+    validate_checkpoint_manifest(manifest)
     with (output / MANIFEST_NAME).open("w", encoding="utf-8") as handle:
         json.dump(manifest, handle, indent=2)
         handle.write("\n")
@@ -410,13 +429,7 @@ def load_packed_model(
         raise FileNotFoundError(f"not a complete RotQuant checkpoint: {manifest_path}")
     with manifest_path.open(encoding="utf-8") as handle:
         manifest = json.load(handle)
-    if manifest.get("format") != FORMAT_NAME:
-        raise ValueError(f"unsupported checkpoint format: {manifest.get('format')!r}")
-    if manifest.get("format_version") != FORMAT_VERSION:
-        raise ValueError(
-            f"unsupported RotQuant checkpoint version: "
-            f"{manifest.get('format_version')!r}"
-        )
+    validate_checkpoint_manifest(manifest)
 
     from transformers import AutoConfig
 
@@ -481,6 +494,9 @@ def load_packed_model(
         from transformers import GenerationConfig
 
         model.generation_config = GenerationConfig.from_pretrained(checkpoint)
+    architecture = manifest.get("architecture") or {}
+    if architecture.get("adapter"):
+        model.__dict__["_rotquant_adapter_name"] = architecture["adapter"]
     model.to(device=device, dtype=resolved_dtype).eval()
     return model
 
@@ -490,6 +506,5 @@ def checkpoint_manifest(checkpoint_dir: str | Path) -> dict[str, Any]:
     path = Path(checkpoint_dir) / MANIFEST_NAME
     with path.open(encoding="utf-8") as handle:
         manifest = json.load(handle)
-    if manifest.get("format") != FORMAT_NAME:
-        raise ValueError(f"unsupported checkpoint format: {manifest.get('format')!r}")
+    validate_checkpoint_manifest(manifest)
     return manifest

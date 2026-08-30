@@ -1,0 +1,21 @@
+# E9: finite-dimensional codebook plus zero-byte self-dot correction.
+# Run matched arms by overriding codebook/bias_correction:
+#   gaussian/none, spherical/none, gaussian/length, spherical/length.
+experiment: E9
+label: e9_spherical_length_b3
+quant:
+  bits: 3
+  codebook: spherical
+  codebook_dim: 128
+  scale: mse_search
+  group_size: 128
+  error_comp: none
+  bias_correction: length
+patch:
+  rotation: fwht
+  block: 128
+  mode: consistent
+eval:
+  layer_mse: true
+  perplexity: true
+  ppl_datasets: [wikitext2, c4]
