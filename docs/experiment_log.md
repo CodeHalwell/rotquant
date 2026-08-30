@@ -42,7 +42,7 @@ Google Drive.
 | 2026-08-29 | Qwen3.5-4B / MPS | FWHT 4-bit | Same | **18.9015 (+5.9%)** | Promising quality-only fallback result across 200 language layers. |
 | 2026-08-29 | Qwen3.5-4B / CUDA pilot | Source | WikiText-2 subset | 17.8458 | Pilot source reference. |
 | 2026-08-29 | Qwen3.5-4B / CUDA pilot | 4-bit RotQuant + attempted LoRA-QAT | Same | 18.7075 (+4.83%) | Passed 5% quality gate, but LoRA was not retained; this measured RotQuant/block recovery rather than useful LoRA. |
-| 2026-08-30 | Qwen3.5-4B / CUDA joint matrix | Uniform W4 + frozen mixed 3.25-bpv K/V | WikiText-2, 256, 64 samples, seeds 0/1/2 | **14.5548 mean PPL (+4.71%)** | Diagnostic winner at 56.78% estimated weight reduction; PPL gates passed, but release status is unresolved because the worst-seed cache KL was compared with a seed-0-only control gate. |
+| 2026-08-30 | Qwen3.5-4B / CUDA joint matrix + matched follow-up | Uniform W4 + frozen mixed 3.25-bpv K/V | WikiText-2, 256, 64 samples, seeds 0/1/2 | **14.5548 mean PPL (+4.71%)** | Passed the matched development release gates at 56.78% estimated weight reduction; worst candidate/control cache-KL ratio was 0.835. |
 
 ### Qwen3.5-4B CUDA trial matrix
 
@@ -362,13 +362,45 @@ self-teacher cache-sensitivity measurements, not evidence that quantized weights
 are more accurate than source weights. No long-context perplexity or retrieval
 task was evaluated.
 
-Decision: retain `uniform_w4__frozen_mixed_3.25` as the diagnostic whole-system
-winner. Do not label it release-passing or release-failing until matched
-multi-seed K4/V4 controls are available. In the next focused run, apply block
-recovery to this actual winner, omit the unchanged LoRA arm, and validate the
-recovered and unrecovered recipes against per-seed matched cache controls. The
-focused, conditional experiment is implemented in
+Decision at this point: retain `uniform_w4__frozen_mixed_3.25` as the diagnostic
+whole-system winner, pending matched multi-seed K4/V4 controls. The focused,
+conditional experiment was implemented in
 `notebooks/qwen35_4b_joint_release_followup_colab.ipynb`.
+
+### Qwen3.5-4B matched release follow-up
+
+The follow-up at Git SHA `206ea94454b3` reused the completed candidate rows and
+ran only the missing uniform-W4/K4/V4 controls for seeds 1 and 2. This replaced
+the earlier seed-0-to-worst-seed gate with a within-weight, within-seed cache
+comparison:
+
+| Seed | Frozen 3.25-bpv KL | Matched K4/V4 KL | Candidate/control ratio | KL reduction vs control |
+|---:|---:|---:|---:|---:|
+| 0 | 0.435155 | 0.541733 | 0.803 | 19.7% |
+| 1 | 0.700824 | 0.839113 | 0.835 | 16.5% |
+| 2 | 0.514957 | 0.670372 | 0.768 | 23.2% |
+
+The mean matched ratio was 0.802209 and the worst was 0.835197, comfortably
+below the predeclared 1.05 gate on every seed. Together with mean PPL 14.5548
+(+4.71%) and worst-seed PPL degradation +5.78%, the unrecovered recipe passes
+all matched development release gates.
+
+Block-and-scale recovery was then tested on the actual winner at seed 0. It
+raised PPL from 14.702918 to 14.713017, a 0.0687% degradation, while increasing
+estimated complete weight size from 4.027706 GB to 4.036566 GB (+8.86 MB) and
+reducing estimated weight savings from 56.783% to 56.688%. Its matched cache-KL
+ratio of 0.798873 passed, the candidate/control PPL values matched exactly, and
+no adapter was present, but the predeclared PPL-improvement gate failed. The
+notebook correctly rejected recovery and skipped its four additional seed
+trials.
+
+Decision: promote the simpler unrecovered
+`uniform_w4__frozen_mixed_3.25` recipe to artifact export and broader quality
+validation. Retire this block-recovery profile for the winner and retain the
+existing prohibition on the step-0 LoRA-QAT profile. This is a development
+release decision only: complete sizes remain logical estimates under CUDA
+fallback, and long-context perplexity, retrieval, packed runtime memory, and
+throughput remain unverified.
 
 ## Native K/V cache benchmark notes
 
@@ -398,12 +430,10 @@ codebook against an exact Gaussian RotQuant cache kernel.
 
 ## Open experiments
 
-- Run uniform-W4/K4/V4 cache controls at seeds 1 and 2 and replace the
-  seed-0-to-worst-seed cache gate with a matched per-seed comparison.
-- Apply block-and-scale recovery to `uniform_w4__frozen_mixed_3.25`; do not rerun
-  the current LoRA-QAT profile unless its step-0 collapse is addressed.
+- Export the unrecovered `uniform_w4__frozen_mixed_3.25` winner and replace
+  logical size estimates with actual artifact and resident-memory measurements.
 - Measure longer trajectory agreement, long-context perplexity, and retrieval
-  for the diagnostic winner and its matched controls.
+  for the matched-gate winner and its controls.
 - Revisit dynamic weight allocation only if a sensitivity objective can beat
   uniform W4 at a meaningful byte delta; the current 3.93-MB saving is not worth
   the observed PPL loss.
