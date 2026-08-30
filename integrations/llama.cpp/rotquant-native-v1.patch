@@ -1308,7 +1308,7 @@ index 1b1f852a0..b993ba793 100644
          if (use_mmap && buft_dev && buft == ggml_backend_dev_host_buffer_type(buft_dev)) {
 diff --git a/src/llama-rotquant.cpp b/src/llama-rotquant.cpp
 new file mode 100644
-index 000000000..a85ff99ac
+index 000000000..9fc1ffb38
 --- /dev/null
 +++ b/src/llama-rotquant.cpp
 @@ -0,0 +1,559 @@
@@ -1810,7 +1810,7 @@ index 000000000..a85ff99ac
 +        ggml_tensor  * indices,
 +        ggml_tensor  * rotation) {
 +    GGML_ASSERT(qweight->type == GGML_TYPE_I8);
-+    GGML_ASSERT(indices->type == GGML_TYPE_I64);
++    GGML_ASSERT(indices->type == GGML_TYPE_I32);
 +    GGML_ASSERT(rotation->type == GGML_TYPE_F32);
 +    const int64_t n_embd = qweight->ne[0] / RQ_BLOCK_BYTES * RQ_GROUP_SIZE;
 +    GGML_ASSERT(qweight->ne[0] % RQ_BLOCK_BYTES == 0);

@@ -44,6 +44,7 @@ KV_CACHE_GROUP_SIZE = 64
 KV_CACHE_ROTATION_BLOCK = 128
 KV_CACHE_KEY_SEED = 0
 KV_CACHE_VALUE_SEED = 1
+KV_CACHE_EFFECTIVE_BPV = 3.25
 KV_CACHE_FULL_LAYERS = tuple(range(3, KV_CACHE_LAYER_COUNT, 4))
 
 
@@ -113,6 +114,12 @@ def _kv_cache_metadata(manifest: dict) -> dict | None:
     if abs(declared_bpv - effective_bpv) > 1e-9:
         raise ValueError(
             "frozen KV effective_bpv does not match its bit map and fp16 scales"
+        )
+    if abs(effective_bpv - KV_CACHE_EFFECTIVE_BPV) > 1e-9:
+        raise ValueError(
+            "native frozen KV cache requires "
+            f"effective_bpv={KV_CACHE_EFFECTIVE_BPV}; "
+            f"bit map produces {effective_bpv}"
         )
 
     return {

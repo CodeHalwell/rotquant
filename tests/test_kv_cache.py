@@ -21,6 +21,17 @@ def _triplet(seed: int, length: int = 8):
     return tuple(torch.randn(shape, generator=generator) for _ in range(3))
 
 
+def test_non_spherical_small_groups_ignore_codebook_dimension():
+    config = KVQuantConfig(codebook="gaussian", group_size=1).quant_config()
+    assert config.group_size == 1
+    assert config.codebook_dim is None
+
+
+def test_spherical_codebook_dimension_defaults_to_group_size():
+    config = KVQuantConfig(codebook="spherical", group_size=3).quant_config()
+    assert config.codebook_dim == 3
+
+
 def test_packed_kv_round_trip_and_attention_metrics():
     queries, keys, values = _triplet(0)
     config = KVQuantConfig(bits=4, group_size=64, seed=3)

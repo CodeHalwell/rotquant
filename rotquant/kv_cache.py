@@ -45,12 +45,16 @@ class KVQuantConfig:
         return self.bits if selected is None else selected
 
     def quant_config(self, *, value: bool = False) -> QuantConfig:
+        spherical = self.codebook.lower() in {
+            "sphere", "spherical", "beta", "finite_beta"}
         return QuantConfig(
             bits=self.bits_for(value=value),
             group_size=self.group_size,
             scale_bits=self.scale_bits,
             codebook=self.codebook,
-            codebook_dim=self.codebook_dim or self.group_size,
+            codebook_dim=(
+                self.codebook_dim or self.group_size
+            ) if spherical else None,
             scale="rms",
             error_comp="none",
             bias_correction=self.bias_correction,

@@ -73,6 +73,13 @@ def test_explicit_kv_config_preserves_other_deployment_metadata():
         ({"codebook": "uniform"}, "Gaussian"),
         ({"frozen_recipe": FROZEN_MIXED_RECIPE[:-1]}, "cover.*exactly"),
         ({"effective_bpv": 3.0}, "does not match"),
+        ({
+            "effective_bpv": 4.25,
+            "frozen_recipe": [
+                {"layer": layer, "key_bits": 4, "value_bits": 4}
+                for layer in range(3, 32, 4)
+            ],
+        }, "requires effective_bpv=3.25"),
     ],
 )
 def test_frozen_mixed_kv_metadata_rejects_contract_drift(override, match):

@@ -264,9 +264,9 @@ def _quantize_groups(w: torch.Tensor, scales: torch.Tensor | None,
                      group_size: int) -> tuple[torch.Tensor, torch.Tensor]:
     """Return (dequantized weight, integer indices).
 
-    When ``scales`` is ``None`` (TurboQuant mode) the codebook is applied directly
-    to ``w`` without any normalisation -- the Hadamard rotation has already made
-    the distribution universal.
+    When ``scales`` is ``None`` the codebook is applied directly to ``w``
+    without any normalisation. Scale selection, including TurboQuant's per-row
+    scale, happens before this helper is called.
     """
     if scales is None:
         q, idx = codebook.quantize(w)
