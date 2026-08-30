@@ -184,8 +184,14 @@ def pack_native_blocks(
         raise ValueError(
             f"scale shape {scales.shape} does not match {(out_features, groups)}"
         )
-    if not np.isfinite(scales).all() or np.any(scales < 0):
-        raise ValueError("scales must be finite and non-negative")
+    if (
+        not np.isfinite(scales).all()
+        or np.any(scales < 0)
+        or np.any(scales > np.finfo(NATIVE_SCALE_DTYPE).max)
+    ):
+        raise ValueError(
+            "scales must be finite, non-negative, and representable as float16"
+        )
 
     padded = np.zeros(
         (out_features, groups * layout.group_size), dtype=np.uint8

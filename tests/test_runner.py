@@ -5,7 +5,8 @@ aggregator seeing nested (zero-shot) metrics.
 """
 import importlib.util
 import os
-from types import SimpleNamespace
+import sys
+from types import ModuleType, SimpleNamespace
 
 import pytest
 import torch
@@ -170,6 +171,68 @@ def test_baseline_run_id_includes_quantization_options():
         for changed in changed_protocols
     )
     assert baseline_mod.IMPLEMENTED_BACKENDS == ("gptq", "awq", "aqlm")
+
+
+def test_awq_receives_the_recorded_calibration_protocol(monkeypatch):
+    calls = {}
+    tokenizer = object()
+
+    class FakeAWQModel:
+        def __init__(self):
+            self.model = nn.Identity()
+
+        def quantize(self, received_tokenizer, **kwargs):
+            calls["tokenizer"] = received_tokenizer
+            calls.update(kwargs)
+
+    fake_model = FakeAWQModel()
+
+    class FakeAutoAWQ:
+        @staticmethod
+        def from_pretrained(model_name):
+            calls["model_name"] = model_name
+            return fake_model
+
+    class FakeTokenizer:
+        @staticmethod
+        def from_pretrained(model_name, **kwargs):
+            calls["tokenizer_model"] = model_name
+            calls["tokenizer_kwargs"] = kwargs
+            return tokenizer
+
+    awq_module = ModuleType("awq")
+    awq_module.AutoAWQForCausalLM = FakeAutoAWQ
+    transformers_module = ModuleType("transformers")
+    transformers_module.AutoTokenizer = FakeTokenizer
+    monkeypatch.setitem(sys.modules, "awq", awq_module)
+    monkeypatch.setitem(sys.modules, "transformers", transformers_module)
+
+    def fake_calib_texts(n, min_chars):
+        calls["calibration_request"] = (n, min_chars)
+        return ["sample-a", "sample-b"]
+
+    monkeypatch.setattr(baseline_mod, "_calib_texts", fake_calib_texts)
+    model, received_tokenizer = baseline_mod.load_baseline(
+        "awq",
+        "org/model",
+        4,
+        "cpu",
+        group_size=64,
+        calib_n=17,
+        calib_min_chars=333,
+    )
+
+    assert model is fake_model.model
+    assert received_tokenizer is tokenizer
+    assert calls["calibration_request"] == (17, 333)
+    assert calls["calib_data"] == ["sample-a", "sample-b"]
+    assert calls["max_calib_samples"] == 17
+    assert calls["quant_config"] == {
+        "w_bit": 4,
+        "q_group_size": 64,
+        "zero_point": True,
+        "version": "GEMM",
+    }
 
 
 def test_apply_set_overrides_types_and_nesting():

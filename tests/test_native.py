@@ -71,6 +71,16 @@ def test_native_v2_four_bit_blocks_are_byte_exact_with_gguf_v1():
     np.testing.assert_array_equal(actual_scales, legacy_scales)
 
 
+def test_native_v2_rejects_scales_that_overflow_wire_dtype():
+    layout = NativeLayout(bits=4, group_size=8)
+    with pytest.raises(ValueError, match="representable as float16"):
+        pack_native_blocks(
+            np.zeros((1, 8), dtype=np.uint8),
+            np.array([[70_000.0]], dtype=np.float32),
+            layout,
+        )
+
+
 @pytest.mark.parametrize("bits", range(1, 9))
 def test_native_v2_encodes_quantized_weight_without_requantizing(bits):
     torch.manual_seed(bits)

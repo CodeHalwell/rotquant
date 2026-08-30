@@ -7,6 +7,7 @@ import pytest
 import torch
 from torch import nn
 
+import rotquant.patch as patch_module
 from rotquant import (
     AdapterRegistry,
     ModelAdapter,
@@ -28,6 +29,38 @@ class TinyModel(nn.Module):
 
     def forward(self, value: torch.Tensor) -> torch.Tensor:
         return self.lm_head(self.proj(value))
+
+
+class Conv1DLike(nn.Module):
+    """Minimal Transformers-Conv1D-style transposed weight projection."""
+
+    def __init__(self, in_features: int, out_features: int) -> None:
+        super().__init__()
+        self.weight = nn.Parameter(torch.randn(in_features, out_features) * 0.1)
+        self.bias = nn.Parameter(torch.randn(out_features) * 0.1)
+
+    def forward(self, value: torch.Tensor) -> torch.Tensor:
+        return value @ self.weight + self.bias
+
+
+class Conv1DLikeAdapter(ModelAdapter):
+    def iter_quantizable_modules(self, model):
+        for name, module in model.named_modules():
+            if isinstance(module, Conv1DLike):
+                yield name, module
+
+    def to_linear(self, module):
+        linear = nn.Linear(
+            module.weight.shape[0],
+            module.weight.shape[1],
+            bias=module.bias is not None,
+            device=module.weight.device,
+            dtype=module.weight.dtype,
+        )
+        with torch.no_grad():
+            linear.weight.copy_(module.weight.T)
+            linear.bias.copy_(module.bias)
+        return linear
 
 
 def test_adapter_resolution_is_architecture_aware_with_safe_fallback() -> None:
@@ -59,6 +92,37 @@ def test_model_inspection_is_non_mutating() -> None:
     assert support.quantizable_modules == 2
     assert support.quantizable_parameters == 72
     assert isinstance(model.proj, nn.Linear)
+
+
+def test_custom_adapter_converts_non_linear_projection(monkeypatch) -> None:
+    torch.manual_seed(5)
+    model = nn.Sequential(Conv1DLike(8, 6))
+    adapter = Conv1DLikeAdapter("conv1d-like")
+    monkeypatch.setattr(
+        patch_module, "resolve_model_adapter", lambda model, name: adapter
+    )
+    inputs = torch.randn(3, 8)
+    quant_config = patch_module.QuantConfig(
+        bits=8, group_size=4, codebook="uniform", scale="rms"
+    )
+    expected = QuantLinear.from_linear(
+        adapter.to_linear(model[0]), quant_config
+    )(inputs)
+
+    patch_module.patch_model(
+        model,
+        patch_module.PatchConfig(
+            quant=quant_config,
+            rotation="none",
+            exclude=(),
+        ),
+    )
+
+    assert isinstance(model[0], QuantLinear)
+    actual = model(inputs)
+    assert actual.shape == expected.shape
+    assert torch.isfinite(actual).all()
+    assert torch.equal(actual, expected)
 
 
 @pytest.mark.parametrize("bits", range(1, 9))

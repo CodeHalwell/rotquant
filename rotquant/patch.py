@@ -185,7 +185,13 @@ def patch_model(model: nn.Module, cfg: PatchConfig,
     model.__dict__["_rotquant_adapter_name"] = adapter.name
 
     train_stats: list = []
-    for i, (name, linear) in enumerate(targets):
+    for i, (name, source_module) in enumerate(targets):
+        linear = adapter.to_linear(source_module)
+        if not isinstance(linear, nn.Linear):
+            raise TypeError(
+                f"adapter {adapter.name!r} returned {type(linear).__name__} "
+                f"from to_linear(); expected nn.Linear"
+            )
         layer_quant = quant_config_for(cfg, name)
         source_device = linear.weight.device
         source_dtype = linear.weight.dtype
@@ -275,7 +281,9 @@ def patch_model(model: nn.Module, cfg: PatchConfig,
         if stage_on_cpu:
             qlin = qlin.to(device=source_device, dtype=source_dtype)
         parent, attr = _get_parent(model, name)
-        setattr(parent, attr, qlin)
+        adapter.replace_quantized_module(
+            parent, attr, source_module, qlin
+        )
         if i == 0 or (i + 1) % 8 == 0:
             logger.info("patched %d/%d layers (last: %s)", i + 1, len(targets), name)
 
@@ -316,6 +324,6 @@ def patch_model(model: nn.Module, cfg: PatchConfig,
         if stats_out is not None:
             stats_out["rotation_train"] = agg
 
-    logger.info("Patched %d linear layers (adapter=%s, rotation=%s, mode=%s)",
+    logger.info("Patched %d modules (adapter=%s, rotation=%s, mode=%s)",
                 len(targets), adapter.name, cfg.rotation, cfg.mode)
     return model

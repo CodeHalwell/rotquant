@@ -135,9 +135,22 @@ def load_baseline(backend: str, model_name: str, bits: int, device: str,
         else:
             model = AutoAWQForCausalLM.from_pretrained(resolved_model)
             logger.info("awq: quantising %s at %d bits", model_name, bits)
-            model.quantize(tok, quant_config={
-                "w_bit": bits, "q_group_size": kwargs.get("group_size", 128),
-                "zero_point": True, "version": "GEMM"})
+            calib_n = int(kwargs.get("calib_n", 256))
+            calib_data = _calib_texts(
+                n=calib_n,
+                min_chars=int(kwargs.get("calib_min_chars", 2048)),
+            )
+            model.quantize(
+                tok,
+                quant_config={
+                    "w_bit": bits,
+                    "q_group_size": kwargs.get("group_size", 128),
+                    "zero_point": True,
+                    "version": "GEMM",
+                },
+                calib_data=calib_data,
+                max_calib_samples=calib_n,
+            )
         return getattr(model, "model", model), tok
     if backend == "aqlm":
         _require("aqlm", backend)

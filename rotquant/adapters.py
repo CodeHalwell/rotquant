@@ -44,8 +44,11 @@ class ModelAdapter:
 
     Subclasses may override :meth:`iter_quantizable_modules` when a model uses
     projections other than ``nn.Linear`` or requires architecture-specific
-    traversal.  Merely resolving an adapter means the module layout can be
-    discovered; quality and kernel support remain separate validation gates.
+    traversal. Non-linear projections must also implement :meth:`to_linear`;
+    :meth:`replace_quantized_module` can wrap or customize installation when a
+    plain ``QuantLinear`` replacement does not preserve the source API. Merely
+    resolving an adapter means the module layout can be discovered; quality and
+    kernel support remain separate validation gates.
     """
 
     name: str
@@ -62,10 +65,32 @@ class ModelAdapter:
 
     def iter_quantizable_modules(
         self, model: nn.Module
-    ) -> Iterator[tuple[str, nn.Linear]]:
+    ) -> Iterator[tuple[str, nn.Module]]:
         for name, module in model.named_modules():
             if isinstance(module, nn.Linear):
                 yield name, module
+
+    def to_linear(self, module: nn.Module) -> nn.Linear:
+        """Return an equivalent ``nn.Linear`` for the quantization pipeline."""
+
+        if not isinstance(module, nn.Linear):
+            raise TypeError(
+                f"adapter {self.name!r} must implement to_linear() for "
+                f"module type {type(module).__name__}"
+            )
+        return module
+
+    def replace_quantized_module(
+        self,
+        parent: nn.Module,
+        attribute: str,
+        source: nn.Module,
+        replacement: nn.Module,
+    ) -> None:
+        """Install a quantized replacement for one discovered source module."""
+
+        del source
+        setattr(parent, attribute, replacement)
 
     def inspect(self, model: nn.Module) -> ModelSupport:
         modules = list(self.iter_quantizable_modules(model))
