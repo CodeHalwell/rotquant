@@ -55,6 +55,7 @@ class ModelAdapter:
     model_types: frozenset[str] = frozenset()
     capabilities: tuple[str, ...] = ("linear_weight_quantization",)
     fallback: bool = False
+    model_loader: str = "auto"
 
     def matches(self, model: nn.Module) -> bool:
         return self.model_type(model) in self.model_types
@@ -203,6 +204,7 @@ ADAPTERS.register(
         "dense-decoder",
         DENSE_DECODER_MODEL_TYPES,
         ("linear_weight_quantization", "causal_generation"),
+        model_loader="causal_lm",
     )
 )
 ADAPTERS.register(
@@ -210,6 +212,7 @@ ADAPTERS.register(
         "moe-decoder",
         MOE_DECODER_MODEL_TYPES,
         ("linear_weight_quantization", "expert_projections", "causal_generation"),
+        model_loader="causal_lm",
     )
 )
 ADAPTERS.register(
@@ -224,6 +227,7 @@ ADAPTERS.register(
         "multimodal",
         MULTIMODAL_MODEL_TYPES,
         ("linear_weight_quantization", "multimodal_module_discovery"),
+        model_loader="multimodal_lm",
     )
 )
 ADAPTERS.register(
@@ -231,6 +235,7 @@ ADAPTERS.register(
         "encoder-decoder",
         ENCODER_DECODER_MODEL_TYPES,
         ("linear_weight_quantization", "encoder_decoder"),
+        model_loader="seq2seq_lm",
     )
 )
 ADAPTERS.register(
@@ -238,6 +243,7 @@ ADAPTERS.register(
         "encoder",
         ENCODER_MODEL_TYPES,
         ("linear_weight_quantization", "encoder"),
+        model_loader="base_model",
     )
 )
 ADAPTERS.register(ModelAdapter("generic-linear", fallback=True))
@@ -247,6 +253,12 @@ def register_model_adapter(adapter: ModelAdapter, *, replace: bool = False) -> N
     """Register a custom architecture adapter in the process-wide registry."""
 
     ADAPTERS.register(adapter, replace=replace)
+
+
+def get_model_adapter(name: str) -> ModelAdapter:
+    """Return a registered adapter by its stable checkpoint name."""
+
+    return ADAPTERS.get(name)
 
 
 def resolve_model_adapter(
@@ -274,6 +286,7 @@ __all__ = [
     "AdapterRegistry",
     "ModelAdapter",
     "ModelSupport",
+    "get_model_adapter",
     "inspect_model_support",
     "list_model_adapters",
     "register_model_adapter",

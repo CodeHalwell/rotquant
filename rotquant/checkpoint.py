@@ -19,7 +19,7 @@ from typing import Any
 import torch
 from torch import nn
 
-from .adapters import resolve_model_adapter
+from .adapters import ModelAdapter, get_model_adapter, resolve_model_adapter
 from .codebooks import ScalarCodebook
 from .format import (
     CURRENT_PACKING,
@@ -383,17 +383,27 @@ def save_packed_checkpoint(
     }
 
 
-def _resolve_model_class(config, model_loader: str):
-    from transformers import AutoModelForCausalLM
+def _resolve_model_class(
+    config,
+    model_loader: str,
+    adapter: ModelAdapter | None = None,
+):
+    from transformers import AutoModel, AutoModelForCausalLM, AutoModelForSeq2SeqLM
 
     if model_loader == "auto":
-        model_loader = (
-            "multimodal_lm"
-            if getattr(config, "vision_config", None) is not None
-            else "causal_lm"
-        )
+        model_loader = adapter.model_loader if adapter is not None else "auto"
+        if model_loader == "auto":
+            model_loader = (
+                "multimodal_lm"
+                if getattr(config, "vision_config", None) is not None
+                else "causal_lm"
+            )
     if model_loader == "causal_lm":
         return AutoModelForCausalLM
+    if model_loader == "seq2seq_lm":
+        return AutoModelForSeq2SeqLM
+    if model_loader == "base_model":
+        return AutoModel
     if model_loader == "multimodal_lm":
         try:
             from transformers import AutoModelForMultimodalLM
@@ -437,10 +447,20 @@ def load_packed_model(
     config = AutoConfig.from_pretrained(
         checkpoint, trust_remote_code=trust_remote_code
     )
-    model_cls = _resolve_model_class(config, manifest.get("model_loader", "auto"))
+    architecture = manifest.get("architecture") or {}
+    adapter_name = architecture.get("adapter")
+    adapter = get_model_adapter(adapter_name) if adapter_name else None
+    model_cls = _resolve_model_class(
+        config,
+        manifest.get("model_loader", "auto"),
+        adapter,
+    )
     model = model_cls.from_config(
         config, trust_remote_code=trust_remote_code, dtype=resolved_dtype
     )
+    if adapter is None:
+        adapter = resolve_model_adapter(model)
+    model.__dict__["_rotquant_adapter_name"] = adapter.name
 
     packed_path = checkpoint / manifest["packed_state"]
     with safe_open(packed_path, framework="pt", device="cpu") as packed_handle:
@@ -448,14 +468,16 @@ def load_packed_model(
             name = module_spec["name"]
             parent, attr = _get_parent(model, name)
             source = getattr(parent, attr)
-            if not isinstance(source, nn.Linear):
+            linear = adapter.to_linear(source)
+            if not isinstance(linear, nn.Linear):
                 raise TypeError(
-                    f"checkpoint expects nn.Linear at {name}, found "
-                    f"{type(source).__name__}"
+                    f"adapter {adapter.name!r} returned "
+                    f"{type(linear).__name__} from to_linear(); expected "
+                    "nn.Linear"
                 )
             if (
-                source.in_features != int(module_spec["in_features"])
-                or source.out_features != int(module_spec["out_features"])
+                linear.in_features != int(module_spec["in_features"])
+                or linear.out_features != int(module_spec["out_features"])
             ):
                 raise ValueError(f"linear shape mismatch while restoring {name}")
             qweight = _read_quantized_weight(
@@ -463,7 +485,7 @@ def load_packed_model(
             )
             rotation = _build_rotation(module_spec["rotation"])
             bias = (
-                torch.empty(source.out_features, dtype=resolved_dtype)
+                torch.empty(linear.out_features, dtype=resolved_dtype)
                 if module_spec["has_bias"]
                 else None
             )
@@ -480,7 +502,7 @@ def load_packed_model(
                 qlinear.commit_lora(
                     _resolve_dtype(module_spec.get("lora_dtype") or resolved_dtype)
                 )
-            setattr(parent, attr, qlinear)
+            adapter.replace_quantized_module(parent, attr, source, qlinear)
 
     missing, unexpected = load_model(
         model, checkpoint / manifest["model_state"], strict=True, device="cpu"
@@ -494,9 +516,6 @@ def load_packed_model(
         from transformers import GenerationConfig
 
         model.generation_config = GenerationConfig.from_pretrained(checkpoint)
-    architecture = manifest.get("architecture") or {}
-    if architecture.get("adapter"):
-        model.__dict__["_rotquant_adapter_name"] = architecture["adapter"]
     model.to(device=device, dtype=resolved_dtype).eval()
     return model
 

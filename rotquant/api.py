@@ -131,6 +131,11 @@ def optimize_model(
         activations=dict(activations or {}),
         stats_out=stats,
     )
+    if not stats.get("patched_modules"):
+        raise ValueError(
+            f"adapter {support.adapter!r} selected no quantizable modules after "
+            f"include={resolved.include!r} and exclude={resolved.exclude!r}"
+        )
     if report is not None:
         report.update(
             {

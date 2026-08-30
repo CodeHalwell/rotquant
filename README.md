@@ -44,6 +44,11 @@ The [serving-backend matrix](docs/serving_backends.md) tracks which runtimes
 preserve the packed RotQuant representation, the extension point for each
 backend, and the conformance gates required before claiming support.
 
+The [implementation roadmap](docs/roadmap.md) defines the next canonical GPU
+serving stage: checkpoint reliability gates, a sharded Transformers artifact,
+specialized W1--W8 kernels, vLLM integration, architecture tiers, and packed-KV
+acceptance criteria.
+
 The [packed checkpoint v1 specification](docs/packed_format_v1.md) fixes the
 word layout, bit order, compatibility rules, and native-runtime conformance
 boundary for all 1–8-bit production profiles.
