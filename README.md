@@ -206,6 +206,14 @@ model-plus-cache Pareto winners over three seeds and a 1,024-token prefill.
 Direct K/V reconstruction NMSE is reported alongside end-to-end KL to
 distinguish error cancellation from a quantizer-quality problem.
 
+After the joint matrix selects a diagnostic winner, open
+[`notebooks/qwen35_4b_joint_release_followup_colab.ipynb`](notebooks/qwen35_4b_joint_release_followup_colab.ipynb).
+It reuses the completed three-seed candidate rows, fills only the missing
+same-seed K4/V4 controls, and compares cache KL within weight recipe and seed.
+It then tests block-and-scale recovery on the actual uniform-W4/frozen-map
+winner and spends four additional confirmation runs only when seed-0 recovery
+passes its predeclared PPL, cache, size, and no-adapter gates.
+
 For CUDA LoRA-QAT quality recovery, open
 [`notebooks/qwen35_4b_lora_qat_colab.ipynb`](notebooks/qwen35_4b_lora_qat_colab.ipynb)
 in Colab. It checks the GPU, establishes a matched CUDA source baseline, runs a

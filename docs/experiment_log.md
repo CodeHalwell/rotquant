@@ -366,7 +366,9 @@ Decision: retain `uniform_w4__frozen_mixed_3.25` as the diagnostic whole-system
 winner. Do not label it release-passing or release-failing until matched
 multi-seed K4/V4 controls are available. In the next focused run, apply block
 recovery to this actual winner, omit the unchanged LoRA arm, and validate the
-recovered and unrecovered recipes against per-seed matched cache controls.
+recovered and unrecovered recipes against per-seed matched cache controls. The
+focused, conditional experiment is implemented in
+`notebooks/qwen35_4b_joint_release_followup_colab.ipynb`.
 
 ## Native K/V cache benchmark notes
 
