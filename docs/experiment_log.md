@@ -42,6 +42,7 @@ Google Drive.
 | 2026-08-29 | Qwen3.5-4B / MPS | FWHT 4-bit | Same | **18.9015 (+5.9%)** | Promising quality-only fallback result across 200 language layers. |
 | 2026-08-29 | Qwen3.5-4B / CUDA pilot | Source | WikiText-2 subset | 17.8458 | Pilot source reference. |
 | 2026-08-29 | Qwen3.5-4B / CUDA pilot | 4-bit RotQuant + attempted LoRA-QAT | Same | 18.7075 (+4.83%) | Passed 5% quality gate, but LoRA was not retained; this measured RotQuant/block recovery rather than useful LoRA. |
+| 2026-08-30 | Qwen3.5-4B / CUDA joint matrix | Uniform W4 + frozen mixed 3.25-bpv K/V | WikiText-2, 256, 64 samples, seeds 0/1/2 | **14.5548 mean PPL (+4.71%)** | Diagnostic winner at 56.78% estimated weight reduction; PPL gates passed, but release status is unresolved because the worst-seed cache KL was compared with a seed-0-only control gate. |
 
 ### Qwen3.5-4B CUDA trial matrix
 
@@ -284,7 +285,7 @@ constructed 257 positions for one query token. Cached text decode now supplies
 the explicit absolute one-token `position_ids`. A tiny real Qwen3.5 multimodal
 regression reproduces the stale-RoPE condition and passes with the fix.
 
-### Qwen3.5-4B whole-system weight screen (partial)
+### Qwen3.5-4B whole-system joint matrix
 
 The corrected CUDA run at Git SHA `8d9676f109fa` completed its seed-0 weight
 screen with a matched source PPL of 13.9001 (WikiText-2, 64 samples, 256-token
@@ -306,9 +307,66 @@ K/V reconstruction NMSE remained approximately 0.009 for every weight recipe.
 The cache KL values use each weight model as its own full-cache teacher, so they
 measure that model's sensitivity to K/V quantization and must not be interpreted
 as cross-weight accuracy against the FP16 source. Likewise, trajectory agreement
-is based on only 32 continuation tokens at this screening stage. Final claims
-remain pending the K/V cross, recovery, three-seed release validation, and
-long-context confirmation.
+is based on only 32 continuation tokens at this screening stage.
+
+The full K/V cross, recovery ladder, three-seed validation, and 1,024-token
+prefill confirmation subsequently completed. At seed 0, the best joint recipe
+was uniform W4 plus the transferred frozen mixed Gaussian K/V map:
+
+| Joint recipe | PPL | Relative PPL | Cache KL | Effective K/V bpv | Total estimated system GB | Joint score |
+|---|---:|---:|---:|---:|---:|---:|
+| Uniform W4 + frozen mixed | **14.7029** | **+5.78%** | **0.4352** | 3.25 | 4.0294 | **0.1020** |
+| Uniform W4 + dynamic Gaussian | 14.7029 | +5.78% | 0.4502 | 3.25 | 4.0294 | 0.1035 |
+| Dynamic 4.125-bpw + frozen mixed | 14.9976 | +7.90% | 0.5515 | 3.25 | 4.0255 | 0.1341 |
+| Dynamic 4.125-bpw + dynamic uniform | 14.9976 | +7.90% | 0.5627 | 3.188 | 4.0254 | 0.1359 |
+
+Uniform W4 plus the frozen map combined an estimated 4.0277-GB complete weight
+artifact (56.78% below the 9.320-GB source estimate) with a 3.25-bpv K/V cache.
+It beat the dynamic-weight finalist despite using only 3.93 MB more estimated
+weight storage. The fixed transferred K/V map also beat the recalibrated dynamic
+allocator at the same nominal K/V budget, so dynamic allocation did not justify
+its substantial calibration cost in this run.
+
+The recovery stage was applied only to the first, smallest-system finalist,
+`dynamic_w4.125__dynamic_u_3.25`, rather than to the lowest-joint-loss uniform-W4
+candidate. Block-and-scale recovery reduced its PPL from 14.9976 to 14.8905
+(-0.1071, or -0.71%) while adding about 7.14 MB of estimated weight state. The
+LoRA-QAT arm selected step 0: train, validation, and held-out losses were
+unchanged, the block checkpoint was restored, and no adapter was retained. This
+is a negative LoRA result and does not test whether block recovery can improve
+the eventual uniform-W4 winner.
+
+Three-seed validation selected uniform W4 plus frozen mixed K/V as the diagnostic
+winner:
+
+| Finalist | Seed PPL values | Mean PPL | Mean relative PPL | Worst relative PPL | Mean / worst cache KL |
+|---|---|---:|---:|---:|---:|
+| Uniform W4 + frozen mixed | 14.7029, 14.6091, 14.3524 | **14.5548** | **+4.71%** | **+5.78%** | **0.550312 / 0.700824** |
+| Dynamic 4.125-bpw + dynamic uniform | 14.9976, 14.9588, 14.5860 | 14.8475 | +6.82% | +7.90% | 0.641834 / 0.763350 |
+
+The uniform/frozen recipe passes the predeclared 5% mean-PPL and 10%
+worst-PPL gates. It was not declared release-ready because its worst cache KL
+of 0.700824 exceeded 0.568819. That cache threshold, however, was calculated as
+1.05 times the *seed-0* uniform-W4/K4/V4 control KL, then applied to the
+*worst of three seeds* for each finalist. Its mean cache KL of 0.550312 is 3.25%
+below that threshold, while its worst value is 23.21% above it. This unmatched
+comparison makes the release failure methodologically inconclusive. A matched
+uniform-W4/K4/V4 control must be run at seeds 1 and 2 before assigning release
+status; compare candidate and control within seed, or compare like-for-like
+mean and worst summaries.
+
+At 1,024-token prefill, the winner's frozen 3.25-bpv cache produced KL 0.822912,
+top-1 agreement 0.59375, and 6,815,744 deployed cache bytes. Source weights with
+the same frozen cache produced KL 1.093824 and top-1 0.546875. These are
+self-teacher cache-sensitivity measurements, not evidence that quantized weights
+are more accurate than source weights. No long-context perplexity or retrieval
+task was evaluated.
+
+Decision: retain `uniform_w4__frozen_mixed_3.25` as the diagnostic whole-system
+winner. Do not label it release-passing or release-failing until matched
+multi-seed K4/V4 controls are available. In the next focused run, apply block
+recovery to this actual winner, omit the unchanged LoRA arm, and validate the
+recovered and unrecovered recipes against per-seed matched cache controls.
 
 ## Native K/V cache benchmark notes
 
@@ -338,14 +396,15 @@ codebook against an exact Gaussian RotQuant cache kernel.
 
 ## Open experiments
 
-- Evaluate dynamic mixed precision on Qwen3.5-4B at the exact byte budgets of
-  uniform 4-bit and the failed uniform 3-bit trial.
-- Measure trajectory agreement and global KL on disjoint prompts for all
-  candidate recipes.
-- Evaluate real per-head K/V cache quantization, including attention-output error,
-  long-context perplexity/retrieval, exact cache bytes, and K/V asymmetric bits.
-- Run `qwen35_4b_dynamic_kv_mps.yaml` and compare its disjoint global KL/NLL at
-  exactly the uniform-4-bit byte budget; repeat the selected recipe on CUDA.
+- Run uniform-W4/K4/V4 cache controls at seeds 1 and 2 and replace the
+  seed-0-to-worst-seed cache gate with a matched per-seed comparison.
+- Apply block-and-scale recovery to `uniform_w4__frozen_mixed_3.25`; do not rerun
+  the current LoRA-QAT profile unless its step-0 collapse is addressed.
+- Measure longer trajectory agreement, long-context perplexity, and retrieval
+  for the diagnostic winner and its matched controls.
+- Revisit dynamic weight allocation only if a sensitivity objective can beat
+  uniform W4 at a meaningful byte delta; the current 3.93-MB saving is not worth
+  the observed PPL loss.
 - Fuse rotate, quantize, and persistent KV-cache write before HBM/DRAM storage;
   fuse cache read, dequantization, and attention on CUDA/Metal.
 - Benchmark the packed tied vocabulary and native linear kernels against source
