@@ -21,6 +21,7 @@ from dataclasses import dataclass, field
 import torch
 from torch import nn
 
+from ._internal import cpu_staging_linear, get_parent
 from .adapters import resolve_model_adapter
 from .linear import QuantLinear
 from .quantize import QuantConfig
@@ -33,7 +34,7 @@ from .rotate import (
 )
 from .utils import get_logger
 
-logger = get_logger()
+logger = get_logger(__name__)
 
 PATCH_MODES = ("consistent", "fused_inverse", "mismatched")
 
@@ -77,16 +78,8 @@ def quant_config_for(cfg: PatchConfig, name: str) -> QuantConfig:
     return cfg.layer_quant.get(name, cfg.quant)
 
 
-def _get_parent(model: nn.Module, dotted: str):
-    parts = dotted.split(".")
-    parent = model
-    for p in parts[:-1]:
-        parent = getattr(parent, p)
-    return parent, parts[-1]
-
-
-def _make_rotations(in_features: int, cfg: PatchConfig, layer_seed: int,
-                    device=None):
+def make_rotations(in_features: int, cfg: PatchConfig, layer_seed: int,
+                   device: torch.device | str | None = None):
     """Return (weight_rotation, act_rotation) honouring the consistency mode.
 
     ``device`` should be the target weight's device: the rotation is applied to
@@ -103,28 +96,6 @@ def _make_rotations(in_features: int, cfg: PatchConfig, layer_seed: int,
     else:
         raise ValueError(f"unknown patch mode: {cfg.mode}; pick from {PATCH_MODES}")
     return weight_rot, act_rot
-
-
-def _cpu_staging_linear(linear: nn.Linear) -> nn.Linear:
-    """Copy one accelerator layer to fp32 CPU for one-time quantization.
-
-    MPS is excellent for dense fp16 inference but extremely slow for this
-    project's branchy 41-candidate scale search. Staging one layer at a time
-    avoids retaining a second full model while making patching orders of
-    magnitude faster.
-    """
-    staged = nn.Linear(linear.in_features, linear.out_features,
-                       bias=linear.bias is not None, device="cpu",
-                       dtype=torch.float32)
-    with torch.no_grad():
-        staged.weight.copy_(
-            linear.weight.detach().to(device="cpu", dtype=torch.float32)
-        )
-        if linear.bias is not None:
-            staged.bias.copy_(
-                linear.bias.detach().to(device="cpu", dtype=torch.float32)
-            )
-    return staged
 
 
 def patch_model(model: nn.Module, cfg: PatchConfig,
@@ -198,7 +169,7 @@ def patch_model(model: nn.Module, cfg: PatchConfig,
         source_device = linear.weight.device
         source_dtype = linear.weight.dtype
         stage_on_cpu = source_device.type == "mps" and cfg.fallback
-        work_linear = _cpu_staging_linear(linear) if stage_on_cpu else linear
+        work_linear = cpu_staging_linear(linear) if stage_on_cpu else linear
 
         # MPS scale-search/packing is staged on CPU, but the structured trainer
         # consists of supported dense/elementwise ops and benefits substantially
@@ -210,7 +181,7 @@ def patch_model(model: nn.Module, cfg: PatchConfig,
         rotation_device = source_device if train_on_source \
             else work_linear.weight.device
 
-        weight_rot, act_rot = _make_rotations(work_linear.in_features, cfg,
+        weight_rot, act_rot = make_rotations(work_linear.in_features, cfg,
                                                layer_seed=cfg.seed + i,
                                                device=rotation_device)
         if isinstance(weight_rot, (LearnedRotation, ButterflyRotation)) \
@@ -235,7 +206,11 @@ def patch_model(model: nn.Module, cfg: PatchConfig,
                 weight_rot.to(device=work_linear.weight.device, dtype=torch.float32)
             if isinstance(weight_rot, ButterflyRotation) \
                     and train_cfg.objective == "activation":
-                assert layer_acts is not None
+                if layer_acts is None:
+                    raise RuntimeError(
+                        "activation-objective butterfly training reached "
+                        "checkpoint selection without captured activations"
+                    )
                 reference_rot = ButterflyRotation(
                     work_linear.in_features, block=cfg.block,
                     seed=cfg.seed + i, device=work_linear.weight.device)
@@ -282,7 +257,7 @@ def patch_model(model: nn.Module, cfg: PatchConfig,
                                        fallback_dtype=source_dtype)
         if stage_on_cpu:
             qlin = qlin.to(device=source_device, dtype=source_dtype)
-        parent, attr = _get_parent(model, name)
+        parent, attr = get_parent(model, name)
         adapter.replace_quantized_module(
             parent, attr, source_module, qlin
         )

@@ -19,13 +19,49 @@ Current gate status:
 - [x] reject `optimize_model()` calls whose include/exclude filters select no
   modules, rather than returning a full-precision model with a quantized report;
 - [x] cover decoder-only, encoder, encoder-decoder, and custom-adapter round
-  trips, plus empty-selection failures, in CI;
+  trips, plus empty-selection failures, in CI (`python-ci.yml` runs the full
+  pytest suite, including the cross-language native conformance tests, on
+  Python 3.10/3.11/3.12; previously no workflow executed any Python test);
 - [ ] add the small multimodal round-trip fixture without relying on a remote
   checkpoint or GPU.
 
 Acceptance: a fresh-process checkpoint round trip preserves packed bytes and
 reference logits for every supported loader class, and every successful
 optimization report records at least one patched module.
+
+### 2.0b Infrastructure track
+
+Every Stage 2 acceptance gate below depends on infrastructure that must be
+named, not assumed:
+
+- [x] Python CI (pytest across supported versions + ruff) on every push and PR;
+- [x] native sanitizer job (ASan/UBSan) and a llama.cpp patch-applies check;
+- [ ] **decide and provision the GPU CI mechanism.** Stages 2.2 and 2.3
+  require per-bit-width CUDA conformance, memory, and throughput gates plus
+  vLLM server conformance; none of these run on hosted free runners. Options:
+  a self-hosted GPU runner, a scheduled cloud job (Modal/Lambda/RunPod), or a
+  documented manual pre-merge checklist with pinned benchmark manifests.
+  This decision blocks Stage 2.2 kernel acceptance, so it is made before
+  kernel work starts, not after;
+- [ ] Windows/MSVC native build job (the MSVC CPUID, `/W4 /WX`, and dllexport
+  paths are currently unverified; the exported `std::vector` surface in
+  `native_v2.h` is expected to need attention there);
+- [ ] wheel builds that bundle the native library (cibuildwheel) once the
+  packaging milestone below is scheduled.
+
+### 2.0c Release engineering (pulled forward from Stage 5)
+
+Licensing and installability are prerequisites for anyone trying the project
+during Stages 2--4, not end-stage polish:
+
+- [x] LICENSE (MIT), CITATION.cff, CONTRIBUTING.md, CHANGELOG.md;
+- [x] complete packaging metadata, `rotquant.__version__` recorded in result
+  provenance, `py.typed`, and the eval package namespaced as `rotquant.eval`;
+- [ ] first tagged release and PyPI publication (sdist + pure-Python wheel;
+  native wheels follow the infrastructure track);
+- [ ] model cards and eval disclosure for released Hub artifacts, and a
+  public location for the summarized results behind every published claim
+  (raw JSONs currently live only in Google Drive).
 
 ### Parallel track: algorithm laboratory
 
@@ -54,7 +90,40 @@ specialized around them:
   divergence suite spanning agentic, code, maths, multilingual, and long-document
   prompts; compare the source, RotQuant, same-size GGUF, and Unsloth baselines;
 - [ ] implement packed-key candidate generation only if the dense-attention
-  oracle shows a useful V-read/quality region.
+  oracle shows a useful V-read/quality region;
+- [ ] **meet the project's own confirmation bar at scale.** The README requires
+  >=3 seeds on at least Llama-2-7B and 13B, on WikiText-2 and C4, surviving the
+  zero-shot bundle; no current headline result meets it (results so far are
+  OPT-125M/1.3B and Qwen3.5-4B on development subsets). This includes making
+  the quantization pipeline itself scale: GPTQ Hessians cost ~25 GB VRAM on a
+  7B and block training replays whole transformer blocks, so 70B-class models
+  need layer streaming / CPU offload that nothing currently plans;
+- [ ] integrate at least one trellis/lattice state-of-the-art baseline
+  (QuIP#, QTIP, or HIGGS) with real checkpoint loading and exact rate
+  accounting before publishing W1--W3 comparisons; the dimension-2 vector
+  control is a protocol check, not a competitive baseline;
+- [ ] add task-level generation quality (e.g. GSM8K, IFEval-style
+  instruction following) to the release gates. The released artifact is a
+  chat-capable model; perplexity plus the zero-shot bundle can miss
+  instruction-following regressions entirely.
+
+### Scope decision required: activation quantization
+
+The rotation lineage this project builds on (QuaRot / SpinQuant / TurboQuant)
+is motivated by W4A4/W4A8, and hypothesis E1 itself states that learned
+rotations only pull ahead once activations are quantized. Weight-only
+quantization mainly accelerates bandwidth-bound decode; prefill is
+compute-bound and needs low-bit activations to use integer tensor cores. The
+Stage 2.2 operator contract must either:
+
+- add an activation-quantized serving stage (quantize-activation epilogue
+  fused into the rotation, int-times-int GEMM path, per-token or per-tensor
+  activation scales in the artifact schema), or
+- explicitly declare activation quantization out of scope so the kernel
+  contract is not silently designed into a weights-only corner.
+
+This is a research-direction decision for the maintainer; the roadmap only
+records that it must be made before the kernel interface freezes.
 
 Research-only representations fail closed at checkpoint and native-runtime
 boundaries. A winning algorithm earns a format and kernel proposal; adding an
@@ -160,5 +229,6 @@ Stage 2 is complete when:
 - Stage 4 promotes packed KV kernels and selective retrieval only where the
   quality and context-crossover gates pass.
 - Stage 5 focuses on autotuning, additional accelerators, stable public APIs,
-  packaging, documentation, and release qualification comparable to mature
-  optimization libraries.
+  documentation, and release qualification comparable to mature optimization
+  libraries. (Licensing, packaging metadata, and the first-release checklist
+  moved forward into Stage 2.0c: they gate adoption, not polish.)

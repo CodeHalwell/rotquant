@@ -1,25 +1,53 @@
 [build-system]
-requires = ["setuptools>=64"]
+requires = ["setuptools>=77"]
 build-backend = "setuptools.build_meta"
 
 [project]
 name = "rotquant"
-version = "0.1.0"
-description = "Rotation-based weight compression evaluation toolkit"
+dynamic = ["version"]
+description = "Rotation-based weight and KV-cache compression toolkit for LLMs"
 readme = "README.md"
+license = "MIT"
+license-files = ["LICENSE"]
+authors = [{ name = "Daniel Halwell" }]
 requires-python = ">=3.10"
+keywords = ["quantization", "llm", "compression", "rotation", "hadamard", "kv-cache"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Science/Research",
+    "Intended Audience :: Developers",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: C++",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+    "Operating System :: OS Independent",
+]
 dependencies = [
-    "torch>=2.4",
+    # Upper bound: a torch major bump has never been non-breaking for
+    # quantization/device code; raise deliberately, with the suite green.
+    "torch>=2.4,<3",
     "numpy",
     "scipy",
     "pyyaml",  # scripts/run_experiment.py reads the experiment YAMLs
 ]
 
+[project.urls]
+Homepage = "https://github.com/CodeHalwell/rotquant"
+Repository = "https://github.com/CodeHalwell/rotquant"
+Issues = "https://github.com/CodeHalwell/rotquant/issues"
+Changelog = "https://github.com/CodeHalwell/rotquant/blob/main/CHANGELOG.md"
+
 [project.optional-dependencies]
 # Heavier deps only needed for the eval / baseline paths. Everything here is
 # pure-python-installable so the full pipeline can be smoke-tested on CPU.
 eval = [
-    "transformers",
+    # Bounded because rotquant.eval.kv_cache patches Transformers Cache
+    # internals (cache.layers / cache.update) and rotquant.checkpoint uses the
+    # v5 from_config(dtype=...) signature; a major bump needs a deliberate,
+    # tested migration.
+    "transformers>=5,<6",
     "datasets",
     "accelerate",
     "safetensors",
@@ -42,11 +70,46 @@ baselines = [
     "autoawq",     # AWQ
     "aqlm[gpu]",   # AQLM 2-bit vector codebooks
 ]
-dev = ["pytest"]
+dev = [
+    "pytest",
+    "pytest-cov",
+    "ruff",
+]
 
 [tool.setuptools]
-packages = ["rotquant", "eval"]
+packages = ["rotquant", "rotquant.eval"]
+
+[tool.setuptools.dynamic]
+version = { attr = "rotquant.__version__" }
+
+[tool.setuptools.package-data]
+rotquant = ["py.typed"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 pythonpath = ["."]
+addopts = "-ra"
+
+[tool.ruff]
+target-version = "py310"
+line-length = 100
+extend-exclude = ["notebooks", "third_party", "build"]
+
+[tool.ruff.lint]
+# Default E/F pyflakes+pycodestyle errors, plus import hygiene and common
+# correctness traps. Style-only rules stay off: the codebase predates ruff.
+extend-select = ["I", "B", "UP"]
+ignore = [
+    "B008",   # function call in default argument: KERNELS registry default is deliberate
+    "BLE001", # the few broad excepts are deliberate and individually commented
+    "B905",   # zip strictness is chosen per call site; retrofitting changes behavior
+]
+
+[tool.ruff.lint.isort]
+known-first-party = ["rotquant", "baselines", "scripts", "tests"]
+
+[tool.coverage.run]
+source = ["rotquant"]
+
+[tool.coverage.report]
+exclude_lines = ["pragma: no cover", "if TYPE_CHECKING:"]

@@ -3,7 +3,7 @@ from types import SimpleNamespace
 
 import torch
 
-from eval.trajectory import (
+from rotquant.eval.trajectory import (
     TrajectoryConfig,
     capture_trajectories,
     evaluate_trajectories,

@@ -3,13 +3,16 @@ the Cayley parameters must actually reduce rotated-domain quantisation MSE,
 stay exactly orthogonal, and preserve the linear map end to end.
 """
 import torch
-import torch.nn as nn
+from torch import nn
 
 from rotquant.patch import PatchConfig, patch_model
 from rotquant.quantize import QuantConfig
 from rotquant.rotate import ButterflyRotation, LearnedRotation, RandomizedHadamard
-from rotquant.train_rotation import RotationTrainConfig, train_layer_rotation
-from rotquant.train_rotation import select_butterfly_checkpoint
+from rotquant.train_rotation import (
+    RotationTrainConfig,
+    select_butterfly_checkpoint,
+    train_layer_rotation,
+)
 
 
 def _outlier_weight(out=16, d=32, seed=0) -> torch.Tensor:

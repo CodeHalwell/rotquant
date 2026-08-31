@@ -15,7 +15,7 @@ import torch
 
 from rotquant.utils import get_logger
 
-logger = get_logger()
+logger = get_logger(__name__)
 
 
 @dataclass

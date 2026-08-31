@@ -4,7 +4,7 @@ from types import SimpleNamespace
 import torch
 from torch import nn
 
-from eval.logit_fidelity import (
+from rotquant.eval.logit_fidelity import (
     LogitFidelityConfig,
     capture_logit_references,
     evaluate_logit_fidelity,

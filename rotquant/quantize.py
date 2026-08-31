@@ -26,6 +26,7 @@ module quantises an (already-rotated) ``[out, in]`` weight matrix.
 """
 from __future__ import annotations
 
+import hashlib
 import math
 from dataclasses import dataclass
 
@@ -41,7 +42,15 @@ from .codebooks import (
 from .pack import PackedTensor, pack_indices, unpack_indices
 from .utils import BitBudget, get_logger
 
-logger = get_logger()
+logger = get_logger(__name__)
+
+
+def _weight_digest(w: torch.Tensor) -> str:
+    """Exact content digest of a weight matrix (shape + float32 bytes)."""
+    data = w.detach().to(device="cpu", dtype=torch.float32).contiguous()
+    digest = hashlib.sha256(str(tuple(data.shape)).encode())
+    digest.update(data.numpy().tobytes())
+    return digest.hexdigest()
 
 
 def _generate_sketch_matrix(in_features: int, k: int, seed: int, device) -> torch.Tensor:
@@ -356,6 +365,12 @@ class Quantizer:
         calibrated = config.codebook.lower() in {
             "calibrated", "empirical", "weight_calibrated"
         }
+        # A calibrated grid is fitted to the matrix being quantized. When we fit
+        # it ourselves we must refit for each new matrix; silently reusing the
+        # first matrix's grid would corrupt every later layer. An explicitly
+        # supplied codebook is the caller's contract and is never refitted.
+        self._auto_calibrated = calibrated and codebook is None
+        self._calibrated_key: str | None = None
         self.codebook = codebook or (
             build_gaussian_vector_codebook(
                 config.bits,
@@ -411,8 +426,17 @@ class Quantizer:
     # ------------------------------------------------------------------ #
     # scale selection
     # ------------------------------------------------------------------ #
-    def _select_scales(self, w: torch.Tensor) -> torch.Tensor | None:
-        assert self.codebook is not None
+    def select_scales(self, w: torch.Tensor) -> torch.Tensor | None:
+        """Deployable per-group (or per-row) scales this config selects for ``w``.
+
+        Public because calibration/training modules must reproduce exactly the
+        scales the packer would choose. Returns None for scale-free profiles.
+        """
+        if self.codebook is None:
+            raise RuntimeError(
+                "scale selection requires a codebook; calibrated quantizers fit "
+                "one inside quantize_weight before scales are selected"
+            )
         if self.cfg.scale == "turboquant":
             # Per-row RMS: one scale per output neuron, amortised over in_features weights.
             # After Hadamard rotation the distribution *shape* is universal (Gaussian) but
@@ -462,7 +486,8 @@ class Quantizer:
     ) -> torch.Tensor:
         """MSE scale search using complete vector assignments."""
 
-        assert isinstance(self.codebook, VectorCodebook)
+        if not isinstance(self.codebook, VectorCodebook):
+            raise TypeError("vector scale search requires a VectorCodebook")
         out, in_features = w.shape
         group_size = self.cfg.group_size
         groups = rms.shape[1]
@@ -508,11 +533,19 @@ class Quantizer:
         """
         w = weight.detach().to(torch.float32)
         out, inf = w.shape
+        if self._auto_calibrated:
+            # Exact content digest: summary statistics (sums, norms) collide
+            # for distinct matrices (e.g. any permutation), which would silently
+            # reuse a grid fitted to a different layer. Calibration already
+            # costs a Lloyd fit, so hashing the bytes once is negligible.
+            key = _weight_digest(w)
+            if self.codebook is None or key != self._calibrated_key:
+                self._fit_calibrated_codebook(w)
+                self._calibrated_key = key
         if self.codebook is None:
-            self._fit_calibrated_codebook(w)
-        assert self.codebook is not None
+            raise RuntimeError("quantizer has no codebook; construction should have set one")
         if scales_override is None:
-            selected_scales = self._select_scales(w)
+            selected_scales = self.select_scales(w)
         else:
             expected_groups = (1 if self.cfg.scale == "turboquant"
                                else (inf + self.cfg.group_size - 1)

@@ -21,9 +21,14 @@ import torch
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from rotquant.utils import environment_record, get_logger, write_result
+from rotquant.utils import (
+    enable_default_logging,
+    environment_record,
+    get_logger,
+    write_result,
+)
 
-logger = get_logger()
+logger = get_logger(__name__)
 
 INSTALL_HINTS = {
     "gptq": "pip install gptqmodel",
@@ -170,6 +175,7 @@ def load_baseline(backend: str, model_name: str, bits: int, device: str,
 
 
 def main() -> None:
+    enable_default_logging()
     ap = argparse.ArgumentParser()
     ap.add_argument("--backend", required=True,
                     choices=IMPLEMENTED_BACKENDS)
@@ -203,7 +209,7 @@ def main() -> None:
                                calib_min_chars=args.calib_min_chars)
     model.eval()
 
-    from eval.perplexity import PPLConfig, perplexity
+    from rotquant.eval.perplexity import PPLConfig, perplexity
 
     metrics: dict[str, Any] = {}
     ppl_config = PPLConfig(
@@ -214,7 +220,7 @@ def main() -> None:
     for ds in args.datasets:
         metrics[f"ppl_{ds}"] = perplexity(model, tok, ds, ppl_config, args.device)
     if args.zeroshot:
-        from eval.zeroshot import zeroshot
+        from rotquant.eval.zeroshot import zeroshot
         metrics["zeroshot"] = zeroshot(
             model,
             tok,

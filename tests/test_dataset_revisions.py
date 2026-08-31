@@ -7,7 +7,7 @@ import types
 
 import torch
 
-from eval.perplexity import _load_text
+from rotquant.eval.perplexity import _load_text
 from scripts.run_experiment import build_calib_loader
 
 
