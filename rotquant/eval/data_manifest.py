@@ -112,6 +112,7 @@ class DatasetSource:
             raise ValueError("licenses must be a non-empty tuple of license identifiers")
         if len(set(self.licenses)) != len(self.licenses):
             raise ValueError("licenses must not contain duplicates")
+        object.__setattr__(self, "licenses", tuple(sorted(self.licenses)))
         if self.redistribution not in REDISTRIBUTION_POLICIES:
             raise ValueError(
                 "redistribution must be allowed, gated, or metadata_only"
@@ -123,7 +124,7 @@ class DatasetSource:
 
     def manifest(self) -> dict[str, Any]:
         payload = asdict(self)
-        payload["licenses"] = list(self.licenses)
+        payload["licenses"] = sorted(self.licenses)
         return payload
 
     @classmethod
@@ -161,6 +162,7 @@ class ManifestItem:
             raise ValueError("item licenses must be a non-empty tuple")
         if len(set(self.licenses)) != len(self.licenses):
             raise ValueError("item licenses must not contain duplicates")
+        object.__setattr__(self, "licenses", tuple(sorted(self.licenses)))
         if not isinstance(self.metadata, tuple) or any(
             not isinstance(entry, tuple)
             or len(entry) != 2
@@ -184,7 +186,7 @@ class ManifestItem:
             "source_id": self.source_id,
             "source_record_id": self.source_record_id,
             "token_sha256": self.token_sha256,
-            "licenses": list(self.licenses),
+            "licenses": sorted(self.licenses),
             "metadata": {key: value for key, value in self.metadata},
         }
         if include_token_ids:
@@ -399,26 +401,57 @@ def find_near_duplicates(
     if isinstance(max_findings, bool) or not isinstance(max_findings, Integral) or max_findings <= 0:
         raise ValueError("max_findings must be a positive integer")
 
-    left_shingles = [
-        _token_shingles(item.token_ids, int(ngram_size)) for item in left.items
+    ngram_size = int(ngram_size)
+    long_left = [
+        index
+        for index, item in enumerate(left.items)
+        if len(item.token_ids) >= ngram_size
     ]
-    inverted: dict[tuple[int, ...], set[int]] = defaultdict(set)
-    for index, shingles in enumerate(left_shingles):
-        for shingle in shingles:
-            inverted[shingle].add(index)
+    short_left = {
+        index
+        for index, item in enumerate(left.items)
+        if len(item.token_ids) < ngram_size
+    }
+    inverted_by_width: dict[int, dict[tuple[int, ...], set[int]]] = {}
+
+    def long_left_inverted(width: int) -> dict[tuple[int, ...], set[int]]:
+        cached = inverted_by_width.get(width)
+        if cached is not None:
+            return cached
+        inverted: dict[tuple[int, ...], set[int]] = defaultdict(set)
+        for index in long_left:
+            for shingle in _token_shingles(left.items[index].token_ids, width):
+                inverted[shingle].add(index)
+        inverted_by_width[width] = inverted
+        return inverted
 
     findings: list[NearDuplicate] = []
     for right_item in right.items:
-        right_shingles = _token_shingles(right_item.token_ids, int(ngram_size))
-        candidates: set[int] = set()
-        for shingle in right_shingles:
+        width = min(ngram_size, len(right_item.token_ids))
+        right_index_shingles = _token_shingles(right_item.token_ids, width)
+        candidates = set(short_left)
+        inverted = long_left_inverted(width)
+        for shingle in right_index_shingles:
             candidates.update(inverted.get(shingle, ()))
         for index in sorted(candidates):
-            intersection = len(left_shingles[index].intersection(right_shingles))
-            union = len(left_shingles[index].union(right_shingles))
+            comparison_width = min(
+                ngram_size,
+                len(left.items[index].token_ids),
+                len(right_item.token_ids),
+            )
+            left_shingles = _token_shingles(
+                left.items[index].token_ids,
+                comparison_width,
+            )
+            right_shingles = _token_shingles(
+                right_item.token_ids,
+                comparison_width,
+            )
+            intersection = len(left_shingles.intersection(right_shingles))
+            union = len(left_shingles.union(right_shingles))
             score = intersection / union
             containment = intersection / min(
-                len(left_shingles[index]), len(right_shingles)
+                len(left_shingles), len(right_shingles)
             )
             if max(score, containment) >= threshold:
                 findings.append(
@@ -438,7 +471,7 @@ def validate_disjoint(
     calibration: DatasetManifest,
     evaluation: DatasetManifest,
     *,
-    near_duplicate_threshold: float | None = None,
+    near_duplicate_threshold: float | None = 0.8,
     ngram_size: int = 5,
 ) -> None:
     """Require identical tokenization and no calibration/evaluation leakage."""
@@ -477,7 +510,7 @@ def protocol_from_manifests(
     calibration: DatasetManifest,
     evaluation: DatasetManifest,
     include_auxiliary_heads: bool = False,
-    near_duplicate_threshold: float | None = None,
+    near_duplicate_threshold: float | None = 0.8,
 ) -> CompetitiveEvalProtocol:
     """Build the registered competition protocol after leakage validation."""
 

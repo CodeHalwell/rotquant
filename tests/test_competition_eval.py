@@ -52,11 +52,16 @@ def _evaluation(name, fingerprint, *, size=1_000_000, kl=0.2, top1=0.8):
 
 def test_protocol_is_content_addressed_and_rejects_leakage():
     protocol = _protocol()
+    assert sum(REGISTERED_DOMAIN_QUOTAS.values()) == protocol.prompt_count
     assert len(protocol.fingerprint) == 64
     assert protocol.fingerprint == _protocol().fingerprint
     assert protocol.manifest()["prompt_count"] == 300
     assert protocol.manifest()["generation_tokens"] == 32
     assert CompetitiveEvalProtocol.from_manifest(protocol.manifest()) == protocol
+    assert protocol.fingerprint == _protocol(
+        domains=tuple(reversed(protocol.domains)),
+        domain_counts=tuple(reversed(protocol.domain_counts)),
+    ).fingerprint
 
     with pytest.raises(ValueError, match="disjoint"):
         _protocol(calibration_item_sha256=("0" * 63 + "1",))

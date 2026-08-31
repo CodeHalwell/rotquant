@@ -23,8 +23,16 @@ REGISTERED_DOMAINS = frozenset({
     "multilingual",
     "long_document",
 })
+_REGISTERED_DOMAIN_QUOTA, _REGISTERED_DOMAIN_REMAINDER = divmod(
+    REGISTERED_PROMPT_COUNT,
+    len(REGISTERED_DOMAINS),
+)
+if _REGISTERED_DOMAIN_REMAINDER:
+    raise RuntimeError(
+        "REGISTERED_PROMPT_COUNT must be divisible by the number of domains"
+    )
 REGISTERED_DOMAIN_QUOTAS = {
-    domain: REGISTERED_PROMPT_COUNT // len(REGISTERED_DOMAINS)
+    domain: _REGISTERED_DOMAIN_QUOTA
     for domain in sorted(REGISTERED_DOMAINS)
 }
 
@@ -176,11 +184,20 @@ class CompetitiveEvalProtocol:
             raise ValueError("competitive trajectory evaluation must use greedy decoding")
         if not isinstance(self.include_auxiliary_heads, bool):
             raise TypeError("include_auxiliary_heads must be a bool")
+        object.__setattr__(self, "domains", tuple(sorted(self.domains)))
+        object.__setattr__(
+            self,
+            "domain_counts",
+            tuple((domain, counts[domain]) for domain in sorted(counts)),
+        )
 
     def manifest(self) -> dict[str, Any]:
         payload = asdict(self)
-        payload["domains"] = list(self.domains)
-        payload["domain_counts"] = [list(entry) for entry in self.domain_counts]
+        payload["domains"] = sorted(self.domains)
+        counts = dict(self.domain_counts)
+        payload["domain_counts"] = [
+            [domain, counts[domain]] for domain in sorted(counts)
+        ]
         payload["prompt_item_sha256"] = list(self.prompt_item_sha256)
         payload["calibration_item_sha256"] = list(
             self.calibration_item_sha256

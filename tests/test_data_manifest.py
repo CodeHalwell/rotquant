@@ -122,6 +122,45 @@ def test_public_summary_omits_source_derived_tokens():
     assert summary["items"][0]["token_sha256"] == manifest.items[0].token_sha256
 
 
+def test_license_order_does_not_change_manifest_fingerprint():
+    first_source = _source()
+    first_source = DatasetSource(
+        source_id=first_source.source_id,
+        revision=first_source.revision,
+        split=first_source.split,
+        licenses=("MIT", "Apache-2.0"),
+        url=first_source.url,
+    )
+    second_source = DatasetSource(
+        source_id=first_source.source_id,
+        revision=first_source.revision,
+        split=first_source.split,
+        licenses=tuple(reversed(first_source.licenses)),
+        url=first_source.url,
+    )
+    first_item = ManifestItem(
+        item_id="cal-0",
+        domain="general",
+        source_id="source",
+        source_record_id="row",
+        token_ids=(1, 2, 3),
+        licenses=("MIT", "Apache-2.0"),
+    )
+    second_item = ManifestItem(
+        item_id="cal-0",
+        domain="general",
+        source_id="source",
+        source_record_id="row",
+        token_ids=(1, 2, 3),
+        licenses=tuple(reversed(first_item.licenses)),
+    )
+    assert _calibration(
+        sources=(first_source,), items=(first_item,)
+    ).fingerprint == _calibration(
+        sources=(second_source,), items=(second_item,)
+    ).fingerprint
+
+
 @pytest.mark.parametrize("revision", ["main", "master", "latest", "HEAD"])
 def test_source_rejects_mutable_revisions(revision):
     with pytest.raises(ValueError, match="immutable"):
@@ -193,6 +232,28 @@ def test_disjointness_checks_exact_and_near_duplicates():
             near_evaluation,
             ngram_size=2,
             near_duplicate_threshold=0.7,
+        )
+
+
+def test_short_sequence_containment_is_detected_by_default():
+    calibration = _calibration(
+        items=[_item("cal-short", "general", (80, 81, 82, 83))]
+    )
+    replacement = _item(
+        "agentic-0", "agentic", (0, 80, 81, 82, 83, 99)
+    )
+    evaluation = _evaluation(replacements={"agentic-0": replacement})
+
+    findings = find_near_duplicates(calibration, evaluation)
+    assert findings[0].containment == 1.0
+    with pytest.raises(ValueError, match="near duplicates"):
+        validate_disjoint(calibration, evaluation)
+    with pytest.raises(ValueError, match="near duplicates"):
+        protocol_from_manifests(
+            model_id="Qwen/Qwen3.5-4B",
+            model_revision="model-commit",
+            calibration=calibration,
+            evaluation=evaluation,
         )
 
 
