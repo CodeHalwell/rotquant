@@ -59,6 +59,7 @@ def test_algorithm_lab_notebook_covers_every_track_and_requires_confirmation():
     assert "MATCHED_CONTROL_MAP" in source
     assert "complete_persistent_model_bytes" in source
     assert "quarantined incomplete record" in source
+    assert "CUDA cleanup failed; restart the runtime" in source
     assert "Divergence-300-style" in source
     assert "oracle_value_retrieval_curve" in source
     assert '"packed_key_recall_measured": False' in source

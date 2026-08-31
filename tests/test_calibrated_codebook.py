@@ -8,12 +8,30 @@ summary-statistic reuse key cannot distinguish them — only exact content can.
 """
 import torch
 
-from rotquant.quantize import QuantConfig, Quantizer
+from rotquant.quantize import (
+    QuantConfig,
+    Quantizer,
+    _calibration_sample_indices,
+)
 
 
 def _cfg() -> QuantConfig:
     return QuantConfig(bits=3, codebook="calibrated", group_size=32,
                        calibrated_samples=512, calibrated_iters=20)
+
+
+def test_large_calibration_sampling_never_rounds_past_matrix_end():
+    total_values = 2_560 * 9_216  # Qwen3.5-4B MLP projection size (> 2**24)
+    indices = _calibration_sample_indices(
+        total_values, 65_536, device="cpu"
+    )
+
+    assert indices.dtype == torch.int64
+    assert indices[0].item() == 0
+    assert indices[-1].item() == total_values - 1
+    assert indices.min().item() >= 0
+    assert indices.max().item() < total_values
+    assert torch.all(indices[1:] > indices[:-1])
 
 
 def test_calibrated_refits_for_permuted_matrix():

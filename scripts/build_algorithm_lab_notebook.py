@@ -611,7 +611,15 @@ def build_notebook():
         def release_cuda_memory():
             gc.collect()
             if torch.cuda.is_available():
-                torch.cuda.empty_cache()
+                try:
+                    torch.cuda.empty_cache()
+                except Exception as exc:
+                    # A device-side assert poisons the CUDA context. Preserve the
+                    # original trial exception instead of replacing it here.
+                    print(
+                        "WARNING: CUDA cleanup failed; restart the runtime before "
+                        f"continuing. Cleanup error: {type(exc).__name__}: {exc}"
+                    )
 
         def record_complete(record, stage):
             try:

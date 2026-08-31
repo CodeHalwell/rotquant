@@ -53,6 +53,33 @@ def _weight_digest(w: torch.Tensor) -> str:
     return digest.hexdigest()
 
 
+def _calibration_sample_indices(
+    total_values: int,
+    sample_count: int,
+    *,
+    device: torch.device | str,
+) -> torch.Tensor:
+    """Return exact, evenly spaced int64 indices including both endpoints.
+
+    Float32 ``linspace`` can round ``total_values - 1`` up to ``total_values``
+    once a matrix exceeds 2**24 elements.  On CUDA that becomes a delayed
+    device-side bounds assertion.  Integer arithmetic keeps every index valid
+    for the large projection matrices used by real models.
+    """
+
+    if total_values < 2:
+        raise ValueError("total_values must be at least 2")
+    if not 2 <= sample_count <= total_values:
+        raise ValueError("sample_count must be in [2, total_values]")
+    positions = torch.arange(sample_count, dtype=torch.int64, device="cpu")
+    indices = torch.div(
+        positions * (total_values - 1),
+        sample_count - 1,
+        rounding_mode="floor",
+    )
+    return indices.to(device=device)
+
+
 def _generate_sketch_matrix(in_features: int, k: int, seed: int, device) -> torch.Tensor:
     """Random Gaussian sketch matrix ``G`` of shape ``[in_features, k]``.
 
@@ -409,12 +436,11 @@ class Quantizer:
             weight / _expand_scales(rms, self.cfg.group_size, weight.shape[1])
         ).reshape(-1)
         if normalized.numel() > self.cfg.calibrated_samples:
-            indices = torch.linspace(
-                0,
-                normalized.numel() - 1,
+            indices = _calibration_sample_indices(
+                normalized.numel(),
                 self.cfg.calibrated_samples,
                 device=normalized.device,
-            ).round().long()
+            )
             normalized = normalized[indices]
         self.codebook = fit_scalar_codebook(
             normalized,
