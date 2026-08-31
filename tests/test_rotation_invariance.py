@@ -3,11 +3,11 @@
 We had this backwards once (it cost a whole run), so this is a guard test.
 """
 import torch
+from torch import nn
 
-from rotquant.rotate import build_rotation
-from rotquant.quantize import QuantConfig, Quantizer
 from rotquant.linear import QuantLinear
-import torch.nn as nn
+from rotquant.quantize import QuantConfig
+from rotquant.rotate import build_rotation
 
 
 def _max_rel(a, b):

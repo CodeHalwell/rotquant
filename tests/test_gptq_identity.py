@@ -14,7 +14,7 @@ def _deq(qw):
 def test_gptq_identity_equals_rounding():
     torch.manual_seed(0)
     W = torch.randn(48, 256)
-    common = dict(bits=3, codebook="gaussian", scale="rms", group_size=128)
+    common = {"bits": 3, "codebook": "gaussian", "scale": "rms", "group_size": 128}
 
     gptq = Quantizer(QuantConfig(error_comp="gptq", **common))
     plain = Quantizer(QuantConfig(error_comp="none", **common))
@@ -38,8 +38,8 @@ def test_gptq_blocked_matches_column_at_a_time():
     cfg = QuantConfig(bits=3, codebook="gaussian", scale="rms", group_size=32,
                       gptq_block=16)  # several blocks over d=96
     qz = Quantizer(cfg)
-    scales = qz._select_scales(W)
-    Q_blocked, Idx_blocked = qz._gptq(W.clone(), scales, H.clone())
+    scales = qz.select_scales(W)
+    Q_blocked, _ = qz._gptq(W.clone(), scales, H.clone())
 
     # Naive reference: identical setup, full-width rank-1 update per column.
     Hd = H.to(torch.float32).clone()
@@ -69,7 +69,7 @@ def test_gptq_reduces_error_with_real_hessian():
     X = torch.randn(512, d)
     H = X.T @ X
 
-    common = dict(bits=3, codebook="gaussian", scale="rms", group_size=64)
+    common = {"bits": 3, "codebook": "gaussian", "scale": "rms", "group_size": 64}
     gptq = Quantizer(QuantConfig(error_comp="gptq", **common)).quantize_weight(W, H=H)
     plain = Quantizer(QuantConfig(error_comp="none", **common)).quantize_weight(W)
 

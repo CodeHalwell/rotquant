@@ -5,21 +5,19 @@ fails -- so we always report the zero-shot bundle mean alongside it.
 """
 from __future__ import annotations
 
-from typing import Dict, List, Optional
-
 from rotquant.utils import get_logger
 
-logger = get_logger()
+logger = get_logger(__name__)
 
 # The fixed bundle; never change mid-study.
-DEFAULT_TASKS: List[str] = [
+DEFAULT_TASKS: list[str] = [
     "arc_challenge", "arc_easy", "boolq", "piqa", "winogrande", "hellaswag",
 ]
 
 
-def zeroshot(model, tokenizer, tasks: Optional[List[str]] = None,
+def zeroshot(model, tokenizer, tasks: list[str] | None = None,
              batch_size: int = 8, device: str = "cuda",
-             limit: Optional[int] = None) -> Dict[str, float]:
+             limit: int | None = None) -> dict[str, float]:
     """Run the lm-eval harness on an already-loaded HF model.
 
     Returns a dict of per-task accuracy plus ``bundle_mean``.
@@ -37,7 +35,7 @@ def zeroshot(model, tokenizer, tasks: Optional[List[str]] = None,
               device=device)
     res = simple_evaluate(model=lm, tasks=tasks, limit=limit)
 
-    scores: Dict[str, float] = {}
+    scores: dict[str, float] = {}
     for task, metrics in res["results"].items():
         acc = metrics.get("acc_norm,none", metrics.get("acc,none"))
         if acc is not None:

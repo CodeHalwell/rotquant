@@ -7,16 +7,18 @@ import importlib.util
 import os
 import sys
 from types import ModuleType, SimpleNamespace
+from typing import ClassVar
 
 import pytest
 import torch
-import torch.nn as nn
 import yaml
+from torch import nn
 
-from rotquant.patch import PatchConfig, patch_model, _cpu_staging_linear
+from rotquant._internal import cpu_staging_linear, group_scales_rms
 from rotquant.calibrate import collect_activations
-from rotquant.quantize import QuantConfig, Quantizer, _group_scales_rms
 from rotquant.linear import QuantLinear
+from rotquant.patch import PatchConfig, patch_model
+from rotquant.quantize import QuantConfig, Quantizer
 from rotquant.rotate import Identity
 
 _ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -26,6 +28,8 @@ def _load_script(name):
     path = os.path.join(_ROOT, "scripts", f"{name}.py")
     spec = importlib.util.spec_from_file_location(name, path)
     mod = importlib.util.module_from_spec(spec)
+    # Register before exec: @dataclass resolves cls.__module__ via sys.modules.
+    sys.modules[name] = mod
     spec.loader.exec_module(mod)
     return mod
 
@@ -88,7 +92,7 @@ def test_calibration_batches_are_cached_and_content_addressed(monkeypatch):
     class Tokenizer:
         name_or_path = "tiny/tokenizer"
         vocab_size = 32
-        special_tokens_map = {}
+        special_tokens_map: ClassVar[dict] = {}
 
         def __call__(self, text, return_tensors="pt"):
             del return_tensors
@@ -328,7 +332,7 @@ def test_model_loader_auto_detects_unified_multimodal_configs():
 
 def test_cpu_staging_linear_preserves_half_source_values_in_fp32():
     source = nn.Linear(32, 16).half()
-    staged = _cpu_staging_linear(source)
+    staged = cpu_staging_linear(source)
     assert staged.weight.device.type == "cpu"
     assert staged.weight.dtype == torch.float32
     assert torch.equal(staged.weight, source.weight.float())
@@ -406,7 +410,7 @@ def test_disabled_patch_is_a_true_source_model_baseline():
 def test_partial_group_rms_ignores_padding():
     torch.manual_seed(0)
     w = torch.randn(4, 100)
-    scales = _group_scales_rms(w, 64)  # groups: 64 + 36
+    scales = group_scales_rms(w, 64)  # groups: 64 + 36
     ref_last = w[:, 64:].pow(2).mean(dim=1).sqrt()
     assert torch.allclose(scales[:, 1], ref_last, atol=1e-6), \
         "last-group RMS must average over the 36 real weights, not 64 slots"
@@ -642,7 +646,7 @@ def test_aggregate_flattens_zeroshot():
         for s in range(2)
     ]
     table = aggregate_mod.aggregate(runs)
-    (key, agg), = table.items()
+    ((_, agg),) = table.items()
     assert agg["n_seeds"] == 2
     assert abs(agg["ppl_wikitext2"]["mean"] - 6.5) < 1e-9
     assert abs(agg["zeroshot.boolq"]["mean"] - 0.605) < 1e-9

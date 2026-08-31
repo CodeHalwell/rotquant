@@ -8,15 +8,15 @@ Cholesky failure, which is the instability the spec warns about.
 """
 from __future__ import annotations
 
+from collections.abc import Iterable, Sequence
 from dataclasses import dataclass, field
-from typing import Dict, Iterable, List, Optional, Sequence
 
 import torch
-import torch.nn as nn
+from torch import nn
 
 from .utils import get_logger
 
-logger = get_logger()
+logger = get_logger(__name__)
 
 
 class HessianAccumulator:
@@ -48,20 +48,20 @@ class HessianAccumulator:
 
 @dataclass
 class CalibrationResult:
-    hessians: Dict[str, torch.Tensor] = field(default_factory=dict)
-    n_samples: Dict[str, int] = field(default_factory=dict)
+    hessians: dict[str, torch.Tensor] = field(default_factory=dict)
+    n_samples: dict[str, int] = field(default_factory=dict)
 
 
 @dataclass
 class ActivationResult:
     """Bounded source-model input samples for layerwise reconstruction."""
 
-    activations: Dict[str, torch.Tensor] = field(default_factory=dict)
-    n_samples: Dict[str, int] = field(default_factory=dict)
+    activations: dict[str, torch.Tensor] = field(default_factory=dict)
+    n_samples: dict[str, int] = field(default_factory=dict)
 
 
-def _iter_linears(model: nn.Module, include: Optional[Sequence[str]] = None,
-                  exclude: Optional[Sequence[str]] = None):
+def _iter_linears(model: nn.Module, include: Sequence[str] | None = None,
+                  exclude: Sequence[str] | None = None):
     for name, mod in model.named_modules():
         if isinstance(mod, nn.Linear):
             if include is not None and not any(k in name for k in include):
@@ -73,11 +73,11 @@ def _iter_linears(model: nn.Module, include: Optional[Sequence[str]] = None,
 
 @torch.no_grad()
 def collect_hessians(model: nn.Module, dataloader: Iterable, device,
-                     include: Optional[Sequence[str]] = None,
-                     exclude: Optional[Sequence[str]] = None,
-                     max_batches: Optional[int] = None,
+                     include: Sequence[str] | None = None,
+                     exclude: Sequence[str] | None = None,
+                     max_batches: int | None = None,
                      damp_frac: float = 0.01,
-                     offload_device: Optional[str] = "cpu") -> CalibrationResult:
+                     offload_device: str | None = "cpu") -> CalibrationResult:
     """Run the model over calibration batches, capturing per-linear input Hessians.
 
     ``dataloader`` yields tensors / dicts suitable for ``model(**batch)`` or
@@ -94,8 +94,8 @@ def collect_hessians(model: nn.Module, dataloader: Iterable, device,
     *accumulators* still live on the GPU during the calibration forward passes;
     restrict ``include`` if that exceeds your VRAM.
     """
-    accums: Dict[str, HessianAccumulator] = {}
-    handles: List[torch.utils.hooks.RemovableHandle] = []
+    accums: dict[str, HessianAccumulator] = {}
+    handles: list[torch.utils.hooks.RemovableHandle] = []
 
     def make_hook(name: str, in_features: int):
         def hook(_module, inputs, _output):
@@ -138,10 +138,10 @@ def collect_hessians(model: nn.Module, dataloader: Iterable, device,
 
 @torch.no_grad()
 def collect_activations(model: nn.Module, dataloader: Iterable, device,
-                        include: Optional[Sequence[str]] = None,
-                        exclude: Optional[Sequence[str]] = None,
+                        include: Sequence[str] | None = None,
+                        exclude: Sequence[str] | None = None,
                         max_tokens: int = 64,
-                        offload_device: Optional[str] = "cpu",
+                        offload_device: str | None = "cpu",
                         storage_dtype: torch.dtype = torch.float16) -> ActivationResult:
     """Capture at most ``max_tokens`` source-model inputs per targeted linear.
 
@@ -152,9 +152,9 @@ def collect_activations(model: nn.Module, dataloader: Iterable, device,
     """
     if max_tokens < 1:
         raise ValueError("max_tokens must be >= 1")
-    chunks: Dict[str, List[torch.Tensor]] = {}
-    counts: Dict[str, int] = {}
-    handles: List[torch.utils.hooks.RemovableHandle] = []
+    chunks: dict[str, list[torch.Tensor]] = {}
+    counts: dict[str, int] = {}
+    handles: list[torch.utils.hooks.RemovableHandle] = []
 
     def make_hook(name: str, in_features: int):
         def hook(_module, inputs, _output):

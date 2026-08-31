@@ -4,11 +4,11 @@ footprint, and that QJL loses to a deterministic residual at equal bits.
 import copy
 
 import torch
-import torch.nn as nn
+from torch import nn
 
+from rotquant.eval.layer_mse import layer_output_mse
 from rotquant.patch import PatchConfig, patch_model
 from rotquant.quantize import QuantConfig, Quantizer
-from eval.layer_mse import layer_output_mse
 
 
 class _Toy(nn.Module):
@@ -55,7 +55,7 @@ def test_packed_smaller_than_fp16():
 def test_qjl_loses_to_residual_at_equal_bits():
     torch.manual_seed(0)
     W = torch.randn(32, 256)
-    common = dict(bits=3, group_size=128, residual_bits=1)
+    common = {"bits": 3, "group_size": 128, "residual_bits": 1}
     res = Quantizer(QuantConfig(error_comp="residual", **common)).quantize_weight(W).dequantize()
     qjl = Quantizer(QuantConfig(error_comp="qjl", **common)).quantize_weight(W).dequantize()
     assert (W - res).pow(2).mean() < (W - qjl).pow(2).mean()

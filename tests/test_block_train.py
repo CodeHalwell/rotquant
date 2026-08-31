@@ -2,21 +2,22 @@
 from types import SimpleNamespace
 
 import torch
-import torch.nn as nn
+from torch import nn
 
+from rotquant._internal import group_scales_rms, storage_scales
 from rotquant.block_train import (
-    BlockRotationTrainConfig, FakeQuantButterflyLinear, _packed_cpu_block,
-    collect_block_calls, collect_teacher_calls, find_transformer_blocks,
-    train_and_patch_blocks, train_fake_quant_block,
+    BlockRotationTrainConfig,
+    FakeQuantButterflyLinear,
+    _packed_cpu_block,
+    collect_block_calls,
+    collect_teacher_calls,
+    find_transformer_blocks,
+    train_and_patch_blocks,
+    train_fake_quant_block,
 )
 from rotquant.linear import QuantLinear
 from rotquant.patch import PatchConfig
-from rotquant.quantize import (
-    QuantConfig,
-    Quantizer,
-    _group_scales_rms,
-    _storage_scales,
-)
+from rotquant.quantize import QuantConfig, Quantizer
 from rotquant.rotate import ButterflyRotation, Identity
 
 
@@ -167,8 +168,8 @@ def test_learned_scales_survive_exact_packing_without_extra_storage():
         quantized = getattr(candidate, relative)
         state = states[relative]
         rotated = quantized.act_rotation.rotate_weight(source.weight).float()
-        expected = _storage_scales(
-            _group_scales_rms(rotated, _qcfg().group_size)
+        expected = storage_scales(
+            group_scales_rms(rotated, _qcfg().group_size)
             * state["scale_multiplier"],
             _qcfg().scale_bits,
         )

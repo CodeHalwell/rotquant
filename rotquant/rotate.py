@@ -24,15 +24,41 @@ Implemented rotations:
 from __future__ import annotations
 
 import math
-from typing import Optional
 
 import torch
-import torch.nn as nn
+from torch import nn
 
 try:  # the fast CUDA kernel QuaRot/QuIP# use; optional, we fall back to pure torch
     from fast_hadamard_transform import hadamard_transform as _fht_cuda
-except Exception:  # pragma: no cover - kernel only present with CUDA build
+
+    _fht_import_error: Exception | None = None
+except Exception as exc:  # pragma: no cover - kernel only present with CUDA build
     _fht_cuda = None
+    _fht_import_error = exc
+
+_slow_fwht_warned = False
+
+
+def _warn_slow_cuda_fwht() -> None:
+    """Warn once when a CUDA tensor takes the pure-torch FWHT path.
+
+    A missing (or broken) ``fast-hadamard-transform`` install is otherwise
+    invisible: results stay correct but every rotation runs orders of
+    magnitude slower on GPU. Correct-but-degraded must never be silent.
+    """
+    global _slow_fwht_warned
+    if _slow_fwht_warned:
+        return
+    _slow_fwht_warned = True
+    from .utils import get_logger
+
+    detail = f" (import failed: {_fht_import_error!r})" if _fht_import_error else ""
+    get_logger(__name__).warning(
+        "fast-hadamard-transform CUDA kernel unavailable%s; using the pure-torch "
+        "FWHT, which is prohibitively slow at model dimensions on GPU. Install "
+        "it with: uv pip install fast-hadamard-transform --no-build-isolation",
+        detail,
+    )
 
 
 def _is_pow2(n: int) -> bool:
@@ -51,10 +77,12 @@ def fwht(x: torch.Tensor, normalize: bool = True) -> torch.Tensor:
     if not _is_pow2(d):
         raise ValueError(f"FWHT length must be a power of two, got {d}")
 
-    if _fht_cuda is not None and x.is_cuda:
-        # The kernel applies the unnormalised H; scale to match our convention.
-        out = _fht_cuda(x.contiguous())
-        return out / math.sqrt(d) if normalize else out
+    if x.is_cuda:
+        if _fht_cuda is not None:
+            # The kernel applies the unnormalised H; scale to match our convention.
+            out = _fht_cuda(x.contiguous())
+            return out / math.sqrt(d) if normalize else out
+        _warn_slow_cuda_fwht()
 
     orig_shape = x.shape
     h = x.reshape(-1, d).clone()
@@ -118,7 +146,7 @@ class RandomizedHadamard(Rotation):
     ``block`` must be a power of two dividing ``dim`` (128 default, 256 if divisible).
     """
 
-    def __init__(self, dim: int, block: int = 128, seed: Optional[int] = None,
+    def __init__(self, dim: int, block: int = 128, seed: int | None = None,
                  device=None, dtype=torch.float32):
         super().__init__(dim)
         if dim % block != 0:
@@ -180,7 +208,7 @@ class ButterflyRotation(Rotation):
     fixed random signs retain the useful FWHT starting point.
     """
 
-    def __init__(self, dim: int, block: int = 128, seed: Optional[int] = None,
+    def __init__(self, dim: int, block: int = 128, seed: int | None = None,
                  device=None, dtype=torch.float32):
         super().__init__(dim)
         if dim % block != 0:
@@ -202,7 +230,7 @@ class ButterflyRotation(Rotation):
         self.theta = nn.Parameter(angles)
         self.register_buffer("_cached_cos", None, persistent=False)
         self.register_buffer("_cached_sin", None, persistent=False)
-        self._cached_theta_version: Optional[int] = None
+        self._cached_theta_version: int | None = None
 
     def _invalidate_cache(self) -> None:
         self._cached_cos = None
@@ -274,7 +302,7 @@ class ButterflyRotation(Rotation):
 class DenseOrthogonal(Rotation):
     """Dense random orthogonal rotation from the QR of a Gaussian matrix."""
 
-    def __init__(self, dim: int, seed: Optional[int] = None, device=None,
+    def __init__(self, dim: int, seed: int | None = None, device=None,
                  dtype=torch.float32):
         super().__init__(dim)
         gen = torch.Generator(device="cpu")
@@ -312,7 +340,7 @@ class LearnedRotation(Rotation):
     ahead once activations are also quantised, e.g. W4A4).
     """
 
-    def __init__(self, dim: int, seed: Optional[int] = None, device=None,
+    def __init__(self, dim: int, seed: int | None = None, device=None,
                  dtype=torch.float32):
         super().__init__(dim)
         gen = torch.Generator(device="cpu")
@@ -332,7 +360,7 @@ class LearnedRotation(Rotation):
         # (PyTorch's _apply propagates registered buffers) but is not saved to
         # state_dict so it never carries stale values across checkpoints.
         self.register_buffer("_cached_R", None, persistent=False)
-        self._cached_theta_version: Optional[int] = None
+        self._cached_theta_version: int | None = None
 
     def train(self, mode: bool = True):
         if self.training != mode:
@@ -396,7 +424,7 @@ class LearnedRotation(Rotation):
 
 
 def build_rotation(kind: str, dim: int, *, block: int = 128,
-                   seed: Optional[int] = None, device=None,
+                   seed: int | None = None, device=None,
                    dtype=torch.float32) -> Rotation:
     kind = (kind or "none").lower()
     if kind in ("none", "identity"):

@@ -1,0 +1,34 @@
+name: llama.cpp patch check
+
+"on":
+  push:
+    branches: [main]
+    paths:
+      - ".github/workflows/llama-cpp-patch.yml"
+      - "integrations/llama.cpp/**"
+      - "scripts/build_rotquant_llama_cpp.sh"
+  pull_request:
+    paths:
+      - ".github/workflows/llama-cpp-patch.yml"
+      - "integrations/llama.cpp/**"
+      - "scripts/build_rotquant_llama_cpp.sh"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  patch-applies:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Clone pinned llama.cpp and check the patch applies
+        run: |
+          set -euo pipefail
+          pinned="$(grep -oP '^PINNED_COMMIT="\K[0-9a-f]{40}' scripts/build_rotquant_llama_cpp.sh)"
+          echo "pinned llama.cpp commit: ${pinned}"
+          git clone --no-checkout https://github.com/ggml-org/llama.cpp.git upstream
+          git -C upstream fetch --depth 1 origin "${pinned}"
+          git -C upstream checkout --detach "${pinned}"
+          git -C upstream apply --check "${GITHUB_WORKSPACE}/integrations/llama.cpp/rotquant-native-v1.patch"
+          echo "patch applies cleanly"

@@ -15,15 +15,10 @@ from dataclasses import dataclass
 import torch
 import torch.nn.functional as F
 
+from ._internal import group_scales_rms, quantize_groups
 from .codebooks import build_scalar_codebook
 from .pack import packed_bytes
-from .quantize import (
-    QuantConfig,
-    QuantizedWeight,
-    Quantizer,
-    _group_scales_rms,
-    _quantize_groups,
-)
+from .quantize import QuantConfig, QuantizedWeight, Quantizer
 from .rotate import ButterflyRotation, RandomizedHadamard, Rotation
 
 
@@ -417,13 +412,13 @@ def oracle_value_retrieval_curve(
 def _fake_quant(tensor: torch.Tensor, config: KVQuantConfig,
                 *, value: bool = False) -> torch.Tensor:
     rows = tensor.reshape(-1, tensor.shape[-1])
-    scales = _group_scales_rms(rows, config.group_size)
+    scales = group_scales_rms(rows, config.group_size)
     spherical = config.codebook.lower() in {
         "sphere", "spherical", "beta", "finite_beta"}
     dimension = (config.codebook_dim or config.group_size) if spherical else None
     codebook = build_scalar_codebook(
         config.codebook, 1 << config.bits_for(value=value), dimension)
-    quantized, _ = _quantize_groups(rows, scales, codebook, config.group_size)
+    quantized, _ = quantize_groups(rows, scales, codebook, config.group_size)
     if config.bias_correction == "length":
         energy = rows.square().sum(dim=1)
         alignment = (rows * quantized).sum(dim=1)

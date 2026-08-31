@@ -98,7 +98,7 @@ def capture_trajectories(model, tokenizer, batches: Sequence[Mapping[str, Any]],
 @torch.no_grad()
 def evaluate_trajectories(model, tokenizer,
                           references: Sequence[TrajectoryReference], device,
-                          config: TrajectoryConfig) -> dict[str, float | int]:
+                          config: TrajectoryConfig) -> dict[str, Any]:
     """Compare free-running deployed continuations with source references."""
 
     model.eval()

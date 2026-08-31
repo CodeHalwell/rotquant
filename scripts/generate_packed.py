@@ -10,7 +10,7 @@ import torch
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from rotquant.checkpoint import load_packed_model  # noqa: E402
+from rotquant.checkpoint import load_packed_model
 
 
 def _default_device() -> str:

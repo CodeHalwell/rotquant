@@ -19,6 +19,7 @@ from typing import Any
 import torch
 from torch import nn
 
+from ._internal import get_parent
 from .adapters import ModelAdapter, get_model_adapter, resolve_model_adapter
 from .codebooks import ScalarCodebook, VectorCodebook
 from .format import (
@@ -70,14 +71,6 @@ def _resolve_dtype(value: str | torch.dtype | None) -> torch.dtype:
     if not isinstance(dtype, torch.dtype):
         raise TypeError(f"unknown torch dtype: {value!r}")
     return dtype
-
-
-def _get_parent(model: nn.Module, dotted: str) -> tuple[nn.Module, str]:
-    parts = dotted.split(".")
-    parent = model
-    for part in parts[:-1]:
-        parent = getattr(parent, part)
-    return parent, parts[-1]
 
 
 def _rotation_spec(rotation: Rotation) -> dict[str, Any]:
@@ -471,7 +464,7 @@ def load_packed_model(
     with safe_open(packed_path, framework="pt", device="cpu") as packed_handle:
         for module_spec in manifest["quantized_modules"]:
             name = module_spec["name"]
-            parent, attr = _get_parent(model, name)
+            parent, attr = get_parent(model, name)
             source = getattr(parent, attr)
             linear = adapter.to_linear(source)
             if not isinstance(linear, nn.Linear):
