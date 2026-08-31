@@ -82,13 +82,23 @@ specialized around them:
   atomic resumable records;
 - [x] add seeded random-allocation and scalar 2.75-bpw controls so dynamic and
   vector candidates must beat a matched-format, matched-rate baseline;
-- [ ] execute the staged
+- [x] execute the staged
   [algorithm-lab Colab](../notebooks/rotquant_algorithm_lab_colab.ipynb) on the
   primary model, then promote only Pareto winners to three seeds and a second
-  architecture family;
+  architecture family (Qwen3.5-4B primary and Qwen2.5-3B transfer; see the
+  experiment log for positive and negative results);
+- [x] formalize the exact-size external-artifact and competitive-claim gates in
+  [the competitive evaluation contract](competitive_eval.md), including
+  content-addressed prompt/calibration protocols and KL distribution tails;
 - [ ] build a pinned, calibration-disjoint 300-prompt/32-token free-running
   divergence suite spanning agentic, code, maths, multilingual, and long-document
   prompts; compare the source, RotQuant, same-size GGUF, and Unsloth baselines;
+- [ ] build and publish the diverse calibration mixture and generated
+  importance/Hessian artifacts, with chat-template correctness, row/token
+  hashes, licensing, deduplication, and calibration-size ablations;
+- [ ] run exact-size 1.5/2/2.5/3/4/5/6/8-bit frontier comparisons against
+  standard llama.cpp GGUF and current Unsloth artifacts; freeze the RotQuant
+  allocator before final-model evaluation and require paired intervals;
 - [ ] implement packed-key candidate generation only if the dense-attention
   oracle shows a useful V-read/quality region;
 - [ ] **meet the project's own confirmation bar at scale.** The README requires

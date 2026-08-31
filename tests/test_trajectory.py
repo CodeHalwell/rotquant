@@ -44,6 +44,8 @@ def test_trajectory_fidelity_detects_free_running_divergence():
     assert perfect["token_agreement"] == 1.0
     assert perfect["exact_trajectory_rate"] == 1.0
     assert perfect["mean_matching_prefix"] == 8.0
+    assert len(perfect["prompt_metrics"]) == 2
+    assert perfect["prompt_metrics"][0]["mean_first_divergence"] == 8.0
 
     model.offset = 1
     divergent = evaluate_trajectories(

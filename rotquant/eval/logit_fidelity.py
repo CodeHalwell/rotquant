@@ -92,6 +92,8 @@ def evaluate_logit_fidelity(
     kl_sums = cosine_sums = top1_matches = 0.0
     source_nll_sum = candidate_nll_sum = 0.0
     tokens = 0
+    token_kl_values: list[torch.Tensor] = []
+    prompt_metrics: list[dict[str, Any]] = []
     scale = float(config.temperature)
     for reference in references:
         inputs = _device_inputs(reference.inputs, device)
@@ -110,34 +112,58 @@ def evaluate_logit_fidelity(
         token_kl = F.kl_div(
             candidate_log_prob, teacher_prob, reduction="none"
         ).sum(dim=-1) * scale**2
-        kl_sums += float(token_kl.sum().item())
-        cosine_sums += float(F.cosine_similarity(
-            teacher, candidate, dim=-1
-        ).sum().item())
-        top1_matches += float(
-            teacher.argmax(dim=-1).eq(candidate.argmax(dim=-1)).sum().item()
-        )
-        source_nll_sum += float(F.cross_entropy(
+        token_cosine = F.cosine_similarity(teacher, candidate, dim=-1)
+        token_matches = teacher.argmax(dim=-1).eq(candidate.argmax(dim=-1))
+        source_nll = F.cross_entropy(
             teacher.reshape(-1, teacher.shape[-1]), targets.reshape(-1),
             reduction="sum",
-        ).item())
-        candidate_nll_sum += float(F.cross_entropy(
+        )
+        candidate_nll = F.cross_entropy(
             candidate.reshape(-1, candidate.shape[-1]), targets.reshape(-1),
             reduction="sum",
-        ).item())
-        tokens += targets.numel()
+        )
+        prompt_tokens = targets.numel()
+        prompt_kl_sum = float(token_kl.sum().item())
+        prompt_cosine_sum = float(token_cosine.sum().item())
+        prompt_top1 = float(token_matches.sum().item())
+        prompt_source_nll = float(source_nll.item())
+        prompt_candidate_nll = float(candidate_nll.item())
+        kl_sums += prompt_kl_sum
+        cosine_sums += prompt_cosine_sum
+        top1_matches += prompt_top1
+        source_nll_sum += prompt_source_nll
+        candidate_nll_sum += prompt_candidate_nll
+        tokens += prompt_tokens
+        token_kl_values.append(token_kl.detach().cpu().reshape(-1))
+        prompt_metrics.append({
+            "input_hash": reference.input_hash,
+            "tokens": prompt_tokens,
+            "mean_teacher_kl": prompt_kl_sum / prompt_tokens,
+            "mean_logit_cosine": prompt_cosine_sum / prompt_tokens,
+            "top1_agreement": prompt_top1 / prompt_tokens,
+            "source_nll": prompt_source_nll / prompt_tokens,
+            "candidate_nll": prompt_candidate_nll / prompt_tokens,
+            "nll_delta": (
+                prompt_candidate_nll - prompt_source_nll
+            ) / prompt_tokens,
+        })
     if tokens <= 0:
         raise ValueError("logit fidelity references contain no scored tokens")
+    token_kl = torch.cat(token_kl_values).float()
     return {
         "prompts": len(references),
         "tokens": tokens,
         "mean_teacher_kl": kl_sums / tokens,
+        "median_teacher_kl": float(torch.quantile(token_kl, 0.5).item()),
+        "p95_teacher_kl": float(torch.quantile(token_kl, 0.95).item()),
+        "max_teacher_kl": float(token_kl.max().item()),
         "mean_logit_cosine": cosine_sums / tokens,
         "top1_agreement": top1_matches / tokens,
         "source_nll": source_nll_sum / tokens,
         "candidate_nll": candidate_nll_sum / tokens,
         "nll_delta": (candidate_nll_sum - source_nll_sum) / tokens,
         "input_hashes": [reference.input_hash for reference in references],
+        "prompt_metrics": prompt_metrics,
     }
 
 

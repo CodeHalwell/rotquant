@@ -445,6 +445,46 @@ Decision: actual exported checkpoint storage and native weight conformance are
 now verified. Keep resident-memory, fused-cache execution, full quality, and
 throughput claims open.
 
+## Algorithm Lab initial selection run (2026-08-31)
+
+The archived `9dbe985` Colab bundle contains 59 complete records with no failed
+trials. Qwen3.5-4B was the primary family and Qwen2.5-3B the transfer family.
+These are developmental subsets, not the 300-prompt competitive suite.
+
+- Calibrated W4 increased Qwen3.5 WikiText-2/C4 PPL by 4.58%/3.24% while
+  reducing complete persistent model bytes by 58.26%. On Qwen2.5 the changes
+  were +10.32%/+7.03% and -66.67% bytes.
+- Gaussian W4 was nearly quality-equivalent and materially cheaper to produce,
+  so it remains the fast baseline; calibrated W4 is the quality preset
+  candidate.
+- Teacher-guided 3.625-bpw allocation beat the exact-format random allocator
+  for every recorded seed/dataset/family comparison. Its Qwen3.5 PPL changes
+  were +11.12%/+7.00% at -60.73% bytes; Qwen2.5 was +18.03%/+14.40% at -69.50%.
+  It is the compact preset candidate, subject to the hardened confidence gate.
+- Dimension-2 vector W3 beat its exact-rate scalar control on the primary
+  family but both had poor absolute quality, and transfer was catastrophic.
+  Vector formats remain research-only.
+- TurboQuant-style scale changes did not earn promotion in this matrix.
+- The dense-attention selective-V oracle found a potentially useful region: a
+  90% mass target read 51.6% of value rows at about 2.95% extra error versus
+  full RotQuant V; 95% read 67.2% at about 0.97% extra error. This covered only
+  two full-attention layers and used oracle selection, so it does not authorize
+  a runtime speed claim.
+
+A later add-on run printed 16 further results (75 total) but its raw records
+could not be persisted. Treat those observations as internal decision evidence
+only: local allocation and its guarded variant did not improve on the teacher
+recipe, dynamic vector 2.75-bpw transferred catastrophically, and spherical
+codebooks did not displace the calibrated/Gaussian W4 choices. They cannot be
+used in a release claim until reproduced from content-addressed records.
+
+Decision: carry forward three provisional recipes—calibrated W4 (`quality`),
+Gaussian W4 (`fast`), and unguarded teacher-guided 3.625-bpw (`compact`)—but do
+not expose them as validated public presets until the rerun passes the repaired
+selection/confidence policy. The competitive follow-up uses exact deployed-size
+GGUF/Unsloth controls, KL distribution tails, and the disjoint 300-prompt,
+32-token suite specified in `docs/competitive_eval.md`.
+
 ## Native K/V cache benchmark notes
 
 Command family:
