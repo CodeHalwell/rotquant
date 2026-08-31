@@ -20,6 +20,10 @@ software.
   `py.typed` marker; result provenance now records the rotquant version.
 - Smoke tests for `scripts/verify_rotquant_gguf.py`, `eval` throughput and
   zero-shot wrappers.
+- A competitive-data pipeline with immutable source/license manifests,
+  post-template token identities, exact and near-duplicate leakage checks,
+  fixed 300-prompt domain quotas, measured multi-file artifact identities,
+  structured run failures, and paired/domain bootstrap reports.
 
 ### Changed
 

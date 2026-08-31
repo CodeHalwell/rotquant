@@ -90,6 +90,10 @@ specialized around them:
 - [x] formalize the exact-size external-artifact and competitive-claim gates in
   [the competitive evaluation contract](competitive_eval.md), including
   content-addressed prompt/calibration protocols and KL distribution tails;
+- [x] implement the source-agnostic
+  [competitive data pipeline](competitive_data.md): immutable source/license
+  manifests, post-template token identities, exact/near leakage checks, fixed
+  domain quotas, structured run failures, and paired/domain bootstrap reports;
 - [ ] build a pinned, calibration-disjoint 300-prompt/32-token free-running
   divergence suite spanning agentic, code, maths, multilingual, and long-document
   prompts; compare the source, RotQuant, same-size GGUF, and Unsloth baselines;

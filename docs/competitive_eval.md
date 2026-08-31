@@ -30,7 +30,9 @@ Before looking at final scores, freeze a content-addressed protocol using
 
 - exact model and tokenizer revisions;
 - the final chat-template hash and thinking/tool-use settings;
-- a public calibration manifest and a disjoint held-out prompt manifest;
+- a replayable calibration manifest and a disjoint held-out prompt manifest,
+  plus public metadata-only summaries where source terms prevent token
+  redistribution (see the [competitive data pipeline](competitive_data.md));
 - whether MTP, vision projectors, embeddings, and output heads are included in
   artifact bytes;
 - greedy decoding for exactly 32 generated tokens;
