@@ -280,17 +280,24 @@ def build_notebook():
             f"releases/download/{fht_release}/{fht_wheel_name}"
         )
 
-        def install_kernel(command, label, *, env=None):
+        def install_kernel(command, label, *, env=None, stream_output=False):
             print(f"Installing fast Hadamard kernel via {label}...")
-            result = subprocess.run(
-                command, check=False, capture_output=True, text=True, env=env
-            )
+            run_options = {"check": False, "env": env}
+            if not stream_output:
+                run_options.update({"capture_output": True, "text": True})
+            result = subprocess.run(command, **run_options)
             if result.returncode:
-                output = "\\n".join(
-                    part for part in (result.stdout, result.stderr) if part
-                )
-                print(f"{label} failed (exit {result.returncode}); output tail:")
-                print("\\n".join(output.splitlines()[-60:]))
+                if stream_output:
+                    print(
+                        f"{label} failed (exit {result.returncode}); "
+                        "full output was streamed above."
+                    )
+                else:
+                    output = "\\n".join(
+                        part for part in (result.stdout, result.stderr) if part
+                    )
+                    print(f"{label} failed (exit {result.returncode}); output tail:")
+                    print("\\n".join(output.splitlines()[-60:]))
             return result
 
         kernel_build = install_kernel([
@@ -305,21 +312,32 @@ def build_notebook():
                 sys.executable, "-m", "pip", "install", "-v", "--no-deps",
                 "--no-build-isolation",
                 f"git+https://github.com/Dao-AILab/fast-hadamard-transform.git@{fht_release}",
-            ], "a bounded source build", env=kernel_env)
+            ], "a bounded source build", env=kernel_env, stream_output=True)
             fast_hadamard_install_method = "source_build"
 
-        fast_hadamard_error = None
         fast_hadamard_available = kernel_build.returncode == 0
+        fast_hadamard_error = (
+            None if fast_hadamard_available else
+            f"{fast_hadamard_install_method} exited with status "
+            f"{kernel_build.returncode}; see installer output above"
+        )
         if fast_hadamard_available:
             try:
                 importlib.invalidate_caches()
                 from fast_hadamard_transform import hadamard_transform
 
-                smoke_input = torch.randn(2, 128, device="cuda", dtype=torch.float16)
-                smoke_output = hadamard_transform(smoke_input.contiguous())
-                torch.cuda.synchronize()
-                assert smoke_output.shape == smoke_input.shape
-                assert torch.isfinite(smoke_output).all()
+                with torch.no_grad():
+                    smoke_input = torch.randn(
+                        2, 128, device="cuda", dtype=torch.float16
+                    )
+                    smoke_output = hadamard_transform(smoke_input.contiguous())
+                    torch.cuda.synchronize()
+                    if smoke_output.shape != smoke_input.shape:
+                        raise RuntimeError(
+                            "CUDA smoke test returned an unexpected output shape"
+                        )
+                    if not bool(torch.isfinite(smoke_output).all().item()):
+                        raise RuntimeError("CUDA smoke test returned non-finite values")
                 del smoke_input, smoke_output
                 print(
                     "Fast Hadamard CUDA smoke test passed via "
@@ -329,6 +347,12 @@ def build_notebook():
                 fast_hadamard_available = False
                 fast_hadamard_error = f"{type(exc).__name__}: {exc}"
                 print(f"Fast Hadamard CUDA smoke test failed: {fast_hadamard_error}")
+        if fast_hadamard_available:
+            os.environ.pop("ROTQUANT_DISABLE_FAST_HADAMARD", None)
+        else:
+            # Fail closed even if the extension imported but its CUDA launch failed.
+            # rotquant.rotate checks this flag at call time before selecting the kernel.
+            os.environ["ROTQUANT_DISABLE_FAST_HADAMARD"] = "1"
         if REQUIRE_FAST_HADAMARD:
             assert fast_hadamard_available, (
                 "No compatible fast-hadamard-transform kernel could be loaded. "
@@ -363,6 +387,7 @@ def build_notebook():
             "compute_capability": list(torch.cuda.get_device_capability(0)),
             "driver": driver_version,
             "fast_hadamard_transform": fast_hadamard_available,
+            "fast_hadamard_disabled": not fast_hadamard_available,
             "fast_hadamard_install_method": (
                 fast_hadamard_install_method if fast_hadamard_available else None
             ),

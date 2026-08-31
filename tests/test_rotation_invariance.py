@@ -2,9 +2,11 @@
 
 We had this backwards once (it cost a whole run), so this is a guard test.
 """
+import pytest
 import torch
 from torch import nn
 
+from rotquant import rotate as rotate_module
 from rotquant.linear import QuantLinear
 from rotquant.quantize import QuantConfig
 from rotquant.rotate import build_rotation
@@ -12,6 +14,27 @@ from rotquant.rotate import build_rotation
 
 def _max_rel(a, b):
     return ((a - b).abs() / (b.abs().max() + 1e-9)).max().item()
+
+
+def test_fast_hadamard_disable_flag_bypasses_imported_kernel(monkeypatch):
+    class FallbackSelected(Exception):
+        pass
+
+    class FakeCudaTensor:
+        shape = (1, 2)
+        is_cuda = True
+
+    def fail_if_kernel_runs(_value):
+        pytest.fail("disabled fast Hadamard kernel was called")
+
+    def stop_at_fallback():
+        raise FallbackSelected
+
+    monkeypatch.setenv("ROTQUANT_DISABLE_FAST_HADAMARD", "1")
+    monkeypatch.setattr(rotate_module, "_fht_cuda", fail_if_kernel_runs)
+    monkeypatch.setattr(rotate_module, "_warn_slow_cuda_fwht", stop_at_fallback)
+    with pytest.raises(FallbackSelected):
+        rotate_module.fwht(FakeCudaTensor())
 
 
 def test_rotation_orthogonal_and_invariant():

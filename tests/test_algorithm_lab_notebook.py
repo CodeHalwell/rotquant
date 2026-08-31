@@ -46,6 +46,10 @@ def test_algorithm_lab_notebook_covers_every_track_and_requires_confirmation():
     assert "fht_wheel_url" in source
     assert "Fast Hadamard CUDA smoke test passed" in source
     assert '"fast_hadamard_install_method"' in source
+    assert "stream_output=True" in source
+    assert "with torch.no_grad():" in source
+    assert "ROTQUANT_DISABLE_FAST_HADAMARD" in source
+    assert '"fast_hadamard_disabled"' in source
     assert 'stage not in {\n        "validation", "cross_family"' in source
     assert "trajectory_token_agreement" in source
     assert "paired_window_statistics" in source
