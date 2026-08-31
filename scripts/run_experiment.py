@@ -30,6 +30,7 @@ import os
 import re
 import sys
 from collections import OrderedDict
+from dataclasses import dataclass
 from typing import Any
 
 import torch
@@ -430,90 +431,75 @@ def footprint_metrics(model: torch.nn.Module, cfg_model: dict[str, Any]) -> dict
     return metrics
 
 
-def run(config_path: str, output_dir: str = "results",
-        overrides: dict[str, Any] | None = None,
-        sets: list | None = None,
-        export_dir: str | None = None,
-        export_overwrite: bool = False,
-        export_processor: bool = False,
-        export_deployment_metadata: str | None = None) -> dict[str, Any]:
-    cfg = load_config(config_path)
-    overrides = overrides or {}
-    sets = list(sets or [])
-    for k, v in overrides.items():
-        if v is not None:
-            cfg[k] = v
-    apply_set_overrides(cfg, sets)
-    device, dtype = resolve_device_dtype(cfg)
-    effective_sets = list(sets)
-    if apply_device_defaults(cfg, device):
-        effective_sets.append(("patch.fallback", True))
-    run_id = derive_run_id(cfg, config_path,
-                           slug=override_slug(overrides.get("model"), effective_sets,
-                                              overrides.get("device")),
-                           seed_overridden=overrides.get("seed") is not None)
-    seed = int(cfg.get("seed", 0))
-    set_seed(seed)
+@dataclass
+class _CalibrationArtifacts:
+    """Calibration inputs produced by :func:`_prepare_calibration`."""
 
-    model_name = cfg["model"]
-    logger.info("run %s: model=%s device=%s dtype=%s seed=%d",
-                run_id, model_name, device, dtype, seed)
+    hessians: dict[str, torch.Tensor] | None = None
+    activations: dict[str, torch.Tensor] | None = None
+    block_calls: Any = None
+    distill_calls: Any = None
+    dynamic_calls: Any = None
+    needs_dynamic: bool = False
+    needs_block_calls: bool = False
 
-    with Timer() as model_load_timer:
-        model, tokenizer, selected_loader = load_hf_model(
-            model_name, dtype, device, cfg.get("model_loader", "auto"),
-            cfg.get("model_revision"))
-    model.eval()
 
-    # Let a per-block ``seed:`` override the top-level one, but don't explode if
-    # the same key appears in both the block and the explicit kwarg.
-    # ``or {}`` handles an explicit ``quant: null`` in the YAML (which makes
-    # cfg.get("quant", {}) return None and dict(None) raise TypeError).
-    quant_kwargs = dict(cfg.get("quant") or {})
-    patch_kwargs = dict(cfg.get("patch") or {})
-    qcfg = QuantConfig(seed=quant_kwargs.pop("seed", seed), **quant_kwargs)
-    pcfg = PatchConfig(quant=qcfg, seed=patch_kwargs.pop("seed", seed), **patch_kwargs)
+@dataclass
+class _ReferenceCaptures:
+    """Source-model captures taken before patching, replayed afterwards."""
 
-    metrics: dict[str, Any] = {
-        "model_loader": selected_loader,
-        "model_load_seconds": model_load_timer.elapsed,
-        "data_manifest": {},
-    }
-    eval_cfg = cfg.get("eval") or {}
+    fp_capture: Any = None
+    drift_batch: Any = None
+    trajectory_config: Any = None
+    trajectory_references: Any = None
+    logit_fidelity_config: Any = None
+    logit_references: Any = None
+
+
+def _prepare_calibration(cfg: dict[str, Any], model, tokenizer, device: str,
+                         qcfg: QuantConfig, pcfg: PatchConfig,
+                         metrics: dict[str, Any]) -> _CalibrationArtifacts:
+    """Collect Hessian / activation / teacher / block calibration artifacts.
+
+    One C4 loader is built lazily and reused by later stages when its batch
+    count suffices. The data manifest records the sequence length the shared
+    loader was *actually built with*, which can differ from a stage's own
+    default when an earlier stage built the loader first (e.g. Hessian
+    calibration at 2048 tokens feeding block capture whose default is 256).
+    """
     calibration_revision = cfg.get("calib_dataset_revision")
-
-    hessians = None
-    activations = None
-    block_calls = None
-    distill_calls = None
-    dynamic_calls = None
-    trajectory_references = None
-    trajectory_config = None
-    logit_references = None
-    logit_fidelity_config = None
-    needs_hessians = pcfg.enabled and (
-        qcfg.error_comp == "gptq" or cfg.get("calibrate", False))
+    art = _CalibrationArtifacts()
     rotation_train_cfg = pcfg.train_rotation or {}
     dynamic_cfg = pcfg.dynamic or {}
-    needs_dynamic = pcfg.enabled and bool(pcfg.dynamic)
+    art.needs_dynamic = pcfg.enabled and bool(pcfg.dynamic)
+    art.needs_block_calls = (pcfg.enabled
+                             and rotation_train_cfg.get("objective") == "block")
+    needs_hessians = pcfg.enabled and (
+        qcfg.error_comp == "gptq" or cfg.get("calibrate", False))
     needs_activations = (pcfg.enabled and (
-        rotation_train_cfg.get("objective") == "activation" or needs_dynamic))
-    needs_block_calls = (pcfg.enabled
-                         and rotation_train_cfg.get("objective") == "block")
+        rotation_train_cfg.get("objective") == "activation"
+        or art.needs_dynamic))
+
     calib_loader = None
-    if needs_hessians:
+    calib_loader_seq_len: int | None = None
+
+    def build_shared_loader(n_batches: int, seq_len: int):
+        nonlocal calib_loader, calib_loader_seq_len
         calib_loader = build_calib_loader(
-            tokenizer, cfg.get("n_calib", 128),
-            cfg.get("calib_seq_len", 2048), device,
+            tokenizer, n_batches, seq_len, device,
             revision=calibration_revision)
-        metrics["data_manifest"]["hessian_calibration"] = token_batch_manifest(
-            calib_loader, dataset="allenai/c4", split="train",
-            revision=calibration_revision, skip=0,
-            seq_len=int(cfg.get("calib_seq_len", 2048)),
-        )
+        calib_loader_seq_len = seq_len
+        return calib_loader
 
     if needs_hessians:
         from rotquant.calibrate import collect_hessians
+        build_shared_loader(int(cfg.get("n_calib", 128)),
+                            int(cfg.get("calib_seq_len", 2048)))
+        metrics["data_manifest"]["hessian_calibration"] = token_batch_manifest(
+            calib_loader, dataset="allenai/c4", split="train",
+            revision=calibration_revision, skip=0,
+            seq_len=calib_loader_seq_len,
+        )
         with Timer() as t:
             # damp_frac=0: the GPTQ solver applies (auto-increasing) percdamp
             # itself; damping here as well would double it.
@@ -521,7 +507,7 @@ def run(config_path: str, output_dir: str = "results",
                                      include=pcfg.include,
                                      exclude=pcfg.exclude,
                                      damp_frac=0.0)
-        hessians = calib.hessians
+        art.hessians = calib.hessians
         metrics["calib_seconds"] = t.elapsed
 
     if needs_activations:
@@ -533,50 +519,49 @@ def run(config_path: str, output_dir: str = "results",
                 rotation_train_cfg.get("selection_tokens", 0))
             rotation_tokens = train_tokens + selection_tokens
         dynamic_tokens = int(dynamic_cfg.get("max_tokens", 32)) \
-            if needs_dynamic else 0
+            if art.needs_dynamic else 0
         max_tokens = max(rotation_tokens, dynamic_tokens)
         if calib_loader is None:
             calib_seq_len = int(cfg.get("calib_seq_len", 2048))
             minimum_batches = max(1, (max_tokens + calib_seq_len - 1) // calib_seq_len)
             n_batches = int(cfg.get("rotation_n_calib", minimum_batches))
-            calib_loader = build_calib_loader(
-                tokenizer, n_batches, calib_seq_len, device,
-                revision=calibration_revision)
+            build_shared_loader(n_batches, calib_seq_len)
         metrics["data_manifest"]["activation_calibration"] = token_batch_manifest(
             calib_loader, dataset="allenai/c4", split="train",
             revision=calibration_revision, skip=0,
-            seq_len=int(cfg.get("calib_seq_len", 2048)),
+            seq_len=calib_loader_seq_len,
         )
         with Timer() as t:
             activation_calib = collect_activations(
                 model, calib_loader, device,
                 include=pcfg.include, exclude=pcfg.exclude,
                 max_tokens=max_tokens)
-        activations = activation_calib.activations
+        art.activations = activation_calib.activations
         metrics["activation_calib_seconds"] = t.elapsed
 
     dynamic_global_batches = int(dynamic_cfg.get("global_kl_batches", 0)) \
-        if needs_dynamic else 0
+        if art.needs_dynamic else 0
     if dynamic_global_batches:
         from rotquant.block_train import collect_teacher_calls
         dynamic_teacher_skip = int(cfg.get("dynamic_teacher_skip", 0))
+        dynamic_seq_len = int(cfg.get("calib_seq_len", 256))
         dynamic_loader = build_calib_loader(
             tokenizer, dynamic_global_batches,
-            int(cfg.get("calib_seq_len", 256)), device,
+            dynamic_seq_len, device,
             skip=dynamic_teacher_skip,
             revision=calibration_revision)
         metrics["data_manifest"]["allocation_teacher"] = token_batch_manifest(
             dynamic_loader, dataset="allenai/c4", split="train",
             revision=calibration_revision, skip=dynamic_teacher_skip,
-            seq_len=int(cfg.get("calib_seq_len", 256)),
+            seq_len=dynamic_seq_len,
         )
         with Timer() as t:
-            dynamic_calls = collect_teacher_calls(
+            art.dynamic_calls = collect_teacher_calls(
                 model, dynamic_loader, device,
                 max_batches=dynamic_global_batches)
         metrics["dynamic_teacher_calib_seconds"] = t.elapsed
 
-    if needs_block_calls:
+    if art.needs_block_calls:
         from rotquant.block_train import (
             collect_block_calls,
             collect_teacher_calls,
@@ -595,79 +580,89 @@ def run(config_path: str, output_dir: str = "results",
                 + int(rotation_train_cfg.get("distill_selection_batches", 1)))
         total_block_batches = n_block_batches + n_distill_batches
         if calib_loader is None or len(calib_loader) < total_block_batches:
-            calib_loader = build_calib_loader(
-                tokenizer, total_block_batches,
-                int(cfg.get("calib_seq_len", 256)), device,
-                revision=calibration_revision)
+            build_shared_loader(total_block_batches,
+                                int(cfg.get("calib_seq_len", 256)))
         metrics["data_manifest"]["block_calibration"] = token_batch_manifest(
             calib_loader[:total_block_batches], dataset="allenai/c4",
             split="train", revision=calibration_revision, skip=0,
-            seq_len=int(cfg.get("calib_seq_len", 256)),
+            seq_len=calib_loader_seq_len,
         )
         with Timer() as t:
-            block_calls = collect_block_calls(
+            art.block_calls = collect_block_calls(
                 model, calib_loader[:n_block_batches], device,
                 blocks=find_transformer_blocks(model),
                 max_batches=n_block_batches)
             if n_distill_batches:
-                distill_calls = collect_teacher_calls(
+                art.distill_calls = collect_teacher_calls(
                     model, calib_loader[n_block_batches:total_block_batches],
                     device, max_batches=n_distill_batches)
         metrics["block_calib_seconds"] = t.elapsed
 
-    # Layer-drift diagnostic (E7): capture fp-model outputs on a fixed batch
-    # BEFORE patching, so the same batch can be replayed on the patched model.
-    fp_capture = None
-    drift_batch = None
+    return art
+
+
+def _capture_references(cfg: dict[str, Any], eval_cfg: dict[str, Any],
+                        model, tokenizer, device: str, model_name: str,
+                        metrics: dict[str, Any]) -> _ReferenceCaptures:
+    """Capture source-model outputs that patched-model evaluation replays.
+
+    Layer-drift capture (E7), multi-token trajectories, and teacher logits all
+    must be taken BEFORE patching so the same batches can be compared on the
+    quantized model. Trajectory and logit references are cached per
+    (model, revision, config, token-hash) so seed sweeps do not recompute them.
+    """
+    calibration_revision = cfg.get("calib_dataset_revision")
+    refs = _ReferenceCaptures()
+
     if eval_cfg.get("layer_mse", False):
         from rotquant.eval.layer_mse import capture_outputs
         layer_mse_skip = int(eval_cfg.get("layer_mse_skip", 0))
         layer_mse_seq_len = int(eval_cfg.get("layer_mse_seq_len", 512))
-        drift_batch = build_calib_loader(
+        refs.drift_batch = build_calib_loader(
             tokenizer, 1, layer_mse_seq_len, device,
             skip=layer_mse_skip,
             revision=calibration_revision)[0]
         metrics["data_manifest"]["layer_drift"] = token_batch_manifest(
-            [drift_batch], dataset="allenai/c4", split="train",
+            [refs.drift_batch], dataset="allenai/c4", split="train",
             revision=calibration_revision, skip=layer_mse_skip,
             seq_len=layer_mse_seq_len,
         )
-        fp_capture = capture_outputs(model, drift_batch, device)
+        refs.fp_capture = capture_outputs(model, refs.drift_batch, device)
 
     trajectory_requested = eval_cfg.get("trajectory", False)
     if trajectory_requested:
         from rotquant.eval.trajectory import TrajectoryConfig, capture_trajectories
         trajectory_kwargs = (trajectory_requested
                              if isinstance(trajectory_requested, dict) else {})
-        trajectory_config = TrajectoryConfig(**trajectory_kwargs)
+        refs.trajectory_config = TrajectoryConfig(**trajectory_kwargs)
         trajectory_batches = build_calib_loader(
-            tokenizer, trajectory_config.batches,
-            trajectory_config.prompt_len, device,
-            skip=trajectory_config.skip,
+            tokenizer, refs.trajectory_config.batches,
+            refs.trajectory_config.prompt_len, device,
+            skip=refs.trajectory_config.skip,
             revision=calibration_revision)
         metrics["data_manifest"]["trajectory"] = token_batch_manifest(
             trajectory_batches, dataset="allenai/c4", split="train",
-            revision=calibration_revision, skip=trajectory_config.skip,
-            seq_len=trajectory_config.prompt_len,
+            revision=calibration_revision, skip=refs.trajectory_config.skip,
+            seq_len=refs.trajectory_config.prompt_len,
         )
         trajectory_cache_key = _reference_cache_key(
             "trajectory", model_name, cfg.get("model_revision"),
-            trajectory_config, trajectory_batches,
+            refs.trajectory_config, trajectory_batches,
         )
-        trajectory_references = _TRAJECTORY_REFERENCE_CACHE.get(
+        refs.trajectory_references = _TRAJECTORY_REFERENCE_CACHE.get(
             trajectory_cache_key
         )
         metrics["source_trajectory_cache_hit"] = (
-            trajectory_references is not None
+            refs.trajectory_references is not None
         )
-        if trajectory_references is None:
+        if refs.trajectory_references is None:
             with Timer() as t:
-                trajectory_references = capture_trajectories(
+                refs.trajectory_references = capture_trajectories(
                     model, tokenizer, trajectory_batches, device,
-                    trajectory_config)
+                    refs.trajectory_config)
             metrics["source_trajectory_seconds"] = t.elapsed
             _TRAJECTORY_REFERENCE_CACHE[trajectory_cache_key] = (
-                trajectory_references
+                refs.trajectory_references
             )
         else:
             metrics["source_trajectory_seconds"] = 0.0
@@ -682,81 +677,97 @@ def run(config_path: str, output_dir: str = "results",
             logit_fidelity_requested
             if isinstance(logit_fidelity_requested, dict) else {}
         )
-        logit_fidelity_config = LogitFidelityConfig(**logit_kwargs)
+        refs.logit_fidelity_config = LogitFidelityConfig(**logit_kwargs)
         logit_batches = build_calib_loader(
-            tokenizer, logit_fidelity_config.batches,
-            logit_fidelity_config.prompt_len, device,
-            skip=logit_fidelity_config.skip,
+            tokenizer, refs.logit_fidelity_config.batches,
+            refs.logit_fidelity_config.prompt_len, device,
+            skip=refs.logit_fidelity_config.skip,
             revision=calibration_revision,
         )
         metrics["data_manifest"]["logit_fidelity"] = token_batch_manifest(
             logit_batches, dataset="allenai/c4", split="train",
-            revision=calibration_revision, skip=logit_fidelity_config.skip,
-            seq_len=logit_fidelity_config.prompt_len,
+            revision=calibration_revision, skip=refs.logit_fidelity_config.skip,
+            seq_len=refs.logit_fidelity_config.prompt_len,
         )
         logit_cache_key = _reference_cache_key(
             "logit_fidelity", model_name, cfg.get("model_revision"),
-            logit_fidelity_config, logit_batches,
+            refs.logit_fidelity_config, logit_batches,
         )
-        logit_references = _LOGIT_REFERENCE_CACHE.get(logit_cache_key)
-        metrics["source_logit_fidelity_cache_hit"] = logit_references is not None
-        if logit_references is None:
+        refs.logit_references = _LOGIT_REFERENCE_CACHE.get(logit_cache_key)
+        metrics["source_logit_fidelity_cache_hit"] = (
+            refs.logit_references is not None
+        )
+        if refs.logit_references is None:
             with Timer() as t:
-                logit_references = capture_logit_references(
-                    model, logit_batches, device, logit_fidelity_config
+                refs.logit_references = capture_logit_references(
+                    model, logit_batches, device, refs.logit_fidelity_config
                 )
             metrics["source_logit_fidelity_seconds"] = t.elapsed
-            _LOGIT_REFERENCE_CACHE[logit_cache_key] = logit_references
+            _LOGIT_REFERENCE_CACHE[logit_cache_key] = refs.logit_references
         else:
             metrics["source_logit_fidelity_seconds"] = 0.0
 
+    return refs
+
+
+def _apply_quantization(cfg: dict[str, Any], model, pcfg: PatchConfig,
+                        art: _CalibrationArtifacts,
+                        metrics: dict[str, Any]) -> None:
+    """Run optional dynamic allocation, then patch or block-train the model."""
     patch_stats: dict[str, Any] = {}
-    if needs_dynamic:
+    if art.needs_dynamic:
         from rotquant.dynamic import select_dynamic_quantization
         with Timer() as t:
             pcfg.layer_quant, dynamic_stats = select_dynamic_quantization(
-                model, pcfg, activations=activations,
-                teacher_calls=dynamic_calls)
+                model, pcfg, activations=art.activations,
+                teacher_calls=art.dynamic_calls)
         dynamic_stats["seconds"] = t.elapsed
         patch_stats["dynamic_quantization"] = dynamic_stats
 
     reset_peak_vram()
     with Timer() as t:
-        if needs_block_calls:
+        if art.needs_block_calls:
             from rotquant.block_train import train_and_patch_blocks
-            train_and_patch_blocks(model, pcfg, block_calls,
-                                   distill_calls=distill_calls,
+            train_and_patch_blocks(model, pcfg, art.block_calls,
+                                   distill_calls=art.distill_calls,
                                    stats_out=patch_stats)
         else:
-            patch_model(model, pcfg, hessians=hessians, activations=activations,
+            patch_model(model, pcfg, hessians=art.hessians,
+                        activations=art.activations,
                         stats_out=patch_stats)
     metrics["patch_seconds"] = t.elapsed
     metrics["peak_vram_bytes_patch"] = peak_vram_bytes()
     metrics.update(patch_stats)
     metrics.update(footprint_metrics(model, cfg))
 
-    # Evaluation -----------------------------------------------------------
+
+def _run_evaluations(cfg: dict[str, Any], eval_cfg: dict[str, Any],
+                     model, tokenizer, device: str, seed: int,
+                     refs: _ReferenceCaptures,
+                     metrics: dict[str, Any]) -> None:
+    """Run the fixed eval protocol on the patched model."""
+    calibration_revision = cfg.get("calib_dataset_revision")
     reset_peak_vram()
-    if fp_capture is not None:
+    if refs.fp_capture is not None:
         from rotquant.eval.layer_mse import capture_outputs, drift_between
-        q_capture = capture_outputs(model, drift_batch, device)
-        drift = drift_between(fp_capture, q_capture)
+        q_capture = capture_outputs(model, refs.drift_batch, device)
+        drift = drift_between(refs.fp_capture, q_capture)
         metrics["layer_mse"] = {"mse": drift.mse, "cosine": drift.cosine,
                                 "order": drift.order}
 
-    if trajectory_references is not None:
+    if refs.trajectory_references is not None:
         from rotquant.eval.trajectory import evaluate_trajectories
         with Timer() as t:
             metrics["trajectory"] = evaluate_trajectories(
-                model, tokenizer, trajectory_references, device,
-                trajectory_config)
+                model, tokenizer, refs.trajectory_references, device,
+                refs.trajectory_config)
         metrics["trajectory"]["seconds"] = t.elapsed
 
-    if logit_references is not None:
+    if refs.logit_references is not None:
         from rotquant.eval.logit_fidelity import evaluate_logit_fidelity
         with Timer() as t:
             metrics["logit_fidelity"] = evaluate_logit_fidelity(
-                model, logit_references, device, logit_fidelity_config
+                model, refs.logit_references, device, refs.logit_fidelity_config
             )
         metrics["logit_fidelity"]["seconds"] = t.elapsed
 
@@ -828,44 +839,120 @@ def run(config_path: str, output_dir: str = "results",
 
     metrics["peak_vram_bytes_eval"] = peak_vram_bytes()
 
-    if export_dir:
-        deployment_metadata = None
-        if export_deployment_metadata:
-            with open(export_deployment_metadata, encoding="utf-8") as handle:
-                deployment_metadata = json.load(handle)
-            if not isinstance(deployment_metadata, dict):
-                raise TypeError(
-                    "--export-deployment-metadata must contain a JSON object")
-        processor = None
-        if export_processor:
-            try:
-                from transformers import AutoProcessor
-                processor = AutoProcessor.from_pretrained(
-                    model_name, revision=cfg.get("model_revision"))
-            except Exception as exc:
-                logger.warning(
-                    "could not save AutoProcessor metadata for %s: %s",
-                    model_name, exc)
-        from rotquant.checkpoint import save_packed_checkpoint
-        with Timer() as t:
-            export_metrics = save_packed_checkpoint(
-                model,
-                export_dir,
-                base_model=model_name,
-                base_model_revision=cfg.get("model_revision"),
-                model_loader=selected_loader,
-                tokenizer=tokenizer,
-                processor=processor,
-                deployment_metadata=deployment_metadata,
-                overwrite=export_overwrite,
-            )
-        export_metrics["seconds"] = t.elapsed
-        metrics["packed_checkpoint"] = export_metrics
-        logger.info(
-            "exported packed checkpoint to %s (%.3f GB)",
+
+def _export_checkpoint(cfg: dict[str, Any], model, tokenizer, model_name: str,
+                       selected_loader: str, export_dir: str,
+                       export_overwrite: bool, export_processor: bool,
+                       export_deployment_metadata: str | None,
+                       metrics: dict[str, Any]) -> None:
+    """Write the packed pickle-free checkpoint for the (patched) model."""
+    deployment_metadata = None
+    if export_deployment_metadata:
+        with open(export_deployment_metadata, encoding="utf-8") as handle:
+            deployment_metadata = json.load(handle)
+        if not isinstance(deployment_metadata, dict):
+            raise TypeError(
+                "--export-deployment-metadata must contain a JSON object")
+    processor = None
+    if export_processor:
+        try:
+            from transformers import AutoProcessor
+            processor = AutoProcessor.from_pretrained(
+                model_name, revision=cfg.get("model_revision"))
+        except Exception as exc:
+            logger.warning(
+                "could not save AutoProcessor metadata for %s: %s",
+                model_name, exc)
+    from rotquant.checkpoint import save_packed_checkpoint
+    with Timer() as t:
+        export_metrics = save_packed_checkpoint(
+            model,
             export_dir,
-            export_metrics["artifact_bytes"] / 1e9,
+            base_model=model_name,
+            base_model_revision=cfg.get("model_revision"),
+            model_loader=selected_loader,
+            tokenizer=tokenizer,
+            processor=processor,
+            deployment_metadata=deployment_metadata,
+            overwrite=export_overwrite,
         )
+    export_metrics["seconds"] = t.elapsed
+    metrics["packed_checkpoint"] = export_metrics
+    logger.info(
+        "exported packed checkpoint to %s (%.3f GB)",
+        export_dir,
+        export_metrics["artifact_bytes"] / 1e9,
+    )
+
+
+def run(config_path: str, output_dir: str = "results",
+        overrides: dict[str, Any] | None = None,
+        sets: list | None = None,
+        export_dir: str | None = None,
+        export_overwrite: bool = False,
+        export_processor: bool = False,
+        export_deployment_metadata: str | None = None) -> dict[str, Any]:
+    """Execute one experiment config end to end and write its result JSON.
+
+    Stages, in order: resolve config and run id, load the model, collect
+    calibration artifacts (:func:`_prepare_calibration`), capture source-model
+    references (:func:`_capture_references`), quantize
+    (:func:`_apply_quantization`), evaluate (:func:`_run_evaluations`), and
+    optionally export the packed checkpoint (:func:`_export_checkpoint`).
+    """
+    cfg = load_config(config_path)
+    overrides = overrides or {}
+    sets = list(sets or [])
+    for k, v in overrides.items():
+        if v is not None:
+            cfg[k] = v
+    apply_set_overrides(cfg, sets)
+    device, dtype = resolve_device_dtype(cfg)
+    effective_sets = list(sets)
+    if apply_device_defaults(cfg, device):
+        effective_sets.append(("patch.fallback", True))
+    run_id = derive_run_id(cfg, config_path,
+                           slug=override_slug(overrides.get("model"), effective_sets,
+                                              overrides.get("device")),
+                           seed_overridden=overrides.get("seed") is not None)
+    seed = int(cfg.get("seed", 0))
+    set_seed(seed)
+
+    model_name = cfg["model"]
+    logger.info("run %s: model=%s device=%s dtype=%s seed=%d",
+                run_id, model_name, device, dtype, seed)
+
+    with Timer() as model_load_timer:
+        model, tokenizer, selected_loader = load_hf_model(
+            model_name, dtype, device, cfg.get("model_loader", "auto"),
+            cfg.get("model_revision"))
+    model.eval()
+
+    # Let a per-block ``seed:`` override the top-level one, but don't explode if
+    # the same key appears in both the block and the explicit kwarg.
+    # ``or {}`` handles an explicit ``quant: null`` in the YAML (which makes
+    # cfg.get("quant", {}) return None and dict(None) raise TypeError).
+    quant_kwargs = dict(cfg.get("quant") or {})
+    patch_kwargs = dict(cfg.get("patch") or {})
+    qcfg = QuantConfig(seed=quant_kwargs.pop("seed", seed), **quant_kwargs)
+    pcfg = PatchConfig(quant=qcfg, seed=patch_kwargs.pop("seed", seed), **patch_kwargs)
+
+    metrics: dict[str, Any] = {
+        "model_loader": selected_loader,
+        "model_load_seconds": model_load_timer.elapsed,
+        "data_manifest": {},
+    }
+    eval_cfg = cfg.get("eval") or {}
+
+    art = _prepare_calibration(cfg, model, tokenizer, device, qcfg, pcfg, metrics)
+    refs = _capture_references(cfg, eval_cfg, model, tokenizer, device,
+                               model_name, metrics)
+    _apply_quantization(cfg, model, pcfg, art, metrics)
+    _run_evaluations(cfg, eval_cfg, model, tokenizer, device, seed, refs, metrics)
+    if export_dir:
+        _export_checkpoint(cfg, model, tokenizer, model_name, selected_loader,
+                           export_dir, export_overwrite, export_processor,
+                           export_deployment_metadata, metrics)
 
     payload = {
         "run_id": run_id,

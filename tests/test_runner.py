@@ -28,6 +28,8 @@ def _load_script(name):
     path = os.path.join(_ROOT, "scripts", f"{name}.py")
     spec = importlib.util.spec_from_file_location(name, path)
     mod = importlib.util.module_from_spec(spec)
+    # Register before exec: @dataclass resolves cls.__module__ via sys.modules.
+    sys.modules[name] = mod
     spec.loader.exec_module(mod)
     return mod
 
