@@ -13,6 +13,8 @@ results/*.md
 results/*.png
 results/*.csv
 !results/.gitkeep
+/manifests/private/
+/runs/
 .venv/
 .ruff_cache/
 .coverage

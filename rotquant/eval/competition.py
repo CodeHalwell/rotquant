@@ -23,6 +23,18 @@ REGISTERED_DOMAINS = frozenset({
     "multilingual",
     "long_document",
 })
+_REGISTERED_DOMAIN_QUOTA, _REGISTERED_DOMAIN_REMAINDER = divmod(
+    REGISTERED_PROMPT_COUNT,
+    len(REGISTERED_DOMAINS),
+)
+if _REGISTERED_DOMAIN_REMAINDER:
+    raise RuntimeError(
+        "REGISTERED_PROMPT_COUNT must be divisible by the number of domains"
+    )
+REGISTERED_DOMAIN_QUOTAS = {
+    domain: _REGISTERED_DOMAIN_QUOTA
+    for domain in sorted(REGISTERED_DOMAINS)
+}
 
 
 def _require_sha256(name: str, value: Any) -> None:
@@ -50,17 +62,27 @@ def _require_positive_int(name: str, value: Any) -> int:
     return int(value)
 
 
+def _require_immutable_revision(name: str, value: Any) -> str:
+    if not isinstance(value, str) or not value.strip():
+        raise ValueError(f"{name} must not be empty")
+    if value.strip().casefold() in {"main", "master", "latest", "head"}:
+        raise ValueError(f"{name} must pin an immutable commit, tag, or release")
+    return value
+
+
 @dataclass(frozen=True)
 class CompetitiveEvalProtocol:
     """Identity of a held-out distribution and trajectory evaluation."""
 
     model_id: str
     model_revision: str
+    tokenizer_id: str
     tokenizer_revision: str
     prompt_manifest_sha256: str
     calibration_manifest_sha256: str
     chat_template_sha256: str
     domains: tuple[str, ...]
+    domain_counts: tuple[tuple[str, int], ...]
     prompt_item_sha256: tuple[str, ...]
     calibration_item_sha256: tuple[str, ...]
     prompt_count: int = REGISTERED_PROMPT_COUNT
@@ -71,8 +93,7 @@ class CompetitiveEvalProtocol:
     def __post_init__(self) -> None:
         for name in (
             "model_id",
-            "model_revision",
-            "tokenizer_revision",
+            "tokenizer_id",
             "prompt_manifest_sha256",
             "calibration_manifest_sha256",
             "chat_template_sha256",
@@ -80,6 +101,8 @@ class CompetitiveEvalProtocol:
             value = getattr(self, name)
             if not isinstance(value, str) or not value.strip():
                 raise ValueError(f"{name} must not be empty")
+        _require_immutable_revision("model_revision", self.model_revision)
+        _require_immutable_revision("tokenizer_revision", self.tokenizer_revision)
         for name in (
             "prompt_manifest_sha256",
             "calibration_manifest_sha256",
@@ -111,12 +134,39 @@ class CompetitiveEvalProtocol:
             raise ValueError(
                 "domains must be a non-empty tuple of non-empty strings"
             )
-        missing_domains = REGISTERED_DOMAINS.difference(self.domains)
-        if missing_domains:
+        if len(set(self.domains)) != len(self.domains):
+            raise ValueError("domains must not contain duplicates")
+        if set(self.domains) != REGISTERED_DOMAINS:
             raise ValueError(
-                "competitive protocol is missing registered domains: "
-                + ", ".join(sorted(missing_domains))
+                "competitive protocol domains must exactly match the registered domains"
             )
+        if (
+            not isinstance(self.domain_counts, tuple)
+            or any(
+                not isinstance(entry, tuple) or len(entry) != 2
+                for entry in self.domain_counts
+            )
+        ):
+            raise ValueError("domain_counts must be a tuple of (domain, count) pairs")
+        try:
+            counts = dict(self.domain_counts)
+        except (TypeError, ValueError) as error:
+            raise ValueError(
+                "domain_counts must be a tuple of (domain, count) pairs"
+            ) from error
+        if len(counts) != len(self.domain_counts):
+            raise ValueError("domain_counts must not contain duplicate domains")
+        if any(
+            isinstance(count, bool) or not isinstance(count, Integral) or count <= 0
+            for count in counts.values()
+        ):
+            raise ValueError("domain_counts values must be positive integers")
+        if counts != REGISTERED_DOMAIN_QUOTAS:
+            expected = ", ".join(
+                f"{domain}={count}"
+                for domain, count in REGISTERED_DOMAIN_QUOTAS.items()
+            )
+            raise ValueError(f"competitive protocol requires domain quotas: {expected}")
         if self.prompt_count != REGISTERED_PROMPT_COUNT:
             raise ValueError(
                 f"competitive protocol requires {REGISTERED_PROMPT_COUNT} prompts"
@@ -132,15 +182,42 @@ class CompetitiveEvalProtocol:
             )
         if self.temperature != 0.0:
             raise ValueError("competitive trajectory evaluation must use greedy decoding")
+        if not isinstance(self.include_auxiliary_heads, bool):
+            raise TypeError("include_auxiliary_heads must be a bool")
+        object.__setattr__(self, "domains", tuple(sorted(self.domains)))
+        object.__setattr__(
+            self,
+            "domain_counts",
+            tuple((domain, counts[domain]) for domain in sorted(counts)),
+        )
 
     def manifest(self) -> dict[str, Any]:
         payload = asdict(self)
-        payload["domains"] = list(self.domains)
+        payload["domains"] = sorted(self.domains)
+        counts = dict(self.domain_counts)
+        payload["domain_counts"] = [
+            [domain, counts[domain]] for domain in sorted(counts)
+        ]
         payload["prompt_item_sha256"] = list(self.prompt_item_sha256)
         payload["calibration_item_sha256"] = list(
             self.calibration_item_sha256
         )
         return payload
+
+    @classmethod
+    def from_manifest(cls, payload: dict[str, Any]) -> CompetitiveEvalProtocol:
+        """Recreate and validate a protocol from its JSON representation."""
+
+        values = dict(payload)
+        values["domains"] = tuple(values["domains"])
+        values["domain_counts"] = tuple(
+            (domain, count) for domain, count in values["domain_counts"]
+        )
+        values["prompt_item_sha256"] = tuple(values["prompt_item_sha256"])
+        values["calibration_item_sha256"] = tuple(
+            values["calibration_item_sha256"]
+        )
+        return cls(**values)
 
     @property
     def fingerprint(self) -> str:
@@ -164,6 +241,7 @@ class ArtifactEvaluation:
     mean_teacher_kl: float
     median_teacher_kl: float
     p95_teacher_kl: float
+    max_teacher_kl: float
     top1_agreement: float
     trajectory_token_agreement: float
     exact_trajectory_rate: float
@@ -180,7 +258,12 @@ class ArtifactEvaluation:
             "trajectory_tokens",
         ):
             _require_positive_int(name, getattr(self, name))
-        for name in ("mean_teacher_kl", "median_teacher_kl", "p95_teacher_kl"):
+        for name in (
+            "mean_teacher_kl",
+            "median_teacher_kl",
+            "p95_teacher_kl",
+            "max_teacher_kl",
+        ):
             value = float(getattr(self, name))
             if not math.isfinite(value) or value < 0:
                 raise ValueError(f"{name} must be finite and non-negative")
@@ -194,6 +277,13 @@ class ArtifactEvaluation:
                 raise ValueError(f"{name} must be between zero and one")
         if not 0 <= self.mean_matching_prefix <= self.trajectory_tokens:
             raise ValueError("mean_matching_prefix is outside the generated-token range")
+
+    def manifest(self) -> dict[str, Any]:
+        return asdict(self)
+
+    @classmethod
+    def from_manifest(cls, payload: dict[str, Any]) -> ArtifactEvaluation:
+        return cls(**payload)
 
 
 def compare_matched_artifacts(
@@ -220,6 +310,11 @@ def compare_matched_artifacts(
             raise ValueError(
                 f"{evaluation.name} used the wrong trajectory length"
             )
+        expected_scored_tokens = protocol.prompt_count * protocol.generation_tokens
+        if evaluation.scored_tokens != expected_scored_tokens:
+            raise ValueError(
+                f"{evaluation.name} did not score every registered generated token"
+            )
     if candidate.scored_tokens != baseline.scored_tokens:
         raise ValueError("artifact evaluations contain different scored-token counts")
     size_delta = candidate.artifact_bytes / baseline.artifact_bytes - 1.0
@@ -242,6 +337,7 @@ def compare_matched_artifacts(
             candidate.median_teacher_kl - baseline.median_teacher_kl
         ),
         "p95_teacher_kl_delta": candidate.p95_teacher_kl - baseline.p95_teacher_kl,
+        "max_teacher_kl_delta": candidate.max_teacher_kl - baseline.max_teacher_kl,
         "top1_agreement_delta": candidate.top1_agreement - baseline.top1_agreement,
         "trajectory_token_agreement_delta": (
             candidate.trajectory_token_agreement
@@ -258,6 +354,7 @@ def compare_matched_artifacts(
 
 __all__ = [
     "REGISTERED_DOMAINS",
+    "REGISTERED_DOMAIN_QUOTAS",
     "REGISTERED_GENERATION_TOKENS",
     "REGISTERED_PROMPT_COUNT",
     "ArtifactEvaluation",

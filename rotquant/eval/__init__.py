@@ -11,4 +11,6 @@ Submodules (imported lazily by the runner so a CPU-only install works):
 * :mod:`~rotquant.eval.quantization`   -- matched-budget quantizer comparison
 * :mod:`~rotquant.eval.throughput`     -- greedy-decode tokens/s + peak VRAM (E8)
 * :mod:`~rotquant.eval.competition`    -- exact-size external-artifact contracts
+* :mod:`~rotquant.eval.data_manifest`  -- pinned token identities and leakage checks
+* :mod:`~rotquant.eval.competitive_run` -- engine-neutral result aggregation
 """

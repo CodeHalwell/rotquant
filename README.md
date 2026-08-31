@@ -55,6 +55,11 @@ matching, disjoint calibration and 300-prompt manifests, KL distribution tails,
 32-token greedy divergence, task failures, and runtime evidence. A fallback PPL
 win alone is explicitly not treated as a competitive product claim.
 
+The [competitive data pipeline](docs/competitive_data.md) turns that contract
+into immutable calibration/held-out manifests, leakage checks, engine-neutral
+observations, and paired domain/bootstrap reports without redistributing gated
+source tokens.
+
 The [packed checkpoint v1 specification](docs/packed_format_v1.md) fixes the
 word layout, bit order, compatibility rules, and native-runtime conformance
 boundary for all 1–8-bit production profiles.

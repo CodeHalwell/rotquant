@@ -3,6 +3,7 @@
 import pytest
 
 from rotquant.eval.competition import (
+    REGISTERED_DOMAIN_QUOTAS,
     ArtifactEvaluation,
     CompetitiveEvalProtocol,
     compare_matched_artifacts,
@@ -15,11 +16,13 @@ def _protocol(**overrides):
     values = {
         "model_id": "org/model",
         "model_revision": "model-sha",
+        "tokenizer_id": "org/tokenizer",
         "tokenizer_revision": "tokenizer-sha",
         "prompt_manifest_sha256": "a" * 64,
         "calibration_manifest_sha256": "b" * 64,
         "chat_template_sha256": "c" * 64,
         "domains": ("agentic", "code", "math", "multilingual", "long_document"),
+        "domain_counts": tuple(REGISTERED_DOMAIN_QUOTAS.items()),
         "prompt_item_sha256": prompt_items,
         "calibration_item_sha256": calibration_items,
     }
@@ -33,12 +36,13 @@ def _evaluation(name, fingerprint, *, size=1_000_000, kl=0.2, top1=0.8):
         format="gguf",
         protocol_fingerprint=fingerprint,
         artifact_bytes=size,
-        scored_tokens=10_000,
+        scored_tokens=9_600,
         trajectory_prompts=300,
         trajectory_tokens=32,
         mean_teacher_kl=kl,
         median_teacher_kl=kl / 2,
         p95_teacher_kl=kl * 2,
+        max_teacher_kl=kl * 3,
         top1_agreement=top1,
         trajectory_token_agreement=0.5,
         exact_trajectory_rate=0.2,
@@ -48,10 +52,16 @@ def _evaluation(name, fingerprint, *, size=1_000_000, kl=0.2, top1=0.8):
 
 def test_protocol_is_content_addressed_and_rejects_leakage():
     protocol = _protocol()
+    assert sum(REGISTERED_DOMAIN_QUOTAS.values()) == protocol.prompt_count
     assert len(protocol.fingerprint) == 64
     assert protocol.fingerprint == _protocol().fingerprint
     assert protocol.manifest()["prompt_count"] == 300
     assert protocol.manifest()["generation_tokens"] == 32
+    assert CompetitiveEvalProtocol.from_manifest(protocol.manifest()) == protocol
+    assert protocol.fingerprint == _protocol(
+        domains=tuple(reversed(protocol.domains)),
+        domain_counts=tuple(reversed(protocol.domain_counts)),
+    ).fingerprint
 
     with pytest.raises(ValueError, match="disjoint"):
         _protocol(calibration_item_sha256=("0" * 63 + "1",))
@@ -63,6 +73,12 @@ def test_protocol_is_content_addressed_and_rejects_leakage():
         _protocol(generation_tokens=1)
     with pytest.raises(ValueError, match="chat_template_sha256"):
         _protocol(chat_template_sha256=None)
+    with pytest.raises(ValueError, match="domain quotas"):
+        _protocol(
+            domain_counts=(("agentic", 59),) + tuple(REGISTERED_DOMAIN_QUOTAS.items())[1:]
+        )
+    with pytest.raises(ValueError, match="immutable"):
+        _protocol(model_revision="main")
 
 
 def test_comparison_requires_same_protocol_and_size():
@@ -91,3 +107,8 @@ def test_comparison_requires_same_protocol_and_size():
 def test_artifact_evaluation_rejects_invalid_byte_counts(value):
     with pytest.raises(ValueError, match="artifact_bytes must be a positive integer"):
         _evaluation("invalid", _protocol().fingerprint, size=value)
+
+
+def test_artifact_evaluation_round_trip():
+    evaluation = _evaluation("rotquant", _protocol().fingerprint)
+    assert ArtifactEvaluation.from_manifest(evaluation.manifest()) == evaluation
