@@ -26,6 +26,7 @@ module quantises an (already-rotated) ``[out, in]`` weight matrix.
 """
 from __future__ import annotations
 
+import hashlib
 import math
 from dataclasses import dataclass
 
@@ -42,6 +43,14 @@ from .pack import PackedTensor, pack_indices, unpack_indices
 from .utils import BitBudget, get_logger
 
 logger = get_logger(__name__)
+
+
+def _weight_digest(w: torch.Tensor) -> str:
+    """Exact content digest of a weight matrix (shape + float32 bytes)."""
+    data = w.detach().to(device="cpu", dtype=torch.float32).contiguous()
+    digest = hashlib.sha256(str(tuple(data.shape)).encode())
+    digest.update(data.numpy().tobytes())
+    return digest.hexdigest()
 
 
 def _generate_sketch_matrix(in_features: int, k: int, seed: int, device) -> torch.Tensor:
@@ -361,7 +370,7 @@ class Quantizer:
         # first matrix's grid would corrupt every later layer. An explicitly
         # supplied codebook is the caller's contract and is never refitted.
         self._auto_calibrated = calibrated and codebook is None
-        self._calibrated_key: tuple | None = None
+        self._calibrated_key: str | None = None
         self.codebook = codebook or (
             build_gaussian_vector_codebook(
                 config.bits,
@@ -525,11 +534,11 @@ class Quantizer:
         w = weight.detach().to(torch.float32)
         out, inf = w.shape
         if self._auto_calibrated:
-            key = (
-                tuple(w.shape),
-                float(w.sum().item()),
-                float(w.abs().sum().item()),
-            )
+            # Exact content digest: summary statistics (sums, norms) collide
+            # for distinct matrices (e.g. any permutation), which would silently
+            # reuse a grid fitted to a different layer. Calibration already
+            # costs a Lloyd fit, so hashing the bytes once is negligible.
+            key = _weight_digest(w)
             if self.codebook is None or key != self._calibrated_key:
                 self._fit_calibrated_codebook(w)
                 self._calibrated_key = key
