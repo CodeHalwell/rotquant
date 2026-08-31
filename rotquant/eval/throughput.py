@@ -13,7 +13,7 @@ import torch
 
 from rotquant.utils import Timer, get_logger, peak_vram_bytes, reset_peak_vram
 
-logger = get_logger()
+logger = get_logger(__name__)
 
 
 @dataclass
@@ -26,7 +26,7 @@ class ThroughputConfig:
 
 @torch.no_grad()
 def measure_throughput(model, tokenizer, device,
-                       config: ThroughputConfig = None) -> dict:
+                       config: ThroughputConfig | None = None) -> dict:
     cfg = config or ThroughputConfig()
     model.eval()
     vocab = int(getattr(model.config, "vocab_size", tokenizer.vocab_size))

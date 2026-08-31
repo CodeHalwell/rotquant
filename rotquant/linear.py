@@ -22,20 +22,14 @@ import torch
 import torch.nn.functional as F
 from torch import nn
 
+from ._internal import expand_scales, generate_sketch_matrix, storage_scales
 from .codebooks import VectorCodebook
 from .pack import packed_bytes, unpack_indices
-from .quantize import (
-    QuantConfig,
-    QuantizedWeight,
-    Quantizer,
-    _expand_scales,
-    _generate_sketch_matrix,
-    _storage_scales,
-)
+from .quantize import QuantConfig, QuantizedWeight, Quantizer
 from .rotate import Identity, Rotation
 from .utils import get_logger
 
-logger = get_logger()
+logger = get_logger(__name__)
 _fallback_warning_emitted = False
 
 
@@ -95,7 +89,7 @@ class QuantLinear(nn.Module):
                 or self._sketch_G.device != xr.device
                 or self._sketch_G.dtype != xr.dtype):
             k = qw.sketch_k
-            self._sketch_G = _generate_sketch_matrix(
+            self._sketch_G = generate_sketch_matrix(
                 self.in_features, k, qw.sketch_seed, xr.device,
             ).to(xr.dtype)
             self._sketch_mat = (
@@ -135,14 +129,14 @@ class QuantLinear(nn.Module):
             factor = self._log_scale_multiplier.exp().clamp(
                 self._scale_multiplier_min, self._scale_multiplier_max)
             scales = self._scale_training_base * factor
-            stored = _storage_scales(scales, self.qweight.scale_bits_main)
+            stored = storage_scales(scales, self.qweight.scale_bits_main)
             # Exact storage-rounded forward values with an identity STE.
             scales = scales + (stored.to(scales.dtype) - scales).detach()
             scale_group_size = (
                 self.qweight.scale_group_size
                 if self.qweight.scale_group_size is not None
                 else self.qweight.group_size)
-            return self._scale_training_codes * _expand_scales(
+            return self._scale_training_codes * expand_scales(
                 scales, scale_group_size, self.in_features)
         if self.fallback:
             return self._fp_cache
@@ -189,7 +183,7 @@ class QuantLinear(nn.Module):
         if self._log_scale_multiplier is None:
             return
         scales = self._scale_training_base * self.scale_finetuning_multiplier()
-        self.qweight.scales = _storage_scales(
+        self.qweight.scales = storage_scales(
             scales, self.qweight.scale_bits_main).detach()
         self._log_scale_multiplier = None
         self._scale_training_base = None

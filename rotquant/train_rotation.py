@@ -42,11 +42,12 @@ from typing import Any
 
 import torch
 
-from .quantize import QuantConfig, Quantizer, _quantize_groups
+from ._internal import quantize_groups
+from .quantize import QuantConfig, Quantizer
 from .rotate import ButterflyRotation, LearnedRotation, Rotation
 from .utils import get_logger
 
-logger = get_logger()
+logger = get_logger(__name__)
 
 
 @dataclass
@@ -133,7 +134,7 @@ def select_butterfly_checkpoint(rotation: ButterflyRotation,
 
 def train_layer_rotation(rotation: Rotation, weight: torch.Tensor,
                          quant_cfg: QuantConfig,
-                         config: RotationTrainConfig = None,
+                         config: RotationTrainConfig | None = None,
                          activations: torch.Tensor | None = None) -> dict[str, Any]:
     """Optimise a trainable rotation in place for one layer's frozen weight.
 
@@ -163,8 +164,8 @@ def train_layer_rotation(rotation: Rotation, weight: torch.Tensor,
         target_power = target.pow(2).mean().clamp_min(1e-12)
 
     def quantize_current(v: torch.Tensor) -> torch.Tensor:
-        scales = quantizer._select_scales(v)
-        q, _ = _quantize_groups(v, scales, quantizer.codebook,
+        scales = quantizer.select_scales(v)
+        q, _ = quantize_groups(v, scales, quantizer.codebook,
                                 train_quant_cfg.group_size)
         return q
 

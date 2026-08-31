@@ -25,12 +25,13 @@ import torch
 import torch.nn.functional as F
 from torch import nn
 
+from ._internal import cpu_staging_linear, get_parent
 from .linear import QuantLinear
-from .patch import _cpu_staging_linear, _get_parent, _make_rotations
+from .patch import make_rotations
 from .quantize import QuantConfig
 from .utils import get_logger
 
-logger = get_logger()
+logger = get_logger(__name__)
 
 
 @dataclass(frozen=True)
@@ -205,8 +206,8 @@ def _candidate_linear(source: nn.Linear, quant: QuantConfig, patch_cfg,
     source_device = source.weight.device
     source_dtype = source.weight.dtype
     stage = source_device.type == "mps"
-    work = _cpu_staging_linear(source) if stage else source
-    weight_rotation, act_rotation = _make_rotations(
+    work = cpu_staging_linear(source) if stage else source
+    weight_rotation, act_rotation = make_rotations(
         work.in_features, patch_cfg, seed, device=work.weight.device)
     candidate = QuantLinear.from_linear(
         work, quant, weight_rotation=weight_rotation,
@@ -235,7 +236,7 @@ def _score_candidates(model: nn.Module, targets, patch_cfg,
                 source, candidate, activations.get(name), config.max_tokens)
             global_kl = 0.0
             if teacher_calls is not None and config.global_kl_batches:
-                parent, attr = _get_parent(model, name)
+                parent, attr = get_parent(model, name)
                 original = getattr(parent, attr)
                 setattr(parent, attr, candidate)
                 try:

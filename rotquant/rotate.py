@@ -30,8 +30,35 @@ from torch import nn
 
 try:  # the fast CUDA kernel QuaRot/QuIP# use; optional, we fall back to pure torch
     from fast_hadamard_transform import hadamard_transform as _fht_cuda
-except Exception:  # pragma: no cover - kernel only present with CUDA build
+
+    _fht_import_error: Exception | None = None
+except Exception as exc:  # pragma: no cover - kernel only present with CUDA build
     _fht_cuda = None
+    _fht_import_error = exc
+
+_slow_fwht_warned = False
+
+
+def _warn_slow_cuda_fwht() -> None:
+    """Warn once when a CUDA tensor takes the pure-torch FWHT path.
+
+    A missing (or broken) ``fast-hadamard-transform`` install is otherwise
+    invisible: results stay correct but every rotation runs orders of
+    magnitude slower on GPU. Correct-but-degraded must never be silent.
+    """
+    global _slow_fwht_warned
+    if _slow_fwht_warned:
+        return
+    _slow_fwht_warned = True
+    from .utils import get_logger
+
+    detail = f" (import failed: {_fht_import_error!r})" if _fht_import_error else ""
+    get_logger(__name__).warning(
+        "fast-hadamard-transform CUDA kernel unavailable%s; using the pure-torch "
+        "FWHT, which is prohibitively slow at model dimensions on GPU. Install "
+        "it with: uv pip install fast-hadamard-transform --no-build-isolation",
+        detail,
+    )
 
 
 def _is_pow2(n: int) -> bool:
@@ -50,10 +77,12 @@ def fwht(x: torch.Tensor, normalize: bool = True) -> torch.Tensor:
     if not _is_pow2(d):
         raise ValueError(f"FWHT length must be a power of two, got {d}")
 
-    if _fht_cuda is not None and x.is_cuda:
-        # The kernel applies the unnormalised H; scale to match our convention.
-        out = _fht_cuda(x.contiguous())
-        return out / math.sqrt(d) if normalize else out
+    if x.is_cuda:
+        if _fht_cuda is not None:
+            # The kernel applies the unnormalised H; scale to match our convention.
+            out = _fht_cuda(x.contiguous())
+            return out / math.sqrt(d) if normalize else out
+        _warn_slow_cuda_fwht()
 
     orig_shape = x.shape
     h = x.reshape(-1, d).clone()

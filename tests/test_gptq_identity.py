@@ -38,7 +38,7 @@ def test_gptq_blocked_matches_column_at_a_time():
     cfg = QuantConfig(bits=3, codebook="gaussian", scale="rms", group_size=32,
                       gptq_block=16)  # several blocks over d=96
     qz = Quantizer(cfg)
-    scales = qz._select_scales(W)
+    scales = qz.select_scales(W)
     Q_blocked, _ = qz._gptq(W.clone(), scales, H.clone())
 
     # Naive reference: identical setup, full-width rank-1 update per column.

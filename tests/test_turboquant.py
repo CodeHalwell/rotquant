@@ -4,7 +4,7 @@ Covers:
   - turboquant_mse_bound theoretical formula
   - scale="turboquant" produces one scale per output row
   - error_comp="turboquant" populates sketch fields
-  - _generate_sketch_matrix is deterministic and has JL norm-preservation property
+  - generate_sketch_matrix is deterministic and has JL norm-preservation property
   - dequantize() expands per-row scales correctly
   - bit_budget() reports reduced per-row scale overhead
   - QuantLinear forward pass applies QJL correction (output changes + shape correct)
@@ -17,6 +17,7 @@ import math
 import pytest
 import torch
 
+from rotquant._internal import generate_sketch_matrix
 from rotquant.codebooks import turboquant_mse_bound
 from rotquant.linear import QuantLinear
 from rotquant.pack import unpack_indices
@@ -24,7 +25,6 @@ from rotquant.quantize import (
     QuantConfig,
     QuantizedWeight,
     Quantizer,
-    _generate_sketch_matrix,
 )
 from rotquant.rotate import RandomizedHadamard
 
@@ -53,27 +53,27 @@ class TestTurboQuantMseBound:
 
 
 # --------------------------------------------------------------------------- #
-# _generate_sketch_matrix
+# generate_sketch_matrix
 # --------------------------------------------------------------------------- #
 class TestGenerateSketchMatrix:
     def test_shape(self):
-        G = _generate_sketch_matrix(256, 64, seed=0, device="cpu")
+        G = generate_sketch_matrix(256, 64, seed=0, device="cpu")
         assert G.shape == (256, 64)
 
     def test_deterministic(self):
-        G1 = _generate_sketch_matrix(128, 32, seed=42, device="cpu")
-        G2 = _generate_sketch_matrix(128, 32, seed=42, device="cpu")
+        G1 = generate_sketch_matrix(128, 32, seed=42, device="cpu")
+        G2 = generate_sketch_matrix(128, 32, seed=42, device="cpu")
         assert torch.allclose(G1, G2)
 
     def test_different_seeds_differ(self):
-        G1 = _generate_sketch_matrix(128, 32, seed=0, device="cpu")
-        G2 = _generate_sketch_matrix(128, 32, seed=1, device="cpu")
+        G1 = generate_sketch_matrix(128, 32, seed=0, device="cpu")
+        G2 = generate_sketch_matrix(128, 32, seed=1, device="cpu")
         assert not torch.allclose(G1, G2)
 
     def test_jl_norm_preservation(self):
         # For a random unit vector x, E[||Gx||^2] ≈ 1 (JL property)
         torch.manual_seed(99)
-        G = _generate_sketch_matrix(256, 512, seed=7, device="cpu")
+        G = generate_sketch_matrix(256, 512, seed=7, device="cpu")
         x = torch.randn(256)
         x = x / x.norm()
         proj_norm_sq = (x @ G).pow(2).sum().item()
@@ -264,7 +264,7 @@ class TestQuantLinearForward:
         true_ip = float(x @ r)
         ests = []
         for s in range(n_trials):
-            G = _generate_sketch_matrix(d, k, seed=s, device="cpu")
+            G = generate_sketch_matrix(d, k, seed=s, device="cpu")
             est = (math.sqrt(math.pi / 2) / math.sqrt(k)) * r.norm() * (
                 (x @ G) @ torch.sign(r @ G))
             ests.append(float(est))

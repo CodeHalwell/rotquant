@@ -14,10 +14,11 @@ import torch
 import yaml
 from torch import nn
 
+from rotquant._internal import cpu_staging_linear, group_scales_rms
 from rotquant.calibrate import collect_activations
 from rotquant.linear import QuantLinear
-from rotquant.patch import PatchConfig, _cpu_staging_linear, patch_model
-from rotquant.quantize import QuantConfig, Quantizer, _group_scales_rms
+from rotquant.patch import PatchConfig, patch_model
+from rotquant.quantize import QuantConfig, Quantizer
 from rotquant.rotate import Identity
 
 _ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -329,7 +330,7 @@ def test_model_loader_auto_detects_unified_multimodal_configs():
 
 def test_cpu_staging_linear_preserves_half_source_values_in_fp32():
     source = nn.Linear(32, 16).half()
-    staged = _cpu_staging_linear(source)
+    staged = cpu_staging_linear(source)
     assert staged.weight.device.type == "cpu"
     assert staged.weight.dtype == torch.float32
     assert torch.equal(staged.weight, source.weight.float())
@@ -407,7 +408,7 @@ def test_disabled_patch_is_a_true_source_model_baseline():
 def test_partial_group_rms_ignores_padding():
     torch.manual_seed(0)
     w = torch.randn(4, 100)
-    scales = _group_scales_rms(w, 64)  # groups: 64 + 36
+    scales = group_scales_rms(w, 64)  # groups: 64 + 36
     ref_last = w[:, 64:].pow(2).mean(dim=1).sqrt()
     assert torch.allclose(scales[:, 1], ref_last, atol=1e-6), \
         "last-group RMS must average over the 36 real weights, not 64 slots"

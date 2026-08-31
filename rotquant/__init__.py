@@ -57,6 +57,11 @@ from .codebooks import (
     turboquant_mse_bound,
     uniform_signed,
 )
+from .dynamic import (
+    DynamicQuantConfig,
+    select_dynamic_quantization,
+    teacher_logit_kl,
+)
 from .format import (
     CURRENT_PACKING,
     FORMAT_NAME,
@@ -65,6 +70,17 @@ from .format import (
     FormatValidationError,
     PackingContract,
     validate_checkpoint_manifest,
+)
+from .kv_cache import (
+    KVQuantConfig,
+    QuantizedKV,
+    build_kv_rotation,
+    kv_fidelity_metrics,
+    kv_retrieval_metrics,
+    quantize_kv,
+    retrieval_rotquant_decode,
+    rotquant_attention,
+    train_kv_rotations,
 )
 from .linear import QuantLinear
 from .native import (
@@ -94,6 +110,7 @@ from .rotate import (
     Identity,
     LearnedRotation,
     RandomizedHadamard,
+    Rotation,
     build_rotation,
     fwht,
 )
@@ -110,7 +127,15 @@ from .train_rotation import (
     select_butterfly_checkpoint,
     train_layer_rotation,
 )
-from .utils import BitBudget, environment_record, get_logger, set_seed
+from .utils import (
+    BitBudget,
+    Timer,
+    enable_default_logging,
+    environment_record,
+    get_logger,
+    set_seed,
+    write_result,
+)
 
 __all__ = [
     "CURRENT_PACKING",
@@ -129,10 +154,12 @@ __all__ = [
     "BlockRotationTrainConfig",
     "ButterflyRotation",
     "DenseOrthogonal",
+    "DynamicQuantConfig",
     "E8LatticeCodebook",
     "FormatValidationError",
     "HessianAccumulator",
     "Identity",
+    "KVQuantConfig",
     "KernelRegistry",
     "KernelSpec",
     "LearnedRotation",
@@ -148,17 +175,21 @@ __all__ = [
     "PatchConfig",
     "QuantConfig",
     "QuantLinear",
+    "QuantizedKV",
     "QuantizedWeight",
     "Quantizer",
     "RandomizedHadamard",
     "RotQuantConfig",
+    "Rotation",
     "RotationTrainConfig",
     "ScalarCodebook",
     "TeacherCall",
+    "Timer",
     "VectorCodebook",
     "__version__",
     "activation_reconstruction_error",
     "build_gaussian_vector_codebook",
+    "build_kv_rotation",
     "build_rotation",
     "build_scalar_codebook",
     "checkpoint_manifest",
@@ -166,6 +197,7 @@ __all__ = [
     "collect_block_calls",
     "collect_hessians",
     "collect_teacher_calls",
+    "enable_default_logging",
     "encode_quantized_weight",
     "environment_record",
     "find_transformer_blocks",
@@ -177,6 +209,8 @@ __all__ = [
     "get_model_adapter",
     "inspect_model",
     "inspect_model_support",
+    "kv_fidelity_metrics",
+    "kv_retrieval_metrics",
     "list_model_adapters",
     "lloyd_max_gaussian",
     "lloyd_max_samples",
@@ -188,6 +222,7 @@ __all__ = [
     "pack_indices",
     "pack_native_blocks",
     "patch_model",
+    "quantize_kv",
     "quantizer_mse",
     "quantizer_mse_spherical",
     "reference_dequantize",
@@ -195,17 +230,23 @@ __all__ = [
     "reference_streaming_matmul",
     "register_model_adapter",
     "resolve_model_adapter",
+    "retrieval_rotquant_decode",
+    "rotquant_attention",
     "run_kernel",
     "runtime_capabilities",
     "save_packed_checkpoint",
     "save_pretrained",
     "select_butterfly_checkpoint",
+    "select_dynamic_quantization",
     "set_seed",
+    "teacher_logit_kl",
     "train_and_patch_blocks",
+    "train_kv_rotations",
     "train_layer_rotation",
     "turboquant_mse_bound",
     "uniform_signed",
     "unpack_indices",
     "unpack_native_blocks",
     "validate_checkpoint_manifest",
+    "write_result",
 ]

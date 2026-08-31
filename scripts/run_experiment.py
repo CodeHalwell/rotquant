@@ -41,6 +41,7 @@ from rotquant.patch import PatchConfig, patch_model
 from rotquant.quantize import QuantConfig
 from rotquant.utils import (
     Timer,
+    enable_default_logging,
     environment_record,
     get_logger,
     peak_vram_bytes,
@@ -49,7 +50,7 @@ from rotquant.utils import (
     write_result,
 )
 
-logger = get_logger()
+logger = get_logger(__name__)
 
 BASE_CONFIG_NAME = "_base.yaml"
 MAX_RUN_ID_LENGTH = 220  # leaves room for the .json suffix under NAME_MAX=255
@@ -879,6 +880,7 @@ def run(config_path: str, output_dir: str = "results",
 
 
 def main(argv: list[str] | None = None) -> None:
+    enable_default_logging()
     ap = argparse.ArgumentParser()
     ap.add_argument("config", help="path to experiment YAML")
     ap.add_argument("--output-dir", default="results")

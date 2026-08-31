@@ -18,25 +18,21 @@ import torch
 import torch.nn.functional as F
 from torch import nn
 
+from ._internal import (
+    cpu_staging_linear,
+    expand_scales,
+    get_parent,
+    group_scales_rms,
+    quantize_groups,
+    storage_scales,
+)
 from .linear import QuantLinear
-from .patch import (
-    PatchConfig,
-    _cpu_staging_linear,
-    _get_parent,
-    quant_config_for,
-)
-from .quantize import (
-    QuantConfig,
-    Quantizer,
-    _expand_scales,
-    _group_scales_rms,
-    _quantize_groups,
-    _storage_scales,
-)
+from .patch import PatchConfig, quant_config_for
+from .quantize import QuantConfig, Quantizer
 from .rotate import ButterflyRotation, RandomizedHadamard
 from .utils import get_logger
 
-logger = get_logger()
+logger = get_logger(__name__)
 
 
 @dataclass
@@ -417,8 +413,8 @@ class FakeQuantButterflyLinear(nn.Module):
                     "learned block scales currently require rms or mse_search")
             with torch.no_grad():
                 rotated = self.rotation.rotate_weight(self.weight)
-                rms = _group_scales_rms(rotated, quant_cfg.group_size)
-                initial = self.quantizer._select_scales(rotated)
+                rms = group_scales_rms(rotated, quant_cfg.group_size)
+                initial = self.quantizer.select_scales(rotated)
                 multiplier = (initial / rms.clamp_min(1e-12)).clamp(
                     scale_multiplier_min, scale_multiplier_max)
             self.log_scale_multiplier = nn.Parameter(multiplier.log())
@@ -433,10 +429,10 @@ class FakeQuantButterflyLinear(nn.Module):
         # RMS follows the changing rotation, but is deliberately detached: the
         # rotation surrogate remains the established activation-path gradient,
         # while the stored group scales receive their own direct gradient.
-        rms = _group_scales_rms(
+        rms = group_scales_rms(
             rotated, self.quantizer.cfg.group_size).detach()
         scales = rms * self.scale_multiplier()
-        stored = _storage_scales(scales, self.quantizer.cfg.scale_bits)
+        stored = storage_scales(scales, self.quantizer.cfg.scale_bits)
         # Match packed fp16 values in the forward pass while keeping a stable
         # fp32 identity gradient through the storage rounding operation.
         return scales + (stored.to(scales.dtype) - scales).detach()
@@ -447,16 +443,16 @@ class FakeQuantButterflyLinear(nn.Module):
         if self.log_scale_multiplier is not None:
             scales = self._learned_scales(rotated)
             with torch.no_grad():
-                _, indices = _quantize_groups(
+                _, indices = quantize_groups(
                     rotated, scales.detach(), self.quantizer.codebook,
                     self.quantizer.cfg.group_size)
             centroids = self.quantizer.codebook.centroids.to(rotated.device)
             normalized = centroids[indices]
-            return normalized * _expand_scales(
+            return normalized * expand_scales(
                 scales, self.quantizer.cfg.group_size, self.in_features)
         with torch.no_grad():
-            scales = self.quantizer._select_scales(rotated)
-            q, _ = _quantize_groups(
+            scales = self.quantizer.select_scales(rotated)
+            q, _ = quantize_groups(
                 rotated, scales, self.quantizer.codebook,
                 self.quantizer.cfg.group_size)
         return q
@@ -509,7 +505,7 @@ def _fake_quant_block(source: nn.Module, global_name: str,
             seed=seed_by_name[full_name], learn_scales=config.learn_scales,
             scale_multiplier_min=config.scale_multiplier_min,
             scale_multiplier_max=config.scale_multiplier_max).to(device)
-        parent, attr = _get_parent(block, relative)
+        parent, attr = get_parent(block, relative)
         setattr(parent, attr, replacement)
         fake[relative] = replacement
     if not fake:
@@ -659,7 +655,7 @@ def _scale_override(linear: nn.Linear, rotation: nn.Module,
         return None
     with torch.no_grad():
         rotated = rotation.rotate_weight(linear.weight.detach()).float()
-        rms = _group_scales_rms(rotated, quant_cfg.group_size)
+        rms = group_scales_rms(rotated, quant_cfg.group_size)
         return rms * multiplier.to(device=rms.device, dtype=rms.dtype)
 
 
@@ -696,7 +692,7 @@ def _packed_cpu_block(source: nn.Module, global_name: str,
             weight_rotation=rotation, act_rotation=rotation,
             scales_override=scales_override,
             fallback=True, fallback_dtype=torch.float32)
-        parent, attr = _get_parent(block, relative)
+        parent, attr = get_parent(block, relative)
         setattr(parent, attr, qlinear)
     return block
 
@@ -715,7 +711,7 @@ def _patch_source_block(source: nn.Module, global_name: str,
         selected_quant = quant_config_for(patch_cfg, full_name)
         source_device, source_dtype = linear.weight.device, linear.weight.dtype
         stage = source_device.type == "mps" and patch_cfg.fallback
-        work = _cpu_staging_linear(linear) if stage else linear
+        work = cpu_staging_linear(linear) if stage else linear
         state = states[relative] if states is not None else None
         if state is None:
             rotation = RandomizedHadamard(
@@ -758,7 +754,7 @@ def _patch_source_block(source: nn.Module, global_name: str,
             qlinear.retain_recovery_source(work.weight)
         if stage:
             qlinear.to(device=source_device, dtype=source_dtype)
-        parent, attr = _get_parent(source, relative)
+        parent, attr = get_parent(source, relative)
         setattr(parent, attr, qlinear)
         patched += 1
     return patched

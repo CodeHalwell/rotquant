@@ -21,9 +21,14 @@ import torch
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from rotquant.utils import environment_record, get_logger, write_result
+from rotquant.utils import (
+    enable_default_logging,
+    environment_record,
+    get_logger,
+    write_result,
+)
 
-logger = get_logger()
+logger = get_logger(__name__)
 
 INSTALL_HINTS = {
     "gptq": "pip install gptqmodel",
@@ -170,6 +175,7 @@ def load_baseline(backend: str, model_name: str, bits: int, device: str,
 
 
 def main() -> None:
+    enable_default_logging()
     ap = argparse.ArgumentParser()
     ap.add_argument("--backend", required=True,
                     choices=IMPLEMENTED_BACKENDS)

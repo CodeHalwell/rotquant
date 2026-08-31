@@ -12,7 +12,6 @@ from dataclasses import dataclass
 import torch
 
 from .format import packed_word_count, validate_storage_bits
-from .utils import BitBudget
 
 
 @dataclass
@@ -56,11 +55,6 @@ class PackedTensor:
                 f"packed buffer has {self.data.numel()} words; expected "
                 f"{expected_words}"
             )
-
-    def bit_budget(self, group_size: int, scale_bits: float = 16.0,
-                   sign_bits: float = 0.0) -> BitBudget:
-        return BitBudget(levels=2 ** self.bits, group_size=group_size,
-                         scale_bits=scale_bits, sign_bits=sign_bits)
 
 
 def pack_indices(idx: torch.Tensor, bits: int) -> PackedTensor:

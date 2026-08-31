@@ -7,7 +7,7 @@ from __future__ import annotations
 
 from rotquant.utils import get_logger
 
-logger = get_logger()
+logger = get_logger(__name__)
 
 # The fixed bundle; never change mid-study.
 DEFAULT_TASKS: list[str] = [
