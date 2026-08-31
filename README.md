@@ -40,6 +40,12 @@ and negative results, methodological caveats, and the decision taken after each
 trial. Update it alongside raw JSON results so development history remains
 paper-ready and reproducible.
 
+The [science and mathematics guide](docs/how_rotquant_works.md) derives the
+rotation invariant, scalar and vector codebooks, exact rate accounting, GPTQ,
+learned/block objectives, mixed-precision allocation, KV compression, and
+selective retrieval. It also separates mathematical identities and prior-paper
+results from RotQuant's current experimental evidence and open hypotheses.
+
 The [serving-backend matrix](docs/serving_backends.md) tracks which runtimes
 preserve the packed RotQuant representation, the extension point for each
 backend, and the conformance gates required before claiming support.
