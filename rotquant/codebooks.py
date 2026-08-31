@@ -14,6 +14,8 @@ Vector grids:
 
 * :class:`E8LatticeCodebook` -- exact nearest-point primitive for the E8 lattice
   (Conway & Sloane). It is not a finite-rate encoder or a packed baseline.
+* :class:`VectorCodebook` -- a finite-rate product-vector codebook trained on a
+  deterministic Gaussian source for matched W1--W3 research trials.
 * :class:`TrellisCodebook`   -- bridge to QTIP's trellis-coded quantiser; raises an
   informative error if the QTIP repo is not importable (we do not re-derive it).
 """
@@ -303,6 +305,174 @@ class ScalarCodebook:
         return out
 
 
+class VectorCodebook:
+    """Finite set of vector centroids with exact nearest-neighbour encoding.
+
+    ``levels`` is deliberately a power of two so every vector index has a fixed
+    packed width. A codebook with dimension ``d`` and ``2**(b*d)`` centroids
+    therefore consumes exactly ``b`` code bits per scalar weight, before the
+    same scale metadata charged to scalar RotQuant.
+    """
+
+    def __init__(self, centroids, *, name: str = "vector", chunk_size: int = 65536):
+        values = torch.as_tensor(centroids, dtype=torch.float32)
+        if values.ndim != 2 or values.shape[0] < 2 or values.shape[1] < 2:
+            raise ValueError(
+                "vector centroids must have shape [levels >= 2, dimension >= 2]"
+            )
+        levels = int(values.shape[0])
+        if levels & (levels - 1):
+            raise ValueError("vector codebook levels must be a power of two")
+        if chunk_size < 1:
+            raise ValueError("vector codebook chunk_size must be positive")
+        if not torch.isfinite(values).all():
+            raise ValueError("vector centroids must be finite")
+        self.name = name
+        self.centroids = values.contiguous()
+        self.chunk_size = int(chunk_size)
+
+    @property
+    def levels(self) -> int:
+        return int(self.centroids.shape[0])
+
+    @property
+    def dim(self) -> int:
+        return int(self.centroids.shape[1])
+
+    @property
+    def code_bits(self) -> int:
+        return int(math.log2(self.levels))
+
+    @property
+    def bits_per_weight(self) -> float:
+        return self.code_bits / self.dim
+
+    def encode(self, x: torch.Tensor) -> torch.Tensor:
+        if x.shape[-1] != self.dim:
+            raise ValueError(
+                f"vector width {x.shape[-1]} does not match codebook dim {self.dim}"
+            )
+        flat = x.reshape(-1, self.dim).float()
+        centroids = self.centroids.to(flat.device)
+        centroid_energy = centroids.square().sum(dim=1)
+        indices = []
+        for start in range(0, flat.shape[0], self.chunk_size):
+            batch = flat[start:start + self.chunk_size]
+            distances = (
+                batch.square().sum(dim=1, keepdim=True)
+                + centroid_energy.unsqueeze(0)
+                - 2.0 * batch @ centroids.T
+            )
+            indices.append(distances.argmin(dim=1))
+        return torch.cat(indices).reshape(x.shape[:-1])
+
+    def decode(self, indices: torch.Tensor) -> torch.Tensor:
+        return self.centroids.to(indices.device)[indices]
+
+    def quantize(self, x: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
+        indices = self.encode(x)
+        return self.decode(indices), indices
+
+    def to(self, device) -> VectorCodebook:
+        return VectorCodebook(
+            self.centroids.to(device), name=self.name, chunk_size=self.chunk_size
+        )
+
+
+def fit_vector_codebook(
+    samples: torch.Tensor,
+    levels: int,
+    *,
+    seed: int = 0,
+    iters: int = 25,
+    chunk_size: int = 65536,
+    name: str = "vector_calibrated",
+) -> VectorCodebook:
+    """Fit a deterministic Lloyd/k-means vector codebook on CPU samples."""
+
+    values = torch.as_tensor(samples, dtype=torch.float32, device="cpu")
+    if values.ndim != 2 or values.shape[1] < 2:
+        raise ValueError("vector samples must have shape [samples, dimension >= 2]")
+    if levels < 2 or levels & (levels - 1):
+        raise ValueError("vector levels must be a power of two >= 2")
+    if values.shape[0] < levels:
+        raise ValueError("vector fitting requires at least one sample per centroid")
+    if iters < 1:
+        raise ValueError("vector fitting iterations must be positive")
+    if not torch.isfinite(values).all():
+        raise ValueError("vector fitting samples must be finite")
+
+    generator = torch.Generator(device="cpu").manual_seed(int(seed))
+    # Deterministic k-means++ initialization avoids the severe empty-cell
+    # behaviour of taking the first K Gaussian samples at W1/W2.
+    first = int(torch.randint(values.shape[0], (1,), generator=generator).item())
+    centroids = [values[first].clone()]
+    closest = (values - centroids[0]).square().sum(dim=1)
+    for _ in range(1, levels):
+        total = closest.sum()
+        if not torch.isfinite(total) or total <= 0:
+            index = len(centroids) % values.shape[0]
+        else:
+            index = int(torch.multinomial(
+                closest / total, 1, generator=generator
+            ).item())
+        centroid = values[index].clone()
+        centroids.append(centroid)
+        closest = torch.minimum(
+            closest, (values - centroid).square().sum(dim=1)
+        )
+    centers = torch.stack(centroids)
+
+    for _ in range(iters):
+        codebook = VectorCodebook(
+            centers, name=name, chunk_size=chunk_size
+        )
+        assignments = codebook.encode(values)
+        sums = torch.zeros_like(centers)
+        sums.index_add_(0, assignments, values)
+        counts = torch.bincount(assignments, minlength=levels)
+        updated = centers.clone()
+        occupied = counts > 0
+        updated[occupied] = sums[occupied] / counts[occupied].unsqueeze(1)
+        if torch.allclose(updated, centers, rtol=0.0, atol=1e-6):
+            centers = updated
+            break
+        centers = updated
+    return VectorCodebook(centers, name=name, chunk_size=chunk_size)
+
+
+@functools.cache
+def build_gaussian_vector_codebook(
+    bits_per_weight: int,
+    dimension: int = 2,
+    *,
+    seed: int = 0,
+    samples: int = 16384,
+    iters: int = 25,
+) -> VectorCodebook:
+    """Build a shared finite-rate codebook for rotated Gaussian coordinates."""
+
+    if bits_per_weight < 1:
+        raise ValueError("vector bits_per_weight must be positive")
+    if dimension < 2:
+        raise ValueError("vector dimension must be >= 2")
+    code_bits = bits_per_weight * dimension
+    if code_bits > 16:
+        raise ValueError("vector indices cannot exceed the 16-bit packer limit")
+    levels = 1 << code_bits
+    if samples < levels:
+        raise ValueError("vector training samples must be >= codebook levels")
+    generator = torch.Generator(device="cpu").manual_seed(int(seed) + 104729)
+    training = torch.randn(samples, dimension, generator=generator)
+    return fit_vector_codebook(
+        training,
+        levels,
+        seed=seed + 130363,
+        iters=iters,
+        name=f"gaussian_vq_d{dimension}_w{bits_per_weight}",
+    )
+
+
 @functools.cache
 def build_scalar_codebook(
     kind: str, levels: int, dimension: int | None = None
@@ -332,10 +502,12 @@ def build_scalar_codebook(
 
 
 def fit_scalar_codebook(
-    samples, levels: int, *, name: str = "calibrated"
+    samples, levels: int, *, name: str = "calibrated", iters: int = 200
 ) -> ScalarCodebook:
     """Build a deployable scalar codebook from representative normalised values."""
-    return ScalarCodebook(lloyd_max_samples(samples, levels), name=name)
+    return ScalarCodebook(
+        lloyd_max_samples(samples, levels, iters=iters), name=name
+    )
 
 
 # --------------------------------------------------------------------------- #

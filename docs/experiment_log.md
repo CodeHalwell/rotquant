@@ -473,6 +473,14 @@ codebook against an exact Gaussian RotQuant cache kernel.
 
 ## Open experiments
 
+- Run `notebooks/rotquant_algorithm_lab_colab.ipynb`: screen exact-rate scalar
+  versus finite-rate vector codebooks and scalar extensions, then promote only
+  Pareto winners through allocation objectives, three seeds, and a second model
+  family. The notebook is the canonical record template for this funnel.
+- Measure the real-attention selective-V upper bound in that notebook. Only
+  build packed-key candidate kernels if its confidence-gated quality curve
+  yields a useful reduction in effective V reads.
+
 - Measure packed checkpoint and native process resident memory and peak
   transient memory; artifact and tensor-file bytes are now verified.
 - Measure longer trajectory agreement, long-context perplexity, and retrieval

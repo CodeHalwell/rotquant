@@ -23,10 +23,15 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
+from .codebooks import VectorCodebook
 from .pack import packed_bytes, unpack_indices
 from .quantize import (
-    QuantConfig, Quantizer, QuantizedWeight, _expand_scales,
-    _generate_sketch_matrix, _storage_scales,
+    QuantConfig,
+    QuantizedWeight,
+    Quantizer,
+    _expand_scales,
+    _generate_sketch_matrix,
+    _storage_scales,
 )
 from .rotate import Identity, Rotation
 from .utils import get_logger
@@ -150,6 +155,10 @@ class QuantLinear(nn.Module):
         if self._log_scale_multiplier is not None:
             return self._log_scale_multiplier
         qw = self.qweight
+        if isinstance(qw.codebook, VectorCodebook):
+            raise TypeError(
+                "scale fine-tuning is not yet implemented for vector codebooks"
+            )
         if qw.scales is None:
             raise ValueError("scale fine-tuning requires stored group scales")
         if qw.residual_packed is not None or qw.sketch is not None:

@@ -7,6 +7,7 @@ from rotquant.kv_cache import (
     build_kv_rotation,
     kv_fidelity_metrics,
     kv_retrieval_metrics,
+    oracle_value_retrieval_curve,
     quantize_kv,
     reference_attention,
     retrieval_rotquant_decode,
@@ -123,6 +124,60 @@ def test_retrieval_budget_must_cover_mandatory_tokens():
             recent_window=2,
             sink_tokens=2,
         )
+
+
+def test_oracle_value_retrieval_curve_reports_adaptive_dense_fallback() -> None:
+    torch.manual_seed(31)
+    values = torch.randn(1, 2, 16, 8)
+    concentrated = torch.full((1, 4, 1, 16), 0.01 / 15)
+    concentrated[..., 5] = 0.99
+    diffuse = torch.full((1, 4, 1, 16), 1 / 16)
+    weights = torch.cat([concentrated, diffuse], dim=2)
+
+    curve = oracle_value_retrieval_curve(
+        weights,
+        values,
+        [1, 4, 16],
+        mass_threshold=0.9,
+    )
+
+    assert curve[0]["mean_attention_mass"] > 0.5
+    assert curve[0]["dense_fallback_fraction"] == 0.5
+    assert curve[0]["effective_value_read_fraction"] == pytest.approx(0.53125)
+    assert curve[-1]["mean_attention_mass"] == pytest.approx(1.0)
+    assert curve[-1]["gated_relative_attention_mse"] < 1e-12
+
+
+def test_oracle_value_retrieval_uses_source_values_as_common_reference() -> None:
+    weights = torch.tensor([[[[0.7, 0.2, 0.1]]]])
+    source = torch.tensor([[[[1.0, 0.0], [0.0, 1.0], [1.0, 1.0]]]])
+    quantized = source + 0.25
+
+    source_full = oracle_value_retrieval_curve(weights, source, [3])[0]
+    quantized_full = oracle_value_retrieval_curve(
+        weights,
+        quantized,
+        [3],
+        reference_values=source,
+    )[0]
+
+    assert source_full["relative_attention_mse"] == pytest.approx(0.0, abs=1e-7)
+    assert quantized_full["relative_attention_mse"] > 0
+    assert quantized_full["relative_attention_mse"] == pytest.approx(
+        quantized_full["dense_value_relative_attention_mse"]
+    )
+
+    gated = oracle_value_retrieval_curve(
+        weights,
+        quantized,
+        [1],
+        reference_values=source,
+        mass_threshold=0.95,
+    )[0]
+    assert gated["dense_fallback_fraction"] == 1.0
+    assert gated["gated_relative_attention_mse"] == pytest.approx(
+        gated["dense_value_relative_attention_mse"]
+    )
 
 
 def test_learned_kv_rotation_uses_held_out_best_checkpoint():

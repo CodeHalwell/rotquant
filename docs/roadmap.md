@@ -27,6 +27,30 @@ Acceptance: a fresh-process checkpoint round trip preserves packed bytes and
 reference logits for every supported loader class, and every successful
 optimization report records at least one patched module.
 
+### Parallel track: algorithm laboratory
+
+Algorithmic changes advance through a controlled funnel before kernel work is
+specialized around them:
+
+- [x] add exact-rate dimension-2 vector controls at W1--W3 while keeping the
+  scalar packed layout unchanged;
+- [x] add deterministic weight-calibrated scalar codebooks and the existing
+  spherical, length-corrected, and TurboQuant scale controls to one matrix;
+- [x] compare local reconstruction, teacher-KL, and guarded mixed-bit allocation
+  objectives with exact packed-byte accounting;
+- [x] add a real-attention selective-V oracle that reports output error,
+  selected attention mass, fallback rate, and effective V reads;
+- [ ] execute the staged
+  [algorithm-lab Colab](../notebooks/rotquant_algorithm_lab_colab.ipynb) on the
+  primary model, then promote only Pareto winners to three seeds and a second
+  architecture family;
+- [ ] implement packed-key candidate generation only if the dense-attention
+  oracle shows a useful V-read/quality region.
+
+Research-only representations fail closed at checkpoint and native-runtime
+boundaries. A winning algorithm earns a format and kernel proposal; adding an
+experimental Python path alone does not expand production support.
+
 ### 2.1 Canonical Transformers artifact
 
 - add `config.json.quantization_config.quant_method = "rotquant"`;

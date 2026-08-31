@@ -20,7 +20,7 @@ import torch
 from torch import nn
 
 from .adapters import ModelAdapter, get_model_adapter, resolve_model_adapter
-from .codebooks import ScalarCodebook
+from .codebooks import ScalarCodebook, VectorCodebook
 from .format import (
     CURRENT_PACKING,
     FORMAT_NAME,
@@ -152,6 +152,11 @@ def _quantized_weight_spec(
     qweight: QuantizedWeight,
     tensors: dict[str, torch.Tensor],
 ) -> dict[str, Any]:
+    if isinstance(qweight.codebook, VectorCodebook):
+        raise TypeError(
+            "finite-rate vector codebooks are research-only and do not yet "
+            "have a stable packed-checkpoint contract"
+        )
     prefix = f"layer_{index:05d}"
     residual_codebook = None
     if qweight.residual_codebook is not None:

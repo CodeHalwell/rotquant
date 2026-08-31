@@ -1,0 +1,35 @@
+# Shared protocol for the resumable algorithmic Colab matrix. Trial profiles
+# are defined in scripts/algorithmic_trials.py and change only quantization.
+experiment: ALGORITHM_LAB
+label: algorithm_lab
+model: unsloth/Qwen3.5-4B
+model_revision: 3764fa359b9082ea5a1e4a5e3ac3aaf6e9671636
+calib_dataset_revision: 1588ec454efa1a09f29cd18ddd04fe05fc8653a2
+model_loader: auto
+device: cuda
+dtype: float16
+seed: 0
+calib_seq_len: 128
+rotation_n_calib: 1
+quant:
+  bits: 4
+  codebook: gaussian
+  scale: mse_search
+  group_size: 128
+  error_comp: none
+patch:
+  rotation: fwht
+  block: 128
+  mode: consistent
+  fallback: true
+  include: [model.language_model.layers.]
+  exclude: [linear_attn.in_proj_a, linear_attn.in_proj_b, lm_head, embed_out]
+eval:
+  perplexity: true
+  ppl_datasets: [wikitext2]
+  ppl:
+    seq_len: 256
+    max_samples: 16
+    wikitext_revision: b08601e04326c79dfdd32d625aee71d232d685c3
+    c4_revision: 1588ec454efa1a09f29cd18ddd04fe05fc8653a2
+  zeroshot: false

@@ -2,7 +2,7 @@
 
 Pluggable along four axes, matching the experiment matrix:
 
-* **codebook**       -- ``gaussian`` | ``spherical`` | ``uniform`` | ``nf``
+* **codebook**       -- scalar grids plus research-only finite-rate ``vector``
 * **scale strategy** -- ``rms`` | ``mse_search`` | ``turboquant``
 * **group size**     -- per-group scales along the input dimension
 * **error comp**     -- ``none`` | ``gptq`` | ``residual`` | ``qjl`` | ``turboquant``
@@ -31,7 +31,13 @@ from dataclasses import dataclass
 
 import torch
 
-from .codebooks import ScalarCodebook, build_scalar_codebook
+from .codebooks import (
+    ScalarCodebook,
+    VectorCodebook,
+    build_gaussian_vector_codebook,
+    build_scalar_codebook,
+    fit_scalar_codebook,
+)
 from .pack import PackedTensor, pack_indices, unpack_indices
 from .utils import BitBudget, get_logger
 
@@ -69,6 +75,11 @@ class QuantConfig:
     sketch_k: int = 64                  # QJL projection dimension (error_comp="turboquant")
     codebook_dim: int | None = None      # spherical marginal dimension; defaults to group_size
     bias_correction: str = "none"       # none | length (rowwise shrinkage correction)
+    vector_dim: int = 2                  # product-vector width for codebook="vector"
+    vector_samples: int = 16384          # deterministic Gaussian training samples
+    vector_iters: int = 25               # Lloyd/k-means refinement iterations
+    calibrated_samples: int = 65536      # per-matrix normalized scalar samples
+    calibrated_iters: int = 100          # scalar Lloyd refinement iterations
 
     def __post_init__(self) -> None:
         if not isinstance(self.bits, int) or not 1 <= self.bits <= 16:
@@ -81,8 +92,10 @@ class QuantConfig:
             "gaussian", "lloyd", "lloyd_max", "mse",
             "sphere", "spherical", "beta", "finite_beta",
             "uniform", "nf", "normalfloat", "normal_float",
+            "calibrated", "empirical", "weight_calibrated",
+            "vector", "vector_kmeans", "product_vector", "pq",
         }:
-            raise ValueError(f"unknown scalar codebook kind: {self.codebook}")
+            raise ValueError(f"unknown codebook kind: {self.codebook}")
         if self.codebook_dim is not None and (
             isinstance(self.codebook_dim, bool)
             or not isinstance(self.codebook_dim, int)
@@ -123,13 +136,34 @@ class QuantConfig:
         if self.bias_correction not in {"none", "length"}:
             raise ValueError(
                 "bias_correction must be one of {'none', 'length'}")
+        vector = self.codebook.lower() in {
+            "vector", "vector_kmeans", "product_vector", "pq"
+        }
+        if not isinstance(self.vector_dim, int) or isinstance(self.vector_dim, bool):
+            raise TypeError("vector_dim must be an integer")
+        if vector and self.vector_dim < 2:
+            raise ValueError("vector codebooks require vector_dim >= 2")
+        if vector and self.bits * self.vector_dim > 16:
+            raise ValueError("vector index width cannot exceed 16 packed bits")
+        if vector and self.group_size % self.vector_dim:
+            raise ValueError("vector_dim must divide group_size")
+        if vector and self.error_comp != "none":
+            raise ValueError(
+                "vector codebooks currently require error_comp='none'"
+            )
+        if self.vector_samples < 2 or self.vector_iters < 1:
+            raise ValueError("vector_samples and vector_iters must be positive")
+        if self.calibrated_samples < 2 or self.calibrated_iters < 1:
+            raise ValueError(
+                "calibrated_samples and calibrated_iters must be positive"
+            )
 
 
 @dataclass
 class QuantizedWeight:
     packed: PackedTensor
     scales: torch.Tensor | None       # [out, n_groups]; [out, 1] for TurboQuant per-row
-    codebook: ScalarCodebook
+    codebook: ScalarCodebook | VectorCodebook
     group_size: int
     out_features: int
     in_features: int
@@ -147,9 +181,15 @@ class QuantizedWeight:
     scale_group_size: int | None = None
 
     def dequantize(self) -> torch.Tensor:
-        idx = unpack_indices(self.packed).reshape(self.out_features, self.in_features)
-        centroids = self.codebook.centroids.to(idx.device)
-        q = centroids[idx]
+        idx = unpack_indices(self.packed)
+        if isinstance(self.codebook, VectorCodebook):
+            q = self.codebook.decode(idx).reshape(
+                self.out_features, self.in_features
+            )
+        else:
+            idx = idx.reshape(self.out_features, self.in_features)
+            centroids = self.codebook.centroids.to(idx.device)
+            q = centroids[idx]
         if self.scales is not None:
             sgs = self.scale_group_size if self.scale_group_size is not None else self.group_size
             w = q * _expand_scales(self.scales, sgs, self.in_features)
@@ -278,22 +318,101 @@ def _quantize_groups(w: torch.Tensor, scales: torch.Tensor | None,
     return q * sc, idx
 
 
+def _quantize_vector_groups(
+    w: torch.Tensor,
+    scales: torch.Tensor,
+    codebook: VectorCodebook,
+    group_size: int,
+) -> tuple[torch.Tensor, torch.Tensor]:
+    """Return vector-codebook reconstruction and one index per vector."""
+
+    out, in_features = w.shape
+    if in_features % codebook.dim:
+        raise ValueError(
+            f"vector_dim={codebook.dim} must divide in_features={in_features}"
+        )
+    if group_size % codebook.dim:
+        raise ValueError("vector_dim must divide group_size")
+    expanded = _expand_scales(scales, group_size, in_features)
+    normalized = (w / expanded).reshape(out, in_features // codebook.dim, codebook.dim)
+    vectors, indices = codebook.quantize(normalized)
+    return vectors.reshape_as(w) * expanded, indices
+
+
 class Quantizer:
-    def __init__(self, config: QuantConfig, *, codebook: ScalarCodebook | None = None):
+    def __init__(
+        self,
+        config: QuantConfig,
+        *,
+        codebook: ScalarCodebook | VectorCodebook | None = None,
+    ):
         self.cfg = config
+        vector = config.codebook.lower() in {
+            "vector", "vector_kmeans", "product_vector", "pq"
+        }
         spherical = config.codebook.lower() in {
             "sphere", "spherical", "beta", "finite_beta"}
         dimension = (config.codebook_dim or config.group_size) if spherical else None
-        self.codebook = codebook or build_scalar_codebook(
-            config.codebook, 2 ** config.bits, dimension)
-        if self.codebook.levels != 2 ** config.bits:
+        calibrated = config.codebook.lower() in {
+            "calibrated", "empirical", "weight_calibrated"
+        }
+        self.codebook = codebook or (
+            build_gaussian_vector_codebook(
+                config.bits,
+                config.vector_dim,
+                seed=config.seed,
+                samples=config.vector_samples,
+                iters=config.vector_iters,
+            )
+            if vector
+            else None
+            if calibrated
+            else build_scalar_codebook(config.codebook, 2 ** config.bits, dimension)
+        )
+        expected_levels = 2 ** (
+            config.bits * config.vector_dim if vector else config.bits
+        )
+        if self.codebook is not None and self.codebook.levels != expected_levels:
             raise ValueError(
-                "codebook override must contain exactly 2**bits centroids")
+                "codebook override has the wrong number of centroids")
+        if vector and not isinstance(self.codebook, VectorCodebook):
+            raise TypeError("vector quantization requires a VectorCodebook override")
+        if vector and self.codebook.dim != config.vector_dim:
+            raise ValueError(
+                "vector codebook dimension does not match config.vector_dim"
+            )
+        if not vector and self.codebook is not None and not isinstance(
+            self.codebook, ScalarCodebook
+        ):
+            raise TypeError("scalar quantization requires a ScalarCodebook override")
+
+    def _fit_calibrated_codebook(self, weight: torch.Tensor) -> None:
+        """Fit one deployable scalar grid in the normalized rotated domain."""
+
+        rms = _group_scales_rms(weight, self.cfg.group_size)
+        normalized = (
+            weight / _expand_scales(rms, self.cfg.group_size, weight.shape[1])
+        ).reshape(-1)
+        if normalized.numel() > self.cfg.calibrated_samples:
+            indices = torch.linspace(
+                0,
+                normalized.numel() - 1,
+                self.cfg.calibrated_samples,
+                device=normalized.device,
+            ).round().long()
+            normalized = normalized[indices]
+        self.codebook = fit_scalar_codebook(
+            normalized,
+            2 ** self.cfg.bits,
+            name=f"calibrated_w{self.cfg.bits}",
+            iters=self.cfg.calibrated_iters,
+        )
 
     # ------------------------------------------------------------------ #
     # scale selection
     # ------------------------------------------------------------------ #
     def _select_scales(self, w: torch.Tensor) -> torch.Tensor | None:
+        assert self.codebook is not None
         if self.cfg.scale == "turboquant":
             # Per-row RMS: one scale per output neuron, amortised over in_features weights.
             # After Hadamard rotation the distribution *shape* is universal (Gaussian) but
@@ -309,6 +428,8 @@ class Quantizer:
 
     def _mse_search_scales(self, w: torch.Tensor, rms: torch.Tensor) -> torch.Tensor:
         """Data-free per-group scale search minimising quantisation MSE (E4)."""
+        if isinstance(self.codebook, VectorCodebook):
+            return self._vector_mse_search_scales(w, rms)
         out, inf = w.shape
         gs = self.cfg.group_size
         ng = rms.shape[1]
@@ -336,6 +457,41 @@ class Quantizer:
             best_scales = torch.where(better, (rms * c), best_scales)
         return best_scales
 
+    def _vector_mse_search_scales(
+        self, w: torch.Tensor, rms: torch.Tensor
+    ) -> torch.Tensor:
+        """MSE scale search using complete vector assignments."""
+
+        assert isinstance(self.codebook, VectorCodebook)
+        out, in_features = w.shape
+        group_size = self.cfg.group_size
+        groups = rms.shape[1]
+        if in_features % group_size or group_size % self.codebook.dim:
+            raise ValueError(
+                "vector MSE search currently requires complete aligned groups"
+            )
+        grouped = w.reshape(out, groups, group_size)
+        candidates = torch.linspace(
+            self.cfg.mse_search_lo,
+            self.cfg.mse_search_hi,
+            self.cfg.mse_search_grid,
+            device=w.device,
+        )
+        best_scales = rms.clone()
+        best_error = torch.full_like(rms, float("inf"))
+        for multiplier in candidates:
+            scales = (rms * multiplier).unsqueeze(-1).clamp_min(1e-12)
+            normalized = (grouped / scales).reshape(
+                out, groups, group_size // self.codebook.dim, self.codebook.dim
+            )
+            reconstructed, _ = self.codebook.quantize(normalized)
+            reconstructed = reconstructed.reshape_as(grouped) * scales
+            error = (grouped - reconstructed).square().sum(dim=-1)
+            better = error < best_error
+            best_error = torch.where(better, error, best_error)
+            best_scales = torch.where(better, rms * multiplier, best_scales)
+        return best_scales
+
     # ------------------------------------------------------------------ #
     # main entry
     # ------------------------------------------------------------------ #
@@ -352,6 +508,9 @@ class Quantizer:
         """
         w = weight.detach().to(torch.float32)
         out, inf = w.shape
+        if self.codebook is None:
+            self._fit_calibrated_codebook(w)
+        assert self.codebook is not None
         if scales_override is None:
             selected_scales = self._select_scales(w)
         else:
@@ -369,7 +528,12 @@ class Quantizer:
                 raise ValueError("scales_override must be finite and positive")
         scales = _storage_scales(selected_scales, self.cfg.scale_bits)
 
-        if self.cfg.error_comp == "gptq":
+        vector = isinstance(self.codebook, VectorCodebook)
+        if vector:
+            q_w, idx = _quantize_vector_groups(
+                w, scales, self.codebook, self.cfg.group_size
+            )
+        elif self.cfg.error_comp == "gptq":
             if self.cfg.scale == "turboquant":
                 raise ValueError(
                     "GPTQ requires per-group scales with group_size < in_features; "
@@ -397,10 +561,16 @@ class Quantizer:
                 inf if self.cfg.scale == "turboquant" else self.cfg.group_size,
                 inf,
             )
-            q_w = self.codebook.centroids.to(w.device)[idx] * expanded
+            if vector:
+                q_w = self.codebook.decode(idx).reshape_as(w) * expanded
+            else:
+                q_w = self.codebook.centroids.to(w.device)[idx] * expanded
             scales = corrected_scales
 
-        packed = pack_indices(idx.reshape(-1), self.cfg.bits)
+        packed = pack_indices(
+            idx if vector else idx.reshape(-1),
+            self.cfg.bits * self.codebook.dim if vector else self.cfg.bits,
+        )
         # TurboQuant uses one scale per output row; pass scale_group_size=in_features
         # so dequantize() and bit_budget() use the right expansion factor.
         scale_group_size = inf if self.cfg.scale == "turboquant" else None

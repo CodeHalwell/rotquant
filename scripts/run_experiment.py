@@ -230,10 +230,16 @@ def load_hf_model(model_name: str, dtype: torch.dtype, device,
 
 
 def build_calib_loader(tokenizer, n_seq: int, seq_len: int, device,
-                       skip: int = 0):
+                       skip: int = 0, revision: str | None = None):
     """Tokenised C4/WikiText-train calibration sequences (128-512 typical)."""
     from datasets import load_dataset
-    ds = load_dataset("allenai/c4", "en", split="train", streaming=True)
+    ds = load_dataset(
+        "allenai/c4",
+        "en",
+        split="train",
+        streaming=True,
+        revision=revision,
+    )
     batches, count, eligible = [], 0, 0
     for row in ds:
         ids = tokenizer(row["text"], return_tensors="pt").input_ids
@@ -350,6 +356,7 @@ def run(config_path: str, output_dir: str = "results",
 
     metrics: Dict[str, Any] = {"model_loader": selected_loader}
     eval_cfg = cfg.get("eval") or {}
+    calibration_revision = cfg.get("calib_dataset_revision")
 
     hessians = None
     activations = None
@@ -371,7 +378,8 @@ def run(config_path: str, output_dir: str = "results",
     if needs_hessians:
         calib_loader = build_calib_loader(
             tokenizer, cfg.get("n_calib", 128),
-            cfg.get("calib_seq_len", 2048), device)
+            cfg.get("calib_seq_len", 2048), device,
+            revision=calibration_revision)
 
     if needs_hessians:
         from rotquant.calibrate import collect_hessians
@@ -401,7 +409,8 @@ def run(config_path: str, output_dir: str = "results",
             minimum_batches = max(1, (max_tokens + calib_seq_len - 1) // calib_seq_len)
             n_batches = int(cfg.get("rotation_n_calib", minimum_batches))
             calib_loader = build_calib_loader(
-                tokenizer, n_batches, calib_seq_len, device)
+                tokenizer, n_batches, calib_seq_len, device,
+                revision=calibration_revision)
         with Timer() as t:
             activation_calib = collect_activations(
                 model, calib_loader, device,
@@ -416,7 +425,8 @@ def run(config_path: str, output_dir: str = "results",
         from rotquant.block_train import collect_teacher_calls
         dynamic_loader = build_calib_loader(
             tokenizer, dynamic_global_batches,
-            int(cfg.get("calib_seq_len", 256)), device)
+            int(cfg.get("calib_seq_len", 256)), device,
+            revision=calibration_revision)
         with Timer() as t:
             dynamic_calls = collect_teacher_calls(
                 model, dynamic_loader, device,
@@ -443,7 +453,8 @@ def run(config_path: str, output_dir: str = "results",
         if calib_loader is None or len(calib_loader) < total_block_batches:
             calib_loader = build_calib_loader(
                 tokenizer, total_block_batches,
-                int(cfg.get("calib_seq_len", 256)), device)
+                int(cfg.get("calib_seq_len", 256)), device,
+                revision=calibration_revision)
         with Timer() as t:
             block_calls = collect_block_calls(
                 model, calib_loader[:n_block_batches], device,
@@ -462,7 +473,8 @@ def run(config_path: str, output_dir: str = "results",
     if eval_cfg.get("layer_mse", False):
         from eval.layer_mse import capture_outputs
         drift_batch = build_calib_loader(
-            tokenizer, 1, eval_cfg.get("layer_mse_seq_len", 512), device)[0]
+            tokenizer, 1, eval_cfg.get("layer_mse_seq_len", 512), device,
+            revision=calibration_revision)[0]
         fp_capture = capture_outputs(model, drift_batch, device)
 
     trajectory_requested = eval_cfg.get("trajectory", False)
@@ -474,7 +486,8 @@ def run(config_path: str, output_dir: str = "results",
         trajectory_batches = build_calib_loader(
             tokenizer, trajectory_config.batches,
             trajectory_config.prompt_len, device,
-            skip=trajectory_config.skip)
+            skip=trajectory_config.skip,
+            revision=calibration_revision)
         with Timer() as t:
             trajectory_references = capture_trajectories(
                 model, tokenizer, trajectory_batches, device,
@@ -544,6 +557,7 @@ def run(config_path: str, output_dir: str = "results",
              + kv_cache_config.continuation_len + 1),
             device,
             skip=kv_cache_config.skip,
+            revision=calibration_revision,
         )
         with Timer() as t:
             metrics["kv_cache"] = evaluate_kv_cache(

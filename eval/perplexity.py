@@ -21,17 +21,34 @@ class PPLConfig:
     seq_len: int = 2048           # or the model's native context
     stride: Optional[int] = None  # defaults to seq_len (non-overlapping)
     max_samples: Optional[int] = None
+    wikitext_revision: Optional[str] = None
+    c4_revision: Optional[str] = None
 
 
-def _load_text(dataset: str) -> str:
+def _load_text(
+    dataset: str,
+    *,
+    wikitext_revision: str | None = None,
+    c4_revision: str | None = None,
+) -> str:
     from datasets import load_dataset
     if dataset == "wikitext2":
         # Bare "wikitext" ids are rejected by current huggingface_hub.
-        ds = load_dataset("Salesforce/wikitext", "wikitext-2-raw-v1", split="test")
+        ds = load_dataset(
+            "Salesforce/wikitext",
+            "wikitext-2-raw-v1",
+            split="test",
+            revision=wikitext_revision,
+        )
         return "\n\n".join(ds["text"])
     if dataset == "c4":
-        ds = load_dataset("allenai/c4", "en", split="validation",
-                          streaming=True)
+        ds = load_dataset(
+            "allenai/c4",
+            "en",
+            split="validation",
+            streaming=True,
+            revision=c4_revision,
+        )
         chunks, n = [], 0
         for row in ds:
             chunks.append(row["text"])
@@ -51,7 +68,11 @@ def perplexity(model, tokenizer, dataset: str = "wikitext2",
     seq_len = config.seq_len
     stride = config.stride or seq_len
 
-    text = _load_text(dataset)
+    text = _load_text(
+        dataset,
+        wikitext_revision=config.wikitext_revision,
+        c4_revision=config.c4_revision,
+    )
     # The full corpus is intentionally tokenized before it is split into model-sized
     # windows. Suppress the tokenizer's misleading max-length warning: no oversized
     # sequence is ever passed to the model.
