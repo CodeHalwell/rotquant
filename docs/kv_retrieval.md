@@ -1,5 +1,9 @@
 # Selective KV retrieval
 
+For the attention invariants and mathematical relationship between rotated KV
+quantization, packed-key scoring, attention-mass coverage, and value traffic,
+see [How RotQuant works](how_rotquant_works.md#10-kv-cache-quantization).
+
 RotQuant can reuse vector-scoring ideas for the key side of attention without
 turning the cache into a general vector database. During autoregressive decode,
 the current query is the search query, past key vectors are the index, and token

@@ -1,5 +1,9 @@
 # TurboQuant/TurboVec extension experiments
 
+For the derivation of the spherical marginal, Lloyd-Max grids, length
+correction, and asymmetric QJL estimator—and how these pieces differ from the
+rest of the RotQuant pipeline—see [How RotQuant works](how_rotquant_works.md).
+
 RotQuant now exposes three compatible scalar-codebook tiers:
 
 - `gaussian`: the existing high-dimensional Lloyd-Max default;
