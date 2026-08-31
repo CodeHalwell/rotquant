@@ -63,8 +63,8 @@ These were verified by direct derivation against the code, not assumed:
 - **KV rotation training** (`train_kv_rotations`, `kv_cache.py:446`): the STE
   fake-quant (`_fake_quant`, `kv_cache.py:412`) composed with rotations applied
   *differentiably* on both Q and K/V sides (`_fake_rotquant_attention`,
-  `kv_cache.py:434`) is the mathematically correct gradient setup (contrast
-  with §2.3).
+  `kv_cache.py:434`) is the right gradient structure — both sides carry
+  gradient through the standard STE surrogate (contrast with §2.3).
 - **Methodology**: the experiment log records negative results, protocol bugs
   (the seed-0 uniform/dynamic evaluation-batch mismatch), endpoint-equivalence
   checks (dynamic-at-8-bit ≡ uniform-8-bit), matched-control corrections, and
@@ -139,27 +139,36 @@ Recommendations:
 - Note the default config (`group_size = block = 128`, aligned) is exactly
   self-consistent — that alignment is worth calling out as a design invariant.
 
-### 2.3 Block-training gradient flows only through the activation side
+### 2.3 Block-training gradients are taken against a frozen-weight surrogate
 
 In `FakeQuantButterflyLinear._assigned_weight` (`block_train.py:440`), the
 entire weight side — rotation of W, scale selection, quantization — is computed
 under `no_grad`; θ receives gradient only through
 `rotate_activation(x)`. The layerwise activation objective in
-`train_rotation.py:193` has the same structure.
+`train_rotation.py:193` has the same structure. To be precise, nothing is
+wrong in autograd terms: once indices and scales are detached, the dequantized
+matrix is a constant, and the activation-only path **is** the exact gradient
+of that frozen-assignment surrogate. The issue is that the surrogate models
+deployment badly, because the code re-quantizes from the *current* θ on every
+forward.
 
-Why this matters mathematically: in the *unquantized* limit the block output
-`x R(θ)ᵀ (W R(θ)ᵀ)ᵀ = x Wᵀ` is independent of θ, so the true gradient is 0 —
-but the activation-only surrogate gradient is `x·dRᵀ/dθ·R Wᵀ ≠ 0`. The
-computed gradient therefore contains an O(1) spurious component that would be
-cancelled by the missing weight-side term, on top of the O(quant-error) signal
-you actually want. Training still helps empirically (the held-out gates protect
-deployment), but most of each step is spent fighting a phantom descent
-direction, which plausibly explains why more steps (12 → 18) did not help in
-the OPT experiments.
+Why this matters: the dequantized matrix tracks `W R(θ)ᵀ` to within
+quantization error at every step, so write it as `q̄ = W R(θ)ᵀ + E`. The
+surrogate gradient then splits into
+`x·dRᵀ/dθ·(W Rᵀ)ᵀ + x·dRᵀ/dθ·Eᵀ`. The first, O(1)-sized component
+corresponds to no achievable change in the deployed loss — by orthogonality
+`x R(θ)ᵀ (W R(θ)ᵀ)ᵀ = x Wᵀ` for every θ, and re-quantization restores that
+alignment on the next step — while the second, O(‖E‖) component is the signal
+that can actually move deployed quality. In the unquantized limit (E → 0) the
+surrogate gradient stays O(1) while the deployed loss is exactly flat. Much of
+each optimizer step is therefore spent on a component that re-quantization
+undoes, which plausibly explains why more steps (12 → 18) did not help in the
+OPT experiments.
 
-The repo already contains the correct pattern in `_fake_rotquant_attention`
-(`kv_cache.py:434`, via the `_fake_quant` STE at `kv_cache.py:412`) — STE with
-the rotation applied differentiably. The same fix for weights:
+A standard alternative already used elsewhere in this repo
+(`_fake_rotquant_attention`, `kv_cache.py:434`, via the `_fake_quant` STE at
+`kv_cache.py:412`) is the straight-through estimator with the rotation
+differentiable on the quantized side too:
 
 ```python
 rotated = self.rotation.rotate_weight(self.weight)     # differentiable
@@ -168,14 +177,19 @@ with torch.no_grad():
 return rotated + (q - rotated).detach()                # STE
 ```
 
-Then the invariant part cancels *inside* autograd and the surviving gradient is
-exactly the frozen-assignment signal `x·dRᵀ/dθ·Eᵀ` (E = quantization
-residual). The likely reason for the current design is memory (backprop through
-the butterfly stages of an [out, in] weight stores per-stage intermediates);
-gradient checkpointing over stages, or chunking rows, makes the exact version
-affordable. At minimum, run both on OPT-125M and quantify the gap — if STE
+Under STE the identity-aligned component cancels inside autograd and the
+surviving gradient is `x·dRᵀ/dθ·Eᵀ` — the residual-alignment signal alone. To
+be clear, STE is itself a surrogate (`dq/dv := I` is not the a.e. derivative
+of a piecewise-constant quantizer), so this is an argument about which
+surrogate better tracks the re-quantized deployment, not a theorem — the
+question is empirical. The likely reason for the current design is memory
+(backprop through the butterfly stages of an [out, in] weight stores per-stage
+intermediates); gradient checkpointing over stages, or chunking rows, makes
+the STE version affordable. Run both on OPT-125M and quantify the gap — if STE
 gives a materially better deployed PPL at the same steps, this is a cheap win
-for every learned-rotation arm.
+for every learned-rotation arm. (A second, smaller gap in the frozen
+surrogate: with `assignment_scale: rms` the deployed scales are a continuous
+function of θ, and freezing them drops that term as well.)
 
 The **weight-MSE** objective in `train_rotation.py` is unaffected (its
 gradient flows through `rotate_weight` and is a proper Lloyd-style
@@ -294,10 +308,13 @@ alone. This plausibly contributes to the observed result that dynamic weight
 allocation lost to uniform W4 (+2.0% PPL for 0.098% bytes).
 
 Fixes, cheapest first: weight the local error by each layer's output energy
-(denominator already computed — just don't divide); or use the true quadratic
-proxy `tr(ΔW·H·ΔWᵀ)` with the Hessians the repo already knows how to collect —
-this is exactly the layer's expected output-MSE contribution and is nearly free
-given diag(H). The additive-interaction caveat and the uniform-restore guard
+(denominator already computed — just don't divide); or use a Hessian-weighted
+proxy with the statistics the repo already knows how to collect. The exact
+per-layer expected output-MSE contribution is `tr(ΔW·H·ΔWᵀ)` and needs the
+full `H` (already computed on GPTQ runs); the cheap variant
+`Σᵢ Hᵢᵢ·‖ΔW[:,i]‖²` uses only `diag(H)` and is the standard diagonal
+approximation. Either is commensurable across layers, unlike per-layer
+relative MSE. The additive-interaction caveat and the uniform-restore guard
 are already handled well.
 
 ### 2.10 E7's "mismatched" mode is a straw man
@@ -447,8 +464,9 @@ The engineering rigor (bit accounting, held-out gates, manifest hashing,
 negative-result logging, byte-verified export) is well above the norm and the
 core math is implemented correctly almost everywhere it matters. The dominant
 scientific risks are concentrated in four places: a sketch correction whose
-variance analysis was never done (2.1), a training gradient missing half its
-terms (2.3), recovery experiments whose budgets guarantee null results (2.4),
+variance analysis was never done (2.1), rotation training against a
+frozen-weight surrogate whose dominant gradient component cancels at
+deployment (2.3), recovery experiments whose budgets guarantee null results (2.4),
 and the strongest known PTQ tool sitting unused in release recipes (2.5).
 Addressing 2.4 + 2.5 alone plausibly moves the headline result from
 "W4 at +4.7% PPL" toward "W4 near-lossless / W3 at similar loss", which is the
