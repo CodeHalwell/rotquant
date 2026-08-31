@@ -39,8 +39,10 @@ These were verified by direct derivation against the code, not assumed:
   problem.)
 - **Spherical marginal** (`codebooks.py:121`): `(1−u²)^{(d−3)/2}` is the exact
   coordinate density of a uniform point on `S^{d−1}`, and the `√d` scaling
-  gives unit variance. The d=3 uniform-coordinate special case in
-  `test_source_coding.py` is the right analytic anchor.
+  gives unit variance. The d=3 uniform-coordinate special case
+  (`tests/test_source_coding.py:45`,
+  `test_spherical_codebook_matches_uniform_sphere_in_three_dimensions`) is the
+  right analytic anchor.
 - **Lloyd–Max anchors**: 0.1175 (2-bit) and 0.0345 (3-bit) are the classic Max
   (1960) values; the Panter–Dite constant `√3·π/2` in `turboquant_mse_bound`
   is correct as a high-rate approximation (see §2.11 for framing).
@@ -58,9 +60,11 @@ These were verified by direct derivation against the code, not assumed:
 - **Value-basis attention** (`kv_cache.py`): storing V rotated and applying one
   inverse rotation to the attention output is exact by linearity — a genuinely
   nice trick that avoids per-token inverse rotations.
-- **KV rotation training** (`kv_cache.py:412`): the STE fake-quant with the
-  rotation applied *differentiably* on both Q and K/V sides is the
-  mathematically correct gradient setup (contrast with §2.3).
+- **KV rotation training** (`train_kv_rotations`, `kv_cache.py:446`): the STE
+  fake-quant (`_fake_quant`, `kv_cache.py:412`) composed with rotations applied
+  *differentiably* on both Q and K/V sides (`_fake_rotquant_attention`,
+  `kv_cache.py:434`) is the mathematically correct gradient setup (contrast
+  with §2.3).
 - **Methodology**: the experiment log records negative results, protocol bugs
   (the seed-0 uniform/dynamic evaluation-batch mismatch), endpoint-equivalence
   checks (dynamic-at-8-bit ≡ uniform-8-bit), matched-control corrections, and
@@ -153,7 +157,8 @@ deployment), but most of each step is spent fighting a phantom descent
 direction, which plausibly explains why more steps (12 → 18) did not help in
 the OPT experiments.
 
-The repo already contains the correct pattern in `kv_cache.py:412` — STE with
+The repo already contains the correct pattern in `_fake_rotquant_attention`
+(`kv_cache.py:434`, via the `_fake_quant` STE at `kv_cache.py:412`) — STE with
 the rotation applied differentiably. The same fix for weights:
 
 ```python
@@ -341,9 +346,10 @@ rotation with folded norms vs online rotation, at matched bits.
   residual, the designated E3 loser) and `error_comp="turboquant"` (the
   sign-sketch inner-product corrector) are both called "QJL" in different
   docstrings. A one-line glossary would prevent misreading results.
-- **`mean_first_divergence` duplicates `mean_matching_prefix`**
-  (`eval/trajectory.py:137,148`) — same number under two names; the name
-  suggests a different statistic.
+- **`mean_first_divergence` duplicates `mean_matching_prefix`** — the same
+  number is returned under both names, in the per-prompt metrics
+  (`eval/trajectory.py:137-138`) and again in the aggregate return dict
+  (`eval/trajectory.py:147-148`); the name suggests a different statistic.
 - **Butterfly/rotation sign vectors are stored as fp32** (16 KB/layer for 1 bit
   of information per element, also in the GGUF layout). Negligible at current
   scale; inelegant in a format spec that otherwise counts bits honestly.
