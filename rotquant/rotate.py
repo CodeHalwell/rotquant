@@ -24,6 +24,7 @@ Implemented rotations:
 from __future__ import annotations
 
 import math
+import os
 
 import torch
 from torch import nn
@@ -39,6 +40,16 @@ except Exception as exc:  # pragma: no cover - kernel only present with CUDA bui
 _slow_fwht_warned = False
 
 
+def _fast_hadamard_disabled() -> bool:
+    """Return whether callers explicitly disabled the optional CUDA extension."""
+    return os.environ.get("ROTQUANT_DISABLE_FAST_HADAMARD", "").strip().lower() in {
+        "1",
+        "true",
+        "yes",
+        "on",
+    }
+
+
 def _warn_slow_cuda_fwht() -> None:
     """Warn once when a CUDA tensor takes the pure-torch FWHT path.
 
@@ -52,7 +63,10 @@ def _warn_slow_cuda_fwht() -> None:
     _slow_fwht_warned = True
     from .utils import get_logger
 
-    detail = f" (import failed: {_fht_import_error!r})" if _fht_import_error else ""
+    if _fast_hadamard_disabled():
+        detail = " (disabled by ROTQUANT_DISABLE_FAST_HADAMARD)"
+    else:
+        detail = f" (import failed: {_fht_import_error!r})" if _fht_import_error else ""
     get_logger(__name__).warning(
         "fast-hadamard-transform CUDA kernel unavailable%s; using the pure-torch "
         "FWHT, which is prohibitively slow at model dimensions on GPU. Install "
@@ -78,7 +92,7 @@ def fwht(x: torch.Tensor, normalize: bool = True) -> torch.Tensor:
         raise ValueError(f"FWHT length must be a power of two, got {d}")
 
     if x.is_cuda:
-        if _fht_cuda is not None:
+        if _fht_cuda is not None and not _fast_hadamard_disabled():
             # The kernel applies the unnormalised H; scale to match our convention.
             out = _fht_cuda(x.contiguous())
             return out / math.sqrt(d) if normalize else out

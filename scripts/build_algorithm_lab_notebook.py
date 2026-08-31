@@ -234,8 +234,10 @@ def build_notebook():
         md("### 3. Install the evaluation runtime without replacing CUDA PyTorch"),
         code("""
         import hashlib
+        import importlib
         import importlib.metadata
         import json
+        import platform
 
         runtime_packages = [
             "transformers==5.9.0", "datasets==4.8.5", "accelerate==1.13.0",
@@ -251,15 +253,113 @@ def build_notebook():
             [sys.executable, "-m", "pip", "install", "-q", "-e", str(REPO_DIR), "--no-deps"],
             check=True,
         )
-        kernel_build = subprocess.run([
-            sys.executable, "-m", "pip", "install", "-q",
-            "fast-hadamard-transform==1.1.0", "--no-build-isolation",
-        ], check=False)
+        # The upstream v1.1.0 PyPI sdist points at a GitHub release with no
+        # wheel assets, so pip falls through to a fragile Colab source build.
+        # v1.1.0.post2 publishes wheels for the current CUDA/PyTorch matrix,
+        # while retaining 1.1.0 as the distribution version inside the wheel.
+        fht_release = "v1.1.0.post2"
+        fht_version = "1.1.0"
+        torch_major_minor = ".".join(torch.__version__.split("+")[0].split(".")[:2])
+        cuda_major = str(torch.version.cuda).split(".")[0]
+        python_tag = f"cp{sys.version_info.major}{sys.version_info.minor}"
+        machine = platform.machine().lower()
+        wheel_platform = {
+            "x86_64": "linux_x86_64",
+            "amd64": "linux_x86_64",
+            "aarch64": "linux_aarch64",
+            "arm64": "linux_aarch64",
+        }.get(machine, f"linux_{machine}")
+        cxx11_abi = str(torch._C._GLIBCXX_USE_CXX11_ABI).upper()
+        fht_wheel_name = (
+            f"fast_hadamard_transform-{fht_version}+cu{cuda_major}"
+            f"torch{torch_major_minor}cxx11abi{cxx11_abi}-"
+            f"{python_tag}-{python_tag}-{wheel_platform}.whl"
+        )
+        fht_wheel_url = (
+            "https://github.com/Dao-AILab/fast-hadamard-transform/"
+            f"releases/download/{fht_release}/{fht_wheel_name}"
+        )
+
+        def install_kernel(command, label, *, env=None, stream_output=False):
+            print(f"Installing fast Hadamard kernel via {label}...")
+            run_options = {"check": False, "env": env}
+            if not stream_output:
+                run_options.update({"capture_output": True, "text": True})
+            result = subprocess.run(command, **run_options)
+            if result.returncode:
+                if stream_output:
+                    print(
+                        f"{label} failed (exit {result.returncode}); "
+                        "full output was streamed above."
+                    )
+                else:
+                    output = "\\n".join(
+                        part for part in (result.stdout, result.stderr) if part
+                    )
+                    print(f"{label} failed (exit {result.returncode}); output tail:")
+                    print("\\n".join(output.splitlines()[-60:]))
+            return result
+
+        kernel_build = install_kernel([
+            sys.executable, "-m", "pip", "install", "-q", "--no-deps",
+            fht_wheel_url,
+        ], "the upstream prebuilt wheel")
+        fast_hadamard_install_method = "prebuilt_wheel"
+        if kernel_build.returncode:
+            kernel_env = os.environ.copy()
+            kernel_env.update({"MAX_JOBS": "2", "NVCC_THREADS": "2"})
+            kernel_build = install_kernel([
+                sys.executable, "-m", "pip", "install", "-v", "--no-deps",
+                "--no-build-isolation",
+                f"git+https://github.com/Dao-AILab/fast-hadamard-transform.git@{fht_release}",
+            ], "a bounded source build", env=kernel_env, stream_output=True)
+            fast_hadamard_install_method = "source_build"
+
         fast_hadamard_available = kernel_build.returncode == 0
+        fast_hadamard_error = (
+            None if fast_hadamard_available else
+            f"{fast_hadamard_install_method} exited with status "
+            f"{kernel_build.returncode}; see installer output above"
+        )
+        if fast_hadamard_available:
+            try:
+                importlib.invalidate_caches()
+                from fast_hadamard_transform import hadamard_transform
+
+                with torch.no_grad():
+                    smoke_input = torch.randn(
+                        2, 128, device="cuda", dtype=torch.float16
+                    )
+                    smoke_output = hadamard_transform(smoke_input.contiguous())
+                    torch.cuda.synchronize()
+                    if smoke_output.shape != smoke_input.shape:
+                        raise RuntimeError(
+                            "CUDA smoke test returned an unexpected output shape"
+                        )
+                    if not bool(torch.isfinite(smoke_output).all().item()):
+                        raise RuntimeError("CUDA smoke test returned non-finite values")
+                del smoke_input, smoke_output
+                print(
+                    "Fast Hadamard CUDA smoke test passed via "
+                    f"{fast_hadamard_install_method}."
+                )
+            except Exception as exc:
+                fast_hadamard_available = False
+                fast_hadamard_error = f"{type(exc).__name__}: {exc}"
+                print(f"Fast Hadamard CUDA smoke test failed: {fast_hadamard_error}")
+        if fast_hadamard_available:
+            os.environ.pop("ROTQUANT_DISABLE_FAST_HADAMARD", None)
+        else:
+            # Fail closed even if the extension imported but its CUDA launch failed.
+            # rotquant.rotate checks this flag at call time before selecting the kernel.
+            os.environ["ROTQUANT_DISABLE_FAST_HADAMARD"] = "1"
         if REQUIRE_FAST_HADAMARD:
             assert fast_hadamard_available, (
-                "fast-hadamard-transform failed to build; inspect the pip output "
-                "or set REQUIRE_FAST_HADAMARD=False for the slower torch fallback."
+                "No compatible fast-hadamard-transform kernel could be loaded. "
+                "Installer diagnostics are printed above. For a slower diagnostic "
+                "run only, set REQUIRE_FAST_HADAMARD=False and rerun this cell. "
+                f"Attempted wheel: {fht_wheel_name}. "
+                f"Smoke-test error: {fast_hadamard_error}"
             )
         elif not fast_hadamard_available:
             print("WARNING: using the much slower pure-torch FWHT fallback.")
@@ -287,6 +387,11 @@ def build_notebook():
             "compute_capability": list(torch.cuda.get_device_capability(0)),
             "driver": driver_version,
             "fast_hadamard_transform": fast_hadamard_available,
+            "fast_hadamard_disabled": not fast_hadamard_available,
+            "fast_hadamard_install_method": (
+                fast_hadamard_install_method if fast_hadamard_available else None
+            ),
+            "fast_hadamard_attempted_wheel": fht_wheel_name,
             "fast_hadamard_version": (
                 importlib.metadata.version("fast-hadamard-transform")
                 if fast_hadamard_available else None
