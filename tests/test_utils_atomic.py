@@ -27,3 +27,4 @@ def test_write_result_atomically_replaces_destination(tmp_path, monkeypatch):
     }
     assert json.loads(destination.read_text()) == {"new": [1, 2, 3]}
     assert not list(tmp_path.glob("*.tmp"))
+    assert not list(tmp_path.glob(".rotquant-*.json.tmp"))
