@@ -103,6 +103,54 @@ The flagship provider comparison should use a currently contested model and
 the same public source revision as the external artifacts. Smaller models are
 for iteration speed and CI, not the final claim.
 
+### Qwen development ladder
+
+Qwen3.5-4B is the primary development model. It is small enough for frequent
+full sweeps while exercising the hybrid decoder, multimodal wrapper, chat
+template, and architecture-specific exclusions needed by the flagship target.
+Qwen2.5-3B remains a cheap transfer canary: a candidate that is catastrophic on
+that family does not advance merely because it wins on Qwen3.5-4B.
+
+Development on the 4B model may change the calibration mixture, importance
+objective, bit-allocation algorithm, codebooks, kernels, artifact schema, and
+evaluation implementation. Before the first Qwen3.8-27B quality result is
+examined, freeze and version:
+
+- calibration and held-out dataset manifests;
+- tokenizer/chat-template processing;
+- allocation objective, candidate bit widths, rate tolerance, and all search
+  hyperparameters;
+- preset definitions and promotion thresholds;
+- artifact byte policy, including vision/projector and MTP tensors;
+- benchmark metrics, bootstrap procedure, and failure taxonomy.
+
+The frozen optimizer may still collect model-specific importance statistics and
+produce a different layer map on Qwen3.8-27B. Changing the objective or
+thresholds in response to its final scores is tuning on the test model and
+requires a new protocol version plus a fresh final evaluation.
+
+The 4B stage is complete only when:
+
+1. the quality, fast, and compact candidates pass the registered 300-prompt
+   suite and the Qwen2.5 transfer canary;
+2. target rates across the planned 1--8-bit frontier export and reload without
+   persistent dense weights;
+3. quantization is resumable and layer-streamed under an artificial memory cap,
+   with GPU state bounded to the active block/calibration workspace rather than
+   a second full model;
+4. the same packed artifacts execute through the intended production operator
+   boundary, with correctness, memory, prefill, and decode measurements;
+5. a measured per-layer cost model provides a credible Qwen3.8-27B time, VRAM,
+   host-RAM, and storage forecast.
+
+Qwen3.8-27B is then the locked flagship confirmation model. Start with the
+nearest-size W2/W3/W4 or mixed-rate anchors against standard GGUF and Unsloth,
+including source-normalized quality. Fill the complete 1.5/2/2.5/3/4/5/6/8-bit
+frontier only after the pipeline and comparison protocol pass those anchors.
+Implementation bug fixes are allowed, but invalidate affected source and
+candidate results equally and must trigger a complete rerun under a new code
+revision.
+
 ## Runtime protocol
 
 Benchmark warm and cold load, prompt processing, decode, time to first token,
