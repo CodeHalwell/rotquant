@@ -82,7 +82,7 @@ def build_notebook():
         from pathlib import Path
 
         REPO_URL = "https://github.com/CodeHalwell/rotquant.git"
-        REPO_REF = "codex/canonical-serving-stage"
+        REPO_REF = "main"
         REPO_DIR = Path("/content/rotquant-algorithm-lab")
         CONFIG_RELATIVE_PATH = Path("configs/algorithm_lab_cuda.yaml")
 
@@ -208,21 +208,40 @@ def build_notebook():
         code("""
         if USE_GOOGLE_DRIVE:
             from google.colab import drive
-            drive.mount("/content/drive")
+            if not Path("/content/drive/MyDrive").exists():
+                drive.mount("/content/drive")
+            else:
+                print("Google Drive is already mounted.")
             RESULT_BASE = DRIVE_RESULT_ROOT
         else:
             RESULT_BASE = LOCAL_RESULT_ROOT
         RESULT_BASE.mkdir(parents=True, exist_ok=True)
 
+        def run_git(arguments, *, cwd=None):
+            result = subprocess.run(
+                ["git", *arguments], cwd=cwd, capture_output=True, text=True,
+                check=False,
+            )
+            if result.returncode:
+                print(result.stdout)
+                print(result.stderr)
+                result.check_returncode()
+            return result
+
         if not REPO_DIR.exists():
-            subprocess.run([
-                "git", "clone", "--branch", REPO_REF, "--single-branch",
+            run_git([
+                "clone", "--branch", REPO_REF, "--single-branch",
                 REPO_URL, str(REPO_DIR),
-            ], check=True)
+            ])
         else:
-            subprocess.run(["git", "fetch", "origin", REPO_REF], cwd=REPO_DIR, check=True)
-            subprocess.run(["git", "checkout", REPO_REF], cwd=REPO_DIR, check=True)
-            subprocess.run(["git", "pull", "--ff-only", "origin", REPO_REF], cwd=REPO_DIR, check=True)
+            if not (REPO_DIR / ".git").is_dir():
+                raise RuntimeError(
+                    f"{REPO_DIR} exists but is not a Git checkout. "
+                    "Choose a fresh REPO_DIR or remove the incomplete directory."
+                )
+            run_git(["fetch", "origin", REPO_REF], cwd=REPO_DIR)
+            run_git(["checkout", REPO_REF], cwd=REPO_DIR)
+            run_git(["pull", "--ff-only", "origin", REPO_REF], cwd=REPO_DIR)
 
         commit = subprocess.check_output(
             ["git", "rev-parse", "HEAD"], cwd=REPO_DIR, text=True
