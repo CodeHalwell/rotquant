@@ -11,6 +11,7 @@ import hashlib
 import json
 import math
 from dataclasses import asdict, dataclass
+from numbers import Integral
 from typing import Any
 
 REGISTERED_PROMPT_COUNT = 300
@@ -41,6 +42,12 @@ def _require_item_hashes(name: str, values: Any) -> tuple[str, ...]:
     if len(set(values)) != len(values):
         raise ValueError(f"{name} must not contain duplicate identities")
     return values
+
+
+def _require_positive_int(name: str, value: Any) -> int:
+    if isinstance(value, bool) or not isinstance(value, Integral) or value <= 0:
+        raise ValueError(f"{name} must be a positive integer")
+    return int(value)
 
 
 @dataclass(frozen=True)
@@ -166,10 +173,13 @@ class ArtifactEvaluation:
         if not self.name or not self.format or not self.protocol_fingerprint:
             raise ValueError("name, format, and protocol_fingerprint are required")
         _require_sha256("protocol_fingerprint", self.protocol_fingerprint)
-        if self.artifact_bytes < 1 or self.scored_tokens < 1:
-            raise ValueError("artifact_bytes and scored_tokens must be positive")
-        if self.trajectory_prompts < 1 or self.trajectory_tokens < 1:
-            raise ValueError("trajectory dimensions must be positive")
+        for name in (
+            "artifact_bytes",
+            "scored_tokens",
+            "trajectory_prompts",
+            "trajectory_tokens",
+        ):
+            _require_positive_int(name, getattr(self, name))
         for name in ("mean_teacher_kl", "median_teacher_kl", "p95_teacher_kl"):
             value = float(getattr(self, name))
             if not math.isfinite(value) or value < 0:

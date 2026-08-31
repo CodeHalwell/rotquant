@@ -85,3 +85,9 @@ def test_comparison_requires_same_protocol_and_size():
             baseline,
             _protocol(),
         )
+
+
+@pytest.mark.parametrize("value", [float("inf"), float("nan"), 1.5, True, 0, -1])
+def test_artifact_evaluation_rejects_invalid_byte_counts(value):
+    with pytest.raises(ValueError, match="artifact_bytes must be a positive integer"):
+        _evaluation("invalid", _protocol().fingerprint, size=value)

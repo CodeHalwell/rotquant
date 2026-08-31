@@ -140,6 +140,11 @@ def build_notebook():
         MAX_PROMOTED_PER_TRACK = 2
         MAX_SCREEN_RELATIVE_PPL = 1.0
         MAX_CONFIRM_RELATIVE_PPL = 0.25
+        MIN_CONFIRM_TRAJECTORY_TOKEN_AGREEMENT = 0.20
+        MIN_CONFIRM_TOP1_AGREEMENT = 0.50
+        MAX_CONFIRM_MEAN_TEACHER_KL = 1.0
+        MAX_CONFIRM_P95_TEACHER_KL = 5.0
+        MAX_CONFIRM_WORST_LAYER_NMSE = 0.50
         MIN_ALLOCATION_BYTE_SAVING = 0.01
         MATCHED_RATE_TOLERANCE = 0.0025
         EARLY_STOP_AFTER = 4
@@ -965,6 +970,7 @@ def build_notebook():
                 "trajectory_mean_matching_prefix": trajectory.get(
                     "mean_matching_prefix", float("nan")
                 ),
+                "logit_fidelity_prompts": logit_fidelity.get("prompts", 0),
                 "mean_teacher_kl": logit_fidelity.get(
                     "mean_teacher_kl", float("nan")
                 ),
@@ -1496,6 +1502,7 @@ def build_notebook():
                 mean_trajectory_token_agreement=(
                     "trajectory_token_agreement", "mean"
                 ),
+                min_trajectory_prompts=("trajectory_prompts", "min"),
                 worst_trajectory_token_agreement=(
                     "trajectory_token_agreement", "min"
                 ),
@@ -1505,10 +1512,12 @@ def build_notebook():
                 ),
                 mean_teacher_kl=("mean_teacher_kl", "mean"),
                 worst_teacher_kl=("mean_teacher_kl", "max"),
+                min_logit_fidelity_prompts=("logit_fidelity_prompts", "min"),
                 mean_median_teacher_kl=("median_teacher_kl", "mean"),
                 worst_p95_teacher_kl=("p95_teacher_kl", "max"),
                 worst_max_teacher_kl=("max_teacher_kl", "max"),
                 mean_top1_agreement=("top1_agreement", "mean"),
+                worst_top1_agreement=("top1_agreement", "min"),
                 mean_logit_nll_delta=("logit_nll_delta", "mean"),
                 worst_layer_nmse=("worst_layer_nmse", "max"),
                 mean_trial_wall_seconds=("trial_wall_seconds", "mean"),
@@ -1517,6 +1526,8 @@ def build_notebook():
                 seeds=("seed", "nunique"),
             )
             statuses = []
+            diagnostic_availability = []
+            diagnostic_results = []
             for _, summary_row in validation_summary.iterrows():
                 profile = summary_row["profile"]
                 cross = cross_family_table[
@@ -1533,6 +1544,76 @@ def build_notebook():
                     and (cross["relative_ppl"] <= MAX_CONFIRM_RELATIVE_PPL).all()
                     and (cross["relative_ppl_c4"] <= MAX_CONFIRM_RELATIVE_PPL).all()
                     and (~cross["ppl_stopped_early"]).all()
+                )
+                primary_diagnostics_available = bool(
+                    RUN_TRAJECTORY_VALIDATION
+                    and RUN_LOGIT_FIDELITY
+                    and RUN_LAYER_DRIFT
+                    and summary_row["min_trajectory_prompts"]
+                    >= TRAJECTORY_BATCHES
+                    and summary_row["min_logit_fidelity_prompts"]
+                    >= LOGIT_FIDELITY_BATCHES
+                    and np.isfinite([
+                        summary_row["worst_trajectory_token_agreement"],
+                        summary_row["worst_teacher_kl"],
+                        summary_row["worst_p95_teacher_kl"],
+                        summary_row["worst_top1_agreement"],
+                        summary_row["worst_layer_nmse"],
+                    ]).all()
+                )
+                primary_diagnostics_passed = bool(
+                    primary_diagnostics_available
+                    and summary_row["worst_trajectory_token_agreement"]
+                    >= MIN_CONFIRM_TRAJECTORY_TOKEN_AGREEMENT
+                    and summary_row["worst_teacher_kl"]
+                    <= MAX_CONFIRM_MEAN_TEACHER_KL
+                    and summary_row["worst_p95_teacher_kl"]
+                    <= MAX_CONFIRM_P95_TEACHER_KL
+                    and summary_row["worst_top1_agreement"]
+                    >= MIN_CONFIRM_TOP1_AGREEMENT
+                    and summary_row["worst_layer_nmse"]
+                    <= MAX_CONFIRM_WORST_LAYER_NMSE
+                )
+                cross_diagnostics_available = bool(
+                    cross_family_available
+                    and RUN_TRAJECTORY_VALIDATION
+                    and RUN_LOGIT_FIDELITY
+                    and RUN_LAYER_DRIFT
+                    and (cross["trajectory_prompts"] >= TRAJECTORY_BATCHES).all()
+                    and (
+                        cross["logit_fidelity_prompts"]
+                        >= LOGIT_FIDELITY_BATCHES
+                    ).all()
+                    and np.isfinite(cross[[
+                        "trajectory_token_agreement",
+                        "mean_teacher_kl",
+                        "p95_teacher_kl",
+                        "top1_agreement",
+                        "worst_layer_nmse",
+                    ]].to_numpy(dtype=float)).all()
+                )
+                cross_diagnostics_passed = bool(
+                    cross_diagnostics_available
+                    and (
+                        cross["trajectory_token_agreement"]
+                        >= MIN_CONFIRM_TRAJECTORY_TOKEN_AGREEMENT
+                    ).all()
+                    and (
+                        cross["mean_teacher_kl"]
+                        <= MAX_CONFIRM_MEAN_TEACHER_KL
+                    ).all()
+                    and (
+                        cross["p95_teacher_kl"]
+                        <= MAX_CONFIRM_P95_TEACHER_KL
+                    ).all()
+                    and (
+                        cross["top1_agreement"]
+                        >= MIN_CONFIRM_TOP1_AGREEMENT
+                    ).all()
+                    and (
+                        cross["worst_layer_nmse"]
+                        <= MAX_CONFIRM_WORST_LAYER_NMSE
+                    ).all()
                 )
                 if profile in MATCHED_CONTROL_MAP:
                     primary_controls = validation_control_table[
@@ -1552,6 +1633,16 @@ def build_notebook():
                 else:
                     primary_matched_control_passed = True
                     cross_family_matched_control_passed = True
+                diagnostics_available = bool(
+                    primary_diagnostics_available
+                    and cross_diagnostics_available
+                )
+                diagnostics_passed = bool(
+                    primary_diagnostics_passed
+                    and cross_diagnostics_passed
+                )
+                diagnostic_availability.append(diagnostics_available)
+                diagnostic_results.append(diagnostics_passed)
                 statuses.append(validation_status(
                     research_only=bool(summary_row["research_only"]),
                     control_only=profile not in promoted_names,
@@ -1564,7 +1655,11 @@ def build_notebook():
                     cross_family_matched_control_passed=(
                         cross_family_matched_control_passed
                     ),
+                    diagnostics_available=diagnostics_available,
+                    diagnostics_passed=diagnostics_passed,
                 ))
+            validation_summary["diagnostics_available"] = diagnostic_availability
+            validation_summary["diagnostics_passed"] = diagnostic_results
             validation_summary["status"] = statuses
             display(validation_summary.sort_values([
                 "mean_complete_persistent_bytes", "mean_ppl"
@@ -1689,6 +1784,15 @@ def build_notebook():
                 "bootstrap_draws": BOOTSTRAP_DRAWS,
                 "matched_rate_tolerance": MATCHED_RATE_TOLERANCE,
                 "max_confirm_relative_ppl": MAX_CONFIRM_RELATIVE_PPL,
+                "diagnostic_gates": {
+                    "min_trajectory_token_agreement": (
+                        MIN_CONFIRM_TRAJECTORY_TOKEN_AGREEMENT
+                    ),
+                    "min_top1_agreement": MIN_CONFIRM_TOP1_AGREEMENT,
+                    "max_mean_teacher_kl": MAX_CONFIRM_MEAN_TEACHER_KL,
+                    "max_p95_teacher_kl": MAX_CONFIRM_P95_TEACHER_KL,
+                    "max_worst_layer_nmse": MAX_CONFIRM_WORST_LAYER_NMSE,
+                },
             },
             "competitive_claim_contract": {
                 "status": "not_run",

@@ -57,6 +57,9 @@ def test_algorithm_lab_notebook_covers_every_track_and_requires_confirmation():
     assert "trajectory_token_agreement" in source
     assert "median_teacher_kl" in source
     assert "p95_teacher_kl" in source
+    assert "MIN_CONFIRM_TRAJECTORY_TOKEN_AGREEMENT" in source
+    assert "MIN_CONFIRM_TOP1_AGREEMENT" in source
+    assert 'validation_summary["diagnostics_passed"]' in source
     assert "paired_window_statistics" in source
     assert "MATCHED_CONTROL_MAP" in source
     assert "select_promoted_profiles" in source

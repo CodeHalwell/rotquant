@@ -115,4 +115,13 @@ def test_validation_status_never_promotes_missing_evidence():
     assert validation_status(
         **(common | {"cross_family_matched_control_passed": False})
     ) == "cross_family_matched_control_failed"
+    assert validation_status(
+        **(common | {"diagnostics_available": False})
+    ) == "diagnostics_missing"
+    assert validation_status(
+        **(common | {"diagnostics_passed": False})
+    ) == "diagnostics_failed"
+    assert validation_status(
+        **(common | {"research_only": True, "diagnostics_passed": False})
+    ) == "research_diagnostics_failed"
     assert validation_status(**(common | {"research_only": True})) == "research_confirmed"

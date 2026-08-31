@@ -215,6 +215,8 @@ def validation_status(
     cross_family_quality_passed: bool,
     primary_matched_control_passed: bool = True,
     cross_family_matched_control_passed: bool = True,
+    diagnostics_available: bool = True,
+    diagnostics_passed: bool = True,
 ) -> str:
     """Classify evidence without turning a placeholder into a release claim."""
 
@@ -230,6 +232,10 @@ def validation_status(
         return "research_cross_family_failed" if research_only else "cross_family_failed"
     if not cross_family_matched_control_passed:
         return "cross_family_matched_control_failed"
+    if not diagnostics_available:
+        return "diagnostics_missing"
+    if not diagnostics_passed:
+        return "research_diagnostics_failed" if research_only else "diagnostics_failed"
     return "research_confirmed" if research_only else "runtime_candidate"
 
 
