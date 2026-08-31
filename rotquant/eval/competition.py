@@ -13,10 +13,34 @@ import math
 from dataclasses import asdict, dataclass
 from typing import Any
 
+REGISTERED_PROMPT_COUNT = 300
+REGISTERED_GENERATION_TOKENS = 32
+REGISTERED_DOMAINS = frozenset({
+    "agentic",
+    "code",
+    "math",
+    "multilingual",
+    "long_document",
+})
 
-def _require_sha256(name: str, value: str) -> None:
-    if len(value) != 64 or any(character not in "0123456789abcdef" for character in value):
+
+def _require_sha256(name: str, value: Any) -> None:
+    if (
+        not isinstance(value, str)
+        or len(value) != 64
+        or any(character not in "0123456789abcdef" for character in value)
+    ):
         raise ValueError(f"{name} must be a lowercase SHA-256 digest")
+
+
+def _require_item_hashes(name: str, values: Any) -> tuple[str, ...]:
+    if not isinstance(values, tuple) or not values:
+        raise ValueError(f"{name} must be a non-empty tuple of SHA-256 digests")
+    for index, value in enumerate(values):
+        _require_sha256(f"{name}[{index}]", value)
+    if len(set(values)) != len(values):
+        raise ValueError(f"{name} must not contain duplicate identities")
+    return values
 
 
 @dataclass(frozen=True)
@@ -30,8 +54,10 @@ class CompetitiveEvalProtocol:
     calibration_manifest_sha256: str
     chat_template_sha256: str
     domains: tuple[str, ...]
-    prompt_count: int = 300
-    generation_tokens: int = 32
+    prompt_item_sha256: tuple[str, ...]
+    calibration_item_sha256: tuple[str, ...]
+    prompt_count: int = REGISTERED_PROMPT_COUNT
+    generation_tokens: int = REGISTERED_GENERATION_TOKENS
     temperature: float = 0.0
     include_auxiliary_heads: bool = False
 
@@ -44,26 +70,69 @@ class CompetitiveEvalProtocol:
             "calibration_manifest_sha256",
             "chat_template_sha256",
         ):
-            if not str(getattr(self, name)).strip():
+            value = getattr(self, name)
+            if not isinstance(value, str) or not value.strip():
                 raise ValueError(f"{name} must not be empty")
-        if self.prompt_manifest_sha256 == self.calibration_manifest_sha256:
-            raise ValueError("calibration and held-out prompt manifests must be disjoint")
         for name in (
             "prompt_manifest_sha256",
             "calibration_manifest_sha256",
             "chat_template_sha256",
         ):
             _require_sha256(name, getattr(self, name))
-        if not self.domains or any(not domain.strip() for domain in self.domains):
-            raise ValueError("at least one non-empty evaluation domain is required")
-        if self.prompt_count < 1 or self.generation_tokens < 1:
-            raise ValueError("prompt_count and generation_tokens must be positive")
+        if self.prompt_manifest_sha256 == self.calibration_manifest_sha256:
+            raise ValueError("calibration and held-out prompt manifests must differ")
+        prompt_items = _require_item_hashes(
+            "prompt_item_sha256", self.prompt_item_sha256
+        )
+        calibration_items = _require_item_hashes(
+            "calibration_item_sha256", self.calibration_item_sha256
+        )
+        overlap = set(prompt_items).intersection(calibration_items)
+        if overlap:
+            raise ValueError(
+                "calibration and held-out prompt identities are not disjoint: "
+                f"{len(overlap)} overlapping item hash(es)"
+            )
+        if (
+            not isinstance(self.domains, tuple)
+            or not self.domains
+            or any(
+                not isinstance(domain, str) or not domain.strip()
+                for domain in self.domains
+            )
+        ):
+            raise ValueError(
+                "domains must be a non-empty tuple of non-empty strings"
+            )
+        missing_domains = REGISTERED_DOMAINS.difference(self.domains)
+        if missing_domains:
+            raise ValueError(
+                "competitive protocol is missing registered domains: "
+                + ", ".join(sorted(missing_domains))
+            )
+        if self.prompt_count != REGISTERED_PROMPT_COUNT:
+            raise ValueError(
+                f"competitive protocol requires {REGISTERED_PROMPT_COUNT} prompts"
+            )
+        if len(prompt_items) != self.prompt_count:
+            raise ValueError(
+                "prompt_item_sha256 must contain one identity per registered prompt"
+            )
+        if self.generation_tokens != REGISTERED_GENERATION_TOKENS:
+            raise ValueError(
+                "competitive protocol requires "
+                f"{REGISTERED_GENERATION_TOKENS} generated tokens"
+            )
         if self.temperature != 0.0:
             raise ValueError("competitive trajectory evaluation must use greedy decoding")
 
     def manifest(self) -> dict[str, Any]:
         payload = asdict(self)
         payload["domains"] = list(self.domains)
+        payload["prompt_item_sha256"] = list(self.prompt_item_sha256)
+        payload["calibration_item_sha256"] = list(
+            self.calibration_item_sha256
+        )
         return payload
 
     @property
@@ -178,6 +247,9 @@ def compare_matched_artifacts(
 
 
 __all__ = [
+    "REGISTERED_DOMAINS",
+    "REGISTERED_GENERATION_TOKENS",
+    "REGISTERED_PROMPT_COUNT",
     "ArtifactEvaluation",
     "CompetitiveEvalProtocol",
     "compare_matched_artifacts",

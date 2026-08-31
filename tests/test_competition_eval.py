@@ -10,6 +10,8 @@ from rotquant.eval.competition import (
 
 
 def _protocol(**overrides):
+    prompt_items = tuple(f"{index:064x}" for index in range(1, 301))
+    calibration_items = tuple(f"{index:064x}" for index in range(1001, 1005))
     values = {
         "model_id": "org/model",
         "model_revision": "model-sha",
@@ -18,6 +20,8 @@ def _protocol(**overrides):
         "calibration_manifest_sha256": "b" * 64,
         "chat_template_sha256": "c" * 64,
         "domains": ("agentic", "code", "math", "multilingual", "long_document"),
+        "prompt_item_sha256": prompt_items,
+        "calibration_item_sha256": calibration_items,
     }
     values.update(overrides)
     return CompetitiveEvalProtocol(**values)
@@ -50,9 +54,15 @@ def test_protocol_is_content_addressed_and_rejects_leakage():
     assert protocol.manifest()["generation_tokens"] == 32
 
     with pytest.raises(ValueError, match="disjoint"):
-        _protocol(calibration_manifest_sha256="a" * 64)
+        _protocol(calibration_item_sha256=("0" * 63 + "1",))
     with pytest.raises(ValueError, match="greedy"):
         _protocol(temperature=0.7)
+    with pytest.raises(ValueError, match="requires 300 prompts"):
+        _protocol(prompt_count=1)
+    with pytest.raises(ValueError, match="requires 32 generated tokens"):
+        _protocol(generation_tokens=1)
+    with pytest.raises(ValueError, match="chat_template_sha256"):
+        _protocol(chat_template_sha256=None)
 
 
 def test_comparison_requires_same_protocol_and_size():

@@ -37,7 +37,10 @@ Before looking at final scores, freeze a content-addressed protocol using
 - 300 held-out prompts balanced across agentic/tool use, code, maths,
   multilingual text, and long-document tasks;
 - exact prompt token IDs, not only rendered text, so engine/template drift is
-  detectable.
+  detectable;
+- one SHA-256 identity per calibration and held-out token sequence, with an
+  empty intersection verified by the protocol constructor. Unequal aggregate
+  manifest hashes alone are not accepted as evidence of disjointness.
 
 The 300-prompt suite reports:
 

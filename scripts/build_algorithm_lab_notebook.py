@@ -541,6 +541,7 @@ def build_notebook():
         code("""
         import gc
         import hashlib
+        import os
         import time
         import traceback
         from dataclasses import asdict
@@ -1705,6 +1706,7 @@ def build_notebook():
                 ],
                 "requires_size_matched_external_artifacts": True,
                 "requires_disjoint_calibration_manifest": True,
+                "requires_item_level_token_hash_disjointness": True,
             },
             "trajectory_validation": {
                 "enabled": RUN_TRAJECTORY_VALIDATION,
