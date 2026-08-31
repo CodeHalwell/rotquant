@@ -34,6 +34,9 @@ def test_algorithm_lab_notebook_covers_every_track_and_requires_confirmation():
     source = _notebook_source(payload)
 
     assert "CONFIRM_EXPENSIVE_RUN = False" in source
+    assert 'REPO_REF = "main"' in source
+    assert 'def run_git(arguments, *, cwd=None):' in source
+    assert 'if not Path("/content/drive/MyDrive").exists():' in source
     assert "algorithmic_trial_matrix" in source
     assert "MIN_ALLOCATION_BYTE_SAVING" in source
     assert "RUN_CROSS_FAMILY = True" in source
