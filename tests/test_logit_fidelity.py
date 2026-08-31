@@ -39,11 +39,15 @@ def test_logit_fidelity_detects_distribution_drift():
     perfect = evaluate_logit_fidelity(model, references, "cpu", config)
     assert perfect["top1_agreement"] == 1.0
     assert perfect["mean_teacher_kl"] < 1e-6
+    assert perfect["median_teacher_kl"] < 1e-6
+    assert perfect["p95_teacher_kl"] < 1e-6
     assert perfect["nll_delta"] == 0.0
     assert len(perfect["input_hashes"]) == 2
+    assert len(perfect["prompt_metrics"]) == 2
 
     model.offset = 1
     divergent = evaluate_logit_fidelity(model, references, "cpu", config)
     assert divergent["top1_agreement"] == 0.0
     assert divergent["mean_teacher_kl"] > 1.0
+    assert divergent["p95_teacher_kl"] >= divergent["median_teacher_kl"]
     assert divergent["nll_delta"] > 1.0

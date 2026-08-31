@@ -55,8 +55,19 @@ def test_algorithm_lab_notebook_covers_every_track_and_requires_confirmation():
     assert '"fast_hadamard_disabled"' in source
     assert 'stage not in {\n        "validation", "cross_family"' in source
     assert "trajectory_token_agreement" in source
+    assert "median_teacher_kl" in source
+    assert "p95_teacher_kl" in source
+    assert "MIN_CONFIRM_TRAJECTORY_TOKEN_AGREEMENT" in source
+    assert "MIN_CONFIRM_TOP1_AGREEMENT" in source
+    assert 'validation_summary["diagnostics_passed"]' in source
     assert "paired_window_statistics" in source
     assert "MATCHED_CONTROL_MAP" in source
+    assert "select_promoted_profiles" in source
+    assert "cross_family_matched_controls" in source
+    assert "COMPETITIVE_PROMPT_COUNT = 300" in source
+    assert "COMPETITIVE_GENERATION_TOKENS = 32" in source
+    assert '"status": "not_run"' in source
+    assert "persist_frame" in source
     assert "complete_persistent_model_bytes" in source
     assert "quarantined incomplete record" in source
     assert "CUDA cleanup failed; restart the runtime" in source

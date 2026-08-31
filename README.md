@@ -49,6 +49,12 @@ serving stage: checkpoint reliability gates, a sharded Transformers artifact,
 specialized W1--W8 kernels, vLLM integration, architecture tiers, and packed-KV
 acceptance criteria.
 
+The [competitive evaluation contract](docs/competitive_eval.md) defines what it
+takes to compare RotQuant with Dynamic GGUF providers: exact deployed-size
+matching, disjoint calibration and 300-prompt manifests, KL distribution tails,
+32-token greedy divergence, task failures, and runtime evidence. A fallback PPL
+win alone is explicitly not treated as a competitive product claim.
+
 The [packed checkpoint v1 specification](docs/packed_format_v1.md) fixes the
 word layout, bit order, compatibility rules, and native-runtime conformance
 boundary for all 1–8-bit production profiles.

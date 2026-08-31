@@ -108,6 +108,7 @@ def evaluate_trajectories(model, tokenizer,
     exact = 0
     prefix_tokens = 0
     examples = 0
+    prompt_metrics: list[dict[str, Any]] = []
     for reference in references:
         inputs = _device_inputs(reference.inputs, device)
         output = model.generate(**inputs, **kwargs)
@@ -121,9 +122,21 @@ def evaluate_trajectories(model, tokenizer,
         matching_tokens += int(matches.sum().item())
         total_tokens += matches.numel()
         rows = matches.reshape(-1, width)
-        exact += int(rows.all(dim=-1).sum().item())
-        prefix_tokens += int(rows.cumprod(dim=-1).sum().item())
-        examples += rows.shape[0]
+        row_exact = rows.all(dim=-1)
+        row_prefix = rows.cumprod(dim=-1).sum(dim=-1)
+        exact += int(row_exact.sum().item())
+        prefix_tokens += int(row_prefix.sum().item())
+        prompt_examples = rows.shape[0]
+        examples += prompt_examples
+        prompt_metrics.append({
+            "input_hash": reference.input_hash,
+            "examples": prompt_examples,
+            "tokens": rows.numel(),
+            "token_agreement": float(rows.float().mean().item()),
+            "exact_trajectory_rate": float(row_exact.float().mean().item()),
+            "mean_matching_prefix": float(row_prefix.float().mean().item()),
+            "mean_first_divergence": float(row_prefix.float().mean().item()),
+        })
     if not examples or not total_tokens:
         raise ValueError("trajectory references contain no continuation tokens")
     return {
@@ -134,4 +147,5 @@ def evaluate_trajectories(model, tokenizer,
         "mean_matching_prefix": prefix_tokens / examples,
         "mean_first_divergence": prefix_tokens / examples,
         "input_hashes": [reference.input_hash for reference in references],
+        "prompt_metrics": prompt_metrics,
     }

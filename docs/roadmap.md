@@ -82,13 +82,35 @@ specialized around them:
   atomic resumable records;
 - [x] add seeded random-allocation and scalar 2.75-bpw controls so dynamic and
   vector candidates must beat a matched-format, matched-rate baseline;
-- [ ] execute the staged
+- [x] execute the staged
   [algorithm-lab Colab](../notebooks/rotquant_algorithm_lab_colab.ipynb) on the
   primary model, then promote only Pareto winners to three seeds and a second
-  architecture family;
+  architecture family (Qwen3.5-4B primary and Qwen2.5-3B transfer; see the
+  experiment log for positive and negative results);
+- [x] formalize the exact-size external-artifact and competitive-claim gates in
+  [the competitive evaluation contract](competitive_eval.md), including
+  content-addressed prompt/calibration protocols and KL distribution tails;
 - [ ] build a pinned, calibration-disjoint 300-prompt/32-token free-running
   divergence suite spanning agentic, code, maths, multilingual, and long-document
   prompts; compare the source, RotQuant, same-size GGUF, and Unsloth baselines;
+- [ ] build and publish the diverse calibration mixture and generated
+  importance/Hessian artifacts, with chat-template correctness, row/token
+  hashes, licensing, deduplication, and calibration-size ablations;
+- [ ] complete the Qwen3.5-4B development ladder in
+  [the competitive evaluation contract](competitive_eval.md): frozen presets,
+  the 300-prompt suite, Qwen2.5 transfer canary, every target-rate artifact,
+  production-operator conformance, and a measured 27B cost forecast;
+- [ ] make optimization resumable and layer-streamed on Qwen3.5-4B under an
+  artificial 27B-oriented memory cap. GPU memory must be bounded to the active
+  block and calibration workspace; no second full-model allocation is allowed;
+- [ ] freeze and version the optimizer, calibration/eval manifests, byte policy,
+  and promotion thresholds before reading Qwen3.8-27B final quality results;
+- [ ] run locked Qwen3.8-27B W2/W3/W4 or nearest mixed-rate anchors against
+  same-size standard GGUF and Unsloth artifacts before expanding the full
+  frontier;
+- [ ] run exact-size 1.5/2/2.5/3/4/5/6/8-bit frontier comparisons against
+  standard llama.cpp GGUF and current Unsloth artifacts; freeze the RotQuant
+  allocator before final-model evaluation and require paired intervals;
 - [ ] implement packed-key candidate generation only if the dense-attention
   oracle shows a useful V-read/quality region;
 - [ ] **meet the project's own confirmation bar at scale.** The README requires
@@ -97,7 +119,7 @@ specialized around them:
   OPT-125M/1.3B and Qwen3.5-4B on development subsets). This includes making
   the quantization pipeline itself scale: GPTQ Hessians cost ~25 GB VRAM on a
   7B and block training replays whole transformer blocks, so 70B-class models
-  need layer streaming / CPU offload that nothing currently plans;
+  need the layer streaming / CPU-offload path now scheduled on the 4B ladder;
 - [ ] integrate at least one trellis/lattice state-of-the-art baseline
   (QuIP#, QTIP, or HIGGS) with real checkpoint loading and exact rate
   accounting before publishing W1--W3 comparisons; the dimension-2 vector

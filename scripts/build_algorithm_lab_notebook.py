@@ -139,6 +139,12 @@ def build_notebook():
         CROSS_FAMILY_SEEDS = (0,)
         MAX_PROMOTED_PER_TRACK = 2
         MAX_SCREEN_RELATIVE_PPL = 1.0
+        MAX_CONFIRM_RELATIVE_PPL = 0.25
+        MIN_CONFIRM_TRAJECTORY_TOKEN_AGREEMENT = 0.20
+        MIN_CONFIRM_TOP1_AGREEMENT = 0.50
+        MAX_CONFIRM_MEAN_TEACHER_KL = 1.0
+        MAX_CONFIRM_P95_TEACHER_KL = 5.0
+        MAX_CONFIRM_WORST_LAYER_NMSE = 0.50
         MIN_ALLOCATION_BYTE_SAVING = 0.01
         MATCHED_RATE_TOLERANCE = 0.0025
         EARLY_STOP_AFTER = 4
@@ -154,6 +160,18 @@ def build_notebook():
             "dynamic_guarded_teacher_3p625": "dynamic_random_3p625",
             "dynamic_vector_2p75": "dynamic_scalar_teacher_2p75",
         }
+        PROMOTION_OUTCOME_PREFERENCE = (
+            "dynamic_teacher_3p625",
+            "dynamic_guarded_teacher_3p625",
+        )
+
+        # The in-notebook trajectory check is a cheap developmental sentinel.
+        # A competitive claim requires the separate, diverse 300-prompt suite.
+        COMPETITIVE_PROMPT_COUNT = 300
+        COMPETITIVE_GENERATION_TOKENS = 32
+        COMPETITIVE_DOMAINS = (
+            "agentic", "code", "math", "multilingual", "long_document",
+        )
 
         DYNAMIC_TEACHER_SKIP = 2048
         SCREEN_LAYER_DRIFT_SEQUENCE_LENGTH = 16
@@ -442,6 +460,7 @@ def build_notebook():
         required_paths = [
             CONFIG_PATH,
             REPO_DIR / "scripts/algorithmic_trials.py",
+            REPO_DIR / "scripts/algorithmic_selection.py",
             REPO_DIR / "rotquant/codebooks.py",
             REPO_DIR / "rotquant/kv_cache.py",
             REPO_DIR / "scripts/run_experiment.py",
@@ -449,6 +468,10 @@ def build_notebook():
         missing = [str(path) for path in required_paths if not path.exists()]
         assert not missing, "Missing required files: " + ", ".join(missing)
 
+        from scripts.algorithmic_selection import (
+            select_promoted_profiles,
+            validation_status,
+        )
         from scripts.algorithmic_trials import algorithmic_trial_matrix, trial_by_name
 
         TRIALS = algorithmic_trial_matrix()
@@ -523,6 +546,7 @@ def build_notebook():
         code("""
         import gc
         import hashlib
+        import os
         import time
         import traceback
         from dataclasses import asdict
@@ -535,6 +559,16 @@ def build_notebook():
         trial_records = {}
         FAILURE_ROOT = RESULT_ROOT / "failures"
         FAILURE_ROOT.mkdir(parents=True, exist_ok=True)
+
+        def persist_frame(name, frame):
+            # Atomically checkpoint a derived table beside per-trial records.
+            if frame.empty:
+                return None
+            path = RESULT_ROOT / f"{name}.csv"
+            temporary = path.with_name(f".{path.name}.{time.time_ns()}.tmp")
+            frame.to_csv(temporary, index=False)
+            os.replace(temporary, path)
+            return path
 
         def ppl_datasets(stage):
             return (
@@ -936,8 +970,18 @@ def build_notebook():
                 "trajectory_mean_matching_prefix": trajectory.get(
                     "mean_matching_prefix", float("nan")
                 ),
+                "logit_fidelity_prompts": logit_fidelity.get("prompts", 0),
                 "mean_teacher_kl": logit_fidelity.get(
                     "mean_teacher_kl", float("nan")
+                ),
+                "median_teacher_kl": logit_fidelity.get(
+                    "median_teacher_kl", float("nan")
+                ),
+                "p95_teacher_kl": logit_fidelity.get(
+                    "p95_teacher_kl", float("nan")
+                ),
+                "max_teacher_kl": logit_fidelity.get(
+                    "max_teacher_kl", float("nan")
                 ),
                 "mean_logit_cosine": logit_fidelity.get(
                     "mean_logit_cosine", float("nan")
@@ -1004,6 +1048,7 @@ def build_notebook():
                 sentinel_table["profile"] == "source_fp16"
             ]["complete_persistent_model_bytes"].iloc[0]
             assert sentinel_w4["payload"]["metrics"]["patched_modules"] > 0
+            persist_frame("sentinel", sentinel_table)
             display(sentinel_table)
         """),
         md("### 9. Run the prioritized primary-model seed-0 screen"),
@@ -1081,6 +1126,7 @@ def build_notebook():
             assert screen_table.loc[
                 screen_table["track"] == "allocation", "target_reached"
             ].all()
+            persist_frame("screen", screen_table)
             display(screen_table.sort_values([
                 "track", "complete_persistent_model_bytes", "ppl"
             ]).style.format({
@@ -1099,84 +1145,22 @@ def build_notebook():
         """),
         md("### 11. Promote only bounded, matched-control Pareto candidates"),
         code("""
-        import numpy as np
-
-
-        def pareto_rows(frame):
-            rows = frame.reset_index(drop=True)
-            keep = []
-            for _, row in rows.iterrows():
-                dominated = (
-                    (rows["complete_persistent_model_bytes"]
-                     <= row["complete_persistent_model_bytes"])
-                    & (rows["ppl"] <= row["ppl"])
-                    & (
-                        (rows["complete_persistent_model_bytes"]
-                         < row["complete_persistent_model_bytes"])
-                        | (rows["ppl"] < row["ppl"])
-                    )
-                ).any()
-                keep.append(not dominated)
-            return rows[np.array(keep, dtype=bool)]
-
-        promoted_names = {"gaussian_w4_mse"}
+        promotion_decisions = pd.DataFrame()
+        promoted_names = []
         if not screen_table.empty:
-            eligible = screen_table[
-                (screen_table["profile"] != "source_fp16")
-                & (screen_table["profile"] != "dynamic_random_3p625")
-                & screen_table["target_reached"]
-                & ~screen_table["ppl_stopped_early"]
-                & (screen_table["relative_ppl"] <= MAX_SCREEN_RELATIVE_PPL)
-            ].copy()
-            for track, group in eligible.groupby("track"):
-                frontier = pareto_rows(group).sort_values([
-                    "ppl", "complete_persistent_model_bytes"
-                ])
-                promoted_names.update(
-                    frontier["profile"].head(MAX_PROMOTED_PER_TRACK).tolist()
-                )
+            promoted_names, decision_rows = select_promoted_profiles(
+                screen_table.to_dict("records"),
+                matched_controls=MATCHED_CONTROL_MAP,
+                always_include=("gaussian_w4_mse",),
+                outcome_preference=PROMOTION_OUTCOME_PREFERENCE,
+                max_per_track=MAX_PROMOTED_PER_TRACK,
+                max_relative_ppl=MAX_SCREEN_RELATIVE_PPL,
+                min_allocation_byte_saving=MIN_ALLOCATION_BYTE_SAVING,
+            )
+            promotion_decisions = pd.DataFrame(decision_rows)
+            persist_frame("promotion_decisions", promotion_decisions)
+            display(promotion_decisions)
 
-            # A vector arm advances only when it beats its exact-rate scalar
-            # control. This prevents novelty from consuming confirmation runs.
-            for bits in (1, 2, 3):
-                scalar = screen_table[
-                    screen_table["profile"] == f"scalar_w{bits}_rms"
-                ].iloc[0]
-                vector = screen_table[
-                    screen_table["profile"] == f"vector_d2_w{bits}_rms"
-                ].iloc[0]
-                if (
-                    not vector["matched_rate"]
-                    or vector["matched_control_nll_delta"] >= 0
-                ):
-                    promoted_names.discard(vector["profile"])
-
-            for candidate_name in (
-                "dynamic_local_3p625", "dynamic_teacher_3p625",
-                "dynamic_guarded_teacher_3p625", "dynamic_vector_2p75",
-            ):
-                row = screen_table[
-                    screen_table["profile"] == candidate_name
-                ].iloc[0]
-                if not row["matched_rate"] or row[
-                    "matched_control_nll_delta"
-                ] >= 0:
-                    promoted_names.discard(candidate_name)
-
-            w4_bytes = float(screen_table[
-                screen_table["profile"] == "gaussian_w4_mse"
-            ]["complete_persistent_model_bytes"].iloc[0])
-            for name in promoted_names.copy():
-                row = screen_table[screen_table["profile"] == name]
-                if row.empty or row.iloc[0]["track"] != "allocation":
-                    continue
-                saving = 1.0 - float(
-                    row.iloc[0]["complete_persistent_model_bytes"]
-                ) / w4_bytes
-                if saving < MIN_ALLOCATION_BYTE_SAVING:
-                    promoted_names.discard(name)
-
-        promoted_names = sorted(promoted_names)
         promoted_profiles = [trial_by_name(name) for name in promoted_names]
         validation_profile_names = set(promoted_names)
         validation_profile_names.update(
@@ -1228,61 +1212,80 @@ def build_notebook():
                 assert len(diagnostic_digests) == len(set(diagnostic_digests)), (
                     "Held-out diagnostic partitions overlap."
                 )
+            persist_frame("validation", validation_table)
             display(validation_table.sort_values(["profile", "seed"]))
         else:
             full_source_ppl = float("nan")
             validation_table = pd.DataFrame()
 
-        validation_control_rows = []
-        validation_by_profile_seed = {
-            (record["profile"]["name"], record["seed"]): record
-            for record in validation_records
-        }
-        for candidate_name in (promoted_names if validation_records else []):
-            control_name = MATCHED_CONTROL_MAP.get(candidate_name)
-            if control_name is None:
-                continue
-            for seed in VALIDATION_SEEDS:
-                candidate_record = validation_by_profile_seed[
-                    (candidate_name, seed)
-                ]
-                control_record = validation_by_profile_seed[(control_name, seed)]
-                candidate_metrics = candidate_record["payload"]["metrics"]
-                control_metrics = control_record["payload"]["metrics"]
-                wiki = paired_window_statistics(
-                    candidate_metrics["ppl_wikitext2_details"],
-                    control_metrics["ppl_wikitext2_details"],
-                )
-                c4 = paired_window_statistics(
-                    candidate_metrics["ppl_c4_details"],
-                    control_metrics["ppl_c4_details"],
-                )
-                candidate_bytes = candidate_metrics[
-                    "complete_persistent_model_bytes"
-                ]
-                control_bytes = control_metrics[
-                    "complete_persistent_model_bytes"
-                ]
-                validation_control_rows.append({
-                    "candidate": candidate_name,
-                    "control": control_name,
-                    "seed": seed,
-                    "complete_byte_ratio": candidate_bytes / control_bytes,
-                    "matched_rate": abs(candidate_bytes / control_bytes - 1)
-                    <= MATCHED_RATE_TOLERANCE,
-                    "wiki_nll_delta": wiki["paired_nll_delta"],
-                    "wiki_ci_low": wiki["paired_nll_ci_low"],
-                    "wiki_ci_high": wiki["paired_nll_ci_high"],
-                    "c4_nll_delta": c4["paired_nll_delta"],
-                    "c4_ci_low": c4["paired_nll_ci_low"],
-                    "c4_ci_high": c4["paired_nll_ci_high"],
-                    "confidence_confirmed": (
-                        wiki["paired_nll_ci_high"] < 0
-                        and c4["paired_nll_ci_high"] < 0
-                    ),
-                })
-        validation_control_table = pd.DataFrame(validation_control_rows)
+        def matched_control_table(records, candidate_names, seeds):
+            rows = []
+            by_key = {
+                (
+                    record["model_case"]["name"],
+                    record["profile"]["name"],
+                    record["seed"],
+                ): record
+                for record in records
+            }
+            models = sorted({record["model_case"]["name"] for record in records})
+            for model_name in models:
+                for candidate_name in candidate_names:
+                    control_name = MATCHED_CONTROL_MAP.get(candidate_name)
+                    if control_name is None:
+                        continue
+                    for seed in seeds:
+                        candidate_record = by_key[
+                            (model_name, candidate_name, seed)
+                        ]
+                        control_record = by_key[(model_name, control_name, seed)]
+                        candidate_metrics = candidate_record["payload"]["metrics"]
+                        control_metrics = control_record["payload"]["metrics"]
+                        wiki = paired_window_statistics(
+                            candidate_metrics["ppl_wikitext2_details"],
+                            control_metrics["ppl_wikitext2_details"],
+                        )
+                        c4 = paired_window_statistics(
+                            candidate_metrics["ppl_c4_details"],
+                            control_metrics["ppl_c4_details"],
+                        )
+                        candidate_bytes = candidate_metrics[
+                            "complete_persistent_model_bytes"
+                        ]
+                        control_bytes = control_metrics[
+                            "complete_persistent_model_bytes"
+                        ]
+                        matched_rate = abs(candidate_bytes / control_bytes - 1) <= (
+                            MATCHED_RATE_TOLERANCE
+                        )
+                        rows.append({
+                            "model": model_name,
+                            "candidate": candidate_name,
+                            "control": control_name,
+                            "seed": seed,
+                            "complete_byte_ratio": candidate_bytes / control_bytes,
+                            "matched_rate": matched_rate,
+                            "wiki_nll_delta": wiki["paired_nll_delta"],
+                            "wiki_ci_low": wiki["paired_nll_ci_low"],
+                            "wiki_ci_high": wiki["paired_nll_ci_high"],
+                            "c4_nll_delta": c4["paired_nll_delta"],
+                            "c4_ci_low": c4["paired_nll_ci_low"],
+                            "c4_ci_high": c4["paired_nll_ci_high"],
+                            "confidence_confirmed": (
+                                matched_rate
+                                and wiki["paired_nll_ci_high"] < 0
+                                and c4["paired_nll_ci_high"] < 0
+                            ),
+                        })
+            return pd.DataFrame(rows)
+
+        validation_control_table = matched_control_table(
+            validation_records,
+            promoted_names if validation_records else [],
+            VALIDATION_SEEDS,
+        )
         if not validation_control_table.empty:
+            persist_frame("validation_matched_controls", validation_control_table)
             display(validation_control_table)
         """),
         md("### 12. Confirm promoted profiles on a second model family"),
@@ -1313,7 +1316,19 @@ def build_notebook():
             cross_rows.append(report_row(record, trial_records[source_key]))
         cross_family_table = pd.DataFrame(cross_rows)
         if not cross_family_table.empty:
+            persist_frame("cross_family", cross_family_table)
             display(cross_family_table.sort_values(["model", "profile", "seed"]))
+
+        cross_family_control_table = matched_control_table(
+            cross_family_records,
+            promoted_names if cross_family_records else [],
+            CROSS_FAMILY_SEEDS,
+        )
+        if not cross_family_control_table.empty:
+            persist_frame(
+                "cross_family_matched_controls", cross_family_control_table
+            )
+            display(cross_family_control_table)
         """),
         md("## Selective K/V retrieval"),
         md("""
@@ -1453,6 +1468,7 @@ def build_notebook():
                     break
             assert retrieval_rows, "No full-attention cache layers were available."
             retrieval_table = pd.DataFrame(retrieval_rows)
+            persist_frame("retrieval", retrieval_table)
             display(retrieval_table.head(20))
             retrieval_model = retrieval_output = retrieval_inputs = None
             release_cuda_memory()
@@ -1486,6 +1502,7 @@ def build_notebook():
                 mean_trajectory_token_agreement=(
                     "trajectory_token_agreement", "mean"
                 ),
+                min_trajectory_prompts=("trajectory_prompts", "min"),
                 worst_trajectory_token_agreement=(
                     "trajectory_token_agreement", "min"
                 ),
@@ -1495,7 +1512,12 @@ def build_notebook():
                 ),
                 mean_teacher_kl=("mean_teacher_kl", "mean"),
                 worst_teacher_kl=("mean_teacher_kl", "max"),
+                min_logit_fidelity_prompts=("logit_fidelity_prompts", "min"),
+                mean_median_teacher_kl=("median_teacher_kl", "mean"),
+                worst_p95_teacher_kl=("p95_teacher_kl", "max"),
+                worst_max_teacher_kl=("max_teacher_kl", "max"),
                 mean_top1_agreement=("top1_agreement", "mean"),
+                worst_top1_agreement=("top1_agreement", "min"),
                 mean_logit_nll_delta=("logit_nll_delta", "mean"),
                 worst_layer_nmse=("worst_layer_nmse", "max"),
                 mean_trial_wall_seconds=("trial_wall_seconds", "mean"),
@@ -1503,11 +1525,142 @@ def build_notebook():
                 peak_eval_vram_bytes=("peak_vram_bytes_eval", "max"),
                 seeds=("seed", "nunique"),
             )
-            validation_summary["status"] = np.where(
-                validation_summary["research_only"],
-                "research winner; format/kernel work still required",
-                "eligible for runtime prototype if cross-family gates pass",
-            )
+            statuses = []
+            diagnostic_availability = []
+            diagnostic_results = []
+            for _, summary_row in validation_summary.iterrows():
+                profile = summary_row["profile"]
+                cross = cross_family_table[
+                    cross_family_table["profile"] == profile
+                ] if not cross_family_table.empty else pd.DataFrame()
+                primary_quality_passed = bool(
+                    summary_row["worst_relative_ppl"] <= MAX_CONFIRM_RELATIVE_PPL
+                    and summary_row["worst_relative_ppl_c4"]
+                    <= MAX_CONFIRM_RELATIVE_PPL
+                )
+                cross_family_available = not cross.empty
+                cross_family_quality_passed = bool(
+                    cross_family_available
+                    and (cross["relative_ppl"] <= MAX_CONFIRM_RELATIVE_PPL).all()
+                    and (cross["relative_ppl_c4"] <= MAX_CONFIRM_RELATIVE_PPL).all()
+                    and (~cross["ppl_stopped_early"]).all()
+                )
+                primary_diagnostics_available = bool(
+                    RUN_TRAJECTORY_VALIDATION
+                    and RUN_LOGIT_FIDELITY
+                    and RUN_LAYER_DRIFT
+                    and summary_row["min_trajectory_prompts"]
+                    >= TRAJECTORY_BATCHES
+                    and summary_row["min_logit_fidelity_prompts"]
+                    >= LOGIT_FIDELITY_BATCHES
+                    and np.isfinite([
+                        summary_row["worst_trajectory_token_agreement"],
+                        summary_row["worst_teacher_kl"],
+                        summary_row["worst_p95_teacher_kl"],
+                        summary_row["worst_top1_agreement"],
+                        summary_row["worst_layer_nmse"],
+                    ]).all()
+                )
+                primary_diagnostics_passed = bool(
+                    primary_diagnostics_available
+                    and summary_row["worst_trajectory_token_agreement"]
+                    >= MIN_CONFIRM_TRAJECTORY_TOKEN_AGREEMENT
+                    and summary_row["worst_teacher_kl"]
+                    <= MAX_CONFIRM_MEAN_TEACHER_KL
+                    and summary_row["worst_p95_teacher_kl"]
+                    <= MAX_CONFIRM_P95_TEACHER_KL
+                    and summary_row["worst_top1_agreement"]
+                    >= MIN_CONFIRM_TOP1_AGREEMENT
+                    and summary_row["worst_layer_nmse"]
+                    <= MAX_CONFIRM_WORST_LAYER_NMSE
+                )
+                cross_diagnostics_available = bool(
+                    cross_family_available
+                    and RUN_TRAJECTORY_VALIDATION
+                    and RUN_LOGIT_FIDELITY
+                    and RUN_LAYER_DRIFT
+                    and (cross["trajectory_prompts"] >= TRAJECTORY_BATCHES).all()
+                    and (
+                        cross["logit_fidelity_prompts"]
+                        >= LOGIT_FIDELITY_BATCHES
+                    ).all()
+                    and np.isfinite(cross[[
+                        "trajectory_token_agreement",
+                        "mean_teacher_kl",
+                        "p95_teacher_kl",
+                        "top1_agreement",
+                        "worst_layer_nmse",
+                    ]].to_numpy(dtype=float)).all()
+                )
+                cross_diagnostics_passed = bool(
+                    cross_diagnostics_available
+                    and (
+                        cross["trajectory_token_agreement"]
+                        >= MIN_CONFIRM_TRAJECTORY_TOKEN_AGREEMENT
+                    ).all()
+                    and (
+                        cross["mean_teacher_kl"]
+                        <= MAX_CONFIRM_MEAN_TEACHER_KL
+                    ).all()
+                    and (
+                        cross["p95_teacher_kl"]
+                        <= MAX_CONFIRM_P95_TEACHER_KL
+                    ).all()
+                    and (
+                        cross["top1_agreement"]
+                        >= MIN_CONFIRM_TOP1_AGREEMENT
+                    ).all()
+                    and (
+                        cross["worst_layer_nmse"]
+                        <= MAX_CONFIRM_WORST_LAYER_NMSE
+                    ).all()
+                )
+                if profile in MATCHED_CONTROL_MAP:
+                    primary_controls = validation_control_table[
+                        validation_control_table["candidate"] == profile
+                    ]
+                    cross_controls = cross_family_control_table[
+                        cross_family_control_table["candidate"] == profile
+                    ]
+                    primary_matched_control_passed = bool(
+                        not primary_controls.empty
+                        and primary_controls["confidence_confirmed"].all()
+                    )
+                    cross_family_matched_control_passed = bool(
+                        not cross_controls.empty
+                        and cross_controls["confidence_confirmed"].all()
+                    )
+                else:
+                    primary_matched_control_passed = True
+                    cross_family_matched_control_passed = True
+                diagnostics_available = bool(
+                    primary_diagnostics_available
+                    and cross_diagnostics_available
+                )
+                diagnostics_passed = bool(
+                    primary_diagnostics_passed
+                    and cross_diagnostics_passed
+                )
+                diagnostic_availability.append(diagnostics_available)
+                diagnostic_results.append(diagnostics_passed)
+                statuses.append(validation_status(
+                    research_only=bool(summary_row["research_only"]),
+                    control_only=profile not in promoted_names,
+                    primary_quality_passed=primary_quality_passed,
+                    cross_family_available=cross_family_available,
+                    cross_family_quality_passed=cross_family_quality_passed,
+                    primary_matched_control_passed=(
+                        primary_matched_control_passed
+                    ),
+                    cross_family_matched_control_passed=(
+                        cross_family_matched_control_passed
+                    ),
+                    diagnostics_available=diagnostics_available,
+                    diagnostics_passed=diagnostics_passed,
+                ))
+            validation_summary["diagnostics_available"] = diagnostic_availability
+            validation_summary["diagnostics_passed"] = diagnostic_results
+            validation_summary["status"] = statuses
             display(validation_summary.sort_values([
                 "mean_complete_persistent_bytes", "mean_ppl"
             ]))
@@ -1541,7 +1694,11 @@ def build_notebook():
         figure_paths = []
         if not screen_table.empty:
             fig, ax = plt.subplots(figsize=(8, 5))
-            quantized = screen_table[screen_table["profile"] != "source_fp16"]
+            quantized = screen_table[
+                (screen_table["profile"] != "source_fp16")
+                & ~screen_table["ppl_stopped_early"]
+                & (screen_table["relative_ppl"] <= MAX_SCREEN_RELATIVE_PPL)
+            ]
             for track, group in quantized.groupby("track"):
                 ax.scatter(
                     group["complete_persistent_model_bytes"] / 1e9,
@@ -1566,6 +1723,7 @@ def build_notebook():
             for (kind, threshold), group in retrieval_summary.groupby([
                 "value_kind", "mass_threshold"
             ]):
+                group = group.sort_values("effective_value_read_fraction")
                 ax.plot(
                     group["effective_value_read_fraction"],
                     group["gated_relative_attention_mse"],
@@ -1594,16 +1752,17 @@ def build_notebook():
             ("synthetic_preflight", synthetic_table),
             ("sentinel", sentinel_table),
             ("screen", screen_table),
+            ("promotion_decisions", promotion_decisions),
             ("validation", validation_table),
             ("validation_summary", validation_summary),
             ("validation_matched_controls", validation_control_table),
             ("cross_family", cross_family_table),
+            ("cross_family_matched_controls", cross_family_control_table),
             ("retrieval", retrieval_table),
             ("retrieval_summary", retrieval_summary),
         ):
             if not frame.empty:
-                path = RESULT_ROOT / f"{name}.csv"
-                frame.to_csv(path, index=False)
+                path = persist_frame(name, frame)
                 table_paths[name] = str(path)
 
         summary = {
@@ -1624,6 +1783,34 @@ def build_notebook():
                 "early_stop_relative_ppl": EARLY_STOP_RELATIVE_PPL,
                 "bootstrap_draws": BOOTSTRAP_DRAWS,
                 "matched_rate_tolerance": MATCHED_RATE_TOLERANCE,
+                "max_confirm_relative_ppl": MAX_CONFIRM_RELATIVE_PPL,
+                "diagnostic_gates": {
+                    "min_trajectory_token_agreement": (
+                        MIN_CONFIRM_TRAJECTORY_TOKEN_AGREEMENT
+                    ),
+                    "min_top1_agreement": MIN_CONFIRM_TOP1_AGREEMENT,
+                    "max_mean_teacher_kl": MAX_CONFIRM_MEAN_TEACHER_KL,
+                    "max_p95_teacher_kl": MAX_CONFIRM_P95_TEACHER_KL,
+                    "max_worst_layer_nmse": MAX_CONFIRM_WORST_LAYER_NMSE,
+                },
+            },
+            "competitive_claim_contract": {
+                "status": "not_run",
+                "prompt_count": COMPETITIVE_PROMPT_COUNT,
+                "generation_tokens": COMPETITIVE_GENERATION_TOKENS,
+                "decoding": "greedy",
+                "domains": list(COMPETITIVE_DOMAINS),
+                "required_metrics": [
+                    "mean_median_p95_teacher_kl",
+                    "top1_agreement",
+                    "trajectory_token_agreement",
+                    "exact_trajectory_rate",
+                    "mean_matching_prefix",
+                    "exact_deployed_artifact_bytes",
+                ],
+                "requires_size_matched_external_artifacts": True,
+                "requires_disjoint_calibration_manifest": True,
+                "requires_item_level_token_hash_disjointness": True,
             },
             "trajectory_validation": {
                 "enabled": RUN_TRAJECTORY_VALIDATION,
@@ -1695,7 +1882,13 @@ def build_notebook():
         code("""
         if DOWNLOAD_RESULTS:
             from google.colab import files
-            files.download(str(archive_path))
+            try:
+                files.download(str(archive_path))
+            except Exception as exc:
+                print(
+                    "Automatic browser download failed, but the archive is already "
+                    f"persisted at {archive_path}. Error: {type(exc).__name__}: {exc}"
+                )
         """),
         md("""
         ## Takeaways and next steps
