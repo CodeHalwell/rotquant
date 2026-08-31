@@ -106,12 +106,14 @@ Recommendations:
 - Put this variance analysis next to the e3b config and pre-register the
   expectation that the arm loses for weights at k ≪ d; keep it as a null
   control rather than a candidate.
-- The *systematic* part of the bias it targets can be removed exactly, at zero
-  bits and zero runtime: fold the calibration-mean term into the existing
-  bias vector, `b += μ_rot · (W_rot − Q)ᵀ` where `μ_rot = E[x_rot]` (one extra
-  running mean in `HessianAccumulator`). This is classic bias correction
-  (Banner et al., 2019) and strictly dominates the sketch for the mean
-  component.
+- The *systematic* part of the bias it targets can be removed exactly on the
+  calibration distribution: fold the calibration-mean term into a bias vector,
+  `b += μ_rot · (W_rot − Q)ᵀ` where `μ_rot = E[x_rot]` (one extra running
+  mean in `HessianAccumulator`). This is classic bias correction (Banner et
+  al., 2019). It adds no storage when a bias already exists; a biasless layer
+  needs `out_features` extra values plus either a fused epilogue or an explicit
+  addition. It dominates the sketch for the calibration-mean component, but
+  the correction can become stale under distribution shift.
 - If the sketch stays, the right home is the KV cache (d = 128), not weights.
 
 ### 2.2 Per-row "turboquant" scale is inconsistent with block-diagonal rotation
@@ -148,22 +150,23 @@ under `no_grad`; θ receives gradient only through
 `train_rotation.py:193` has the same structure. To be precise, nothing is
 wrong in autograd terms: once indices and scales are detached, the dequantized
 matrix is a constant, and the activation-only path **is** the exact gradient
-of that frozen-assignment surrogate. The issue is that the surrogate models
-deployment badly, because the code re-quantizes from the *current* θ on every
-forward.
+of that frozen-assignment surrogate. With fixed scales it is also the a.e.
+local derivative of the piecewise-constant quantized map. The potential gap is
+at finite optimizer steps: the next forward re-quantizes from the new θ, so
+assignments can jump, and detached scale changes are omitted.
 
-Why this matters: the dequantized matrix tracks `W R(θ)ᵀ` to within
-quantization error at every step, so write it as `q̄ = W R(θ)ᵀ + E`. The
-surrogate gradient then splits into
-`x·dRᵀ/dθ·(W Rᵀ)ᵀ + x·dRᵀ/dθ·Eᵀ`. The first, O(1)-sized component
-corresponds to no achievable change in the deployed loss — by orthogonality
-`x R(θ)ᵀ (W R(θ)ᵀ)ᵀ = x Wᵀ` for every θ, and re-quantization restores that
-alignment on the next step — while the second, O(‖E‖) component is the signal
-that can actually move deployed quality. In the unquantized limit (E → 0) the
-surrogate gradient stays O(1) while the deployed loss is exactly flat. Much of
-each optimizer step is therefore spent on a component that re-quantization
-undoes, which plausibly explains why more steps (12 → 18) did not help in the
-OPT experiments.
+Why this may matter: at the current θ, write the dequantized matrix as
+`q̄ = W R(θ)ᵀ + E`. Against the full-precision target, the prediction residual is
+`e = x R(θ)ᵀ Eᵀ = O(‖E‖)`. With `q̄` frozen, the *prediction Jacobian*
+contains an O(‖W‖) component,
+`x·dRᵀ/dθ·(W Rᵀ)ᵀ`, plus an O(‖E‖) component. The squared-loss gradient,
+however, is `2 Jᵀ e`, so it is O(‖W‖‖E‖), not O(1), and it vanishes in the
+unquantized limit. The potential mismatch is therefore not a non-vanishing
+gradient at `E = 0`; it is that this local derivative cannot anticipate
+assignment jumps after an optimizer step (or the omitted scale derivative),
+while its O(‖W‖) Jacobian component can dominate the finite-error update.
+Whether that behavior is harmful is an empirical question and cannot, by
+itself, explain the 12 → 18 step result.
 
 A standard alternative already used elsewhere in this repo
 (`_fake_rotquant_attention`, `kv_cache.py:434`, via the `_fake_quant` STE at
@@ -177,12 +180,13 @@ with torch.no_grad():
 return rotated + (q - rotated).detach()                # STE
 ```
 
-Under STE the identity-aligned component cancels inside autograd and the
-surviving gradient is `x·dRᵀ/dθ·Eᵀ` — the residual-alignment signal alone. To
-be clear, STE is itself a surrogate (`dq/dv := I` is not the a.e. derivative
-of a piecewise-constant quantizer), so this is an argument about which
-surrogate better tracks the re-quantized deployment, not a theorem — the
-question is empirical. The likely reason for the current design is memory
+Under STE the identity-aligned component cancels in the prediction Jacobian and
+the surviving term is `x·dRᵀ/dθ·Eᵀ = O(‖E‖)`. For a squared reconstruction
+loss, its gradient is therefore typically O(‖E‖²) near the unquantized limit.
+To be clear, STE is itself a surrogate (`dq/dv := I` is not the a.e. derivative
+of a piecewise-constant quantizer), so neither scaling argument establishes
+which surrogate optimizes deployed quality better; the question is empirical.
+The likely reason for the current design is memory
 (backprop through the butterfly stages of an [out, in] weight stores per-stage
 intermediates); gradient checkpointing over stages, or chunking rows, makes
 the STE version affordable. Run both on OPT-125M and quantify the gap — if STE
@@ -200,12 +204,16 @@ bias. Harmless given best-checkpoint restore, but worth a comment.
 
 ### 2.4 The LoRA-QAT / distillation "negative results" are underpowered, not negative
 
-The recovery configs train on ~**256–512 tokens** total
+The checked-in base recovery configs train on ~**256–512 tokens** total
 (`distill_train_batches: 2` × 128–256-token sequences), for ≤ 12 steps, with
 validation on 1–2 batches and early-stopping patience 3–4
-(`configs/qwen35_4b_lora_qat_cuda.yaml`, `e1f`, `e1g`). For Qwen3.5-4B that is
-~4M adapter parameters trained on a few hundred tokens with a noise-dominated
-1-batch validation gate — "best step 0" is close to predetermined. The
+(`configs/qwen35_4b_lora_qat_cuda.yaml`, `e1f`, `e1g`). The executed Colab
+matrix did go further: its medium rank-4 profile used 8 training batches and
+24 steps, while the large rank-4 and rank-8 profiles used 16 batches and 32
+steps, with 2–4 validation batches. Those profiles are stronger than the base
+configs but still train ~4M adapter parameters on only a few thousand unique
+sequence tokens, repeatedly reused across steps, with a noisy validation gate.
+"Best step 0" is therefore unsurprising, but not predetermined. The
 literature that establishes QAT recovery at these bit-rates (EfficientQAT,
 LLM-QAT, ApiQ) uses 10⁶–10⁷ tokens of block-wise then end-to-end training.
 
@@ -257,8 +265,11 @@ random signs, columns are approximately exchangeable and the damage is limited;
 but for *trained* butterflies, non-square matrices, or any weight with
 column-periodic structure, the Lloyd fit sees a biased sample.
 
-Fix: seeded `randperm(total)[:count]` — same determinism, no aliasing, one
-line.
+Fix: use a seeded bounded-memory sample without replacement, such as Floyd's
+algorithm or a keyed permutation over only the selected indices. A full
+`randperm(total)[:count]` removes aliasing but allocates O(total) int64 storage
+(~128 MiB for 4096² and ~344 MiB for a 4096×11008 projection) to select only
+65,536 entries, and scales poorly to the planned 27B model.
 
 Related inconsistency: `_fit_calibrated_codebook` normalizes by **RMS** scales,
 but deployment may quantize with `mse_search` scales (0.5–1.5×RMS), so the
@@ -307,11 +318,14 @@ is not, and with `global_kl_batches: 0` the allocation runs on the local term
 alone. This plausibly contributes to the observed result that dynamic weight
 allocation lost to uniform W4 (+2.0% PPL for 0.098% bytes).
 
-Fixes, cheapest first: weight the local error by each layer's output energy
-(denominator already computed — just don't divide); or use a Hessian-weighted
-proxy with the statistics the repo already knows how to collect. The exact
-per-layer expected output-MSE contribution is `tr(ΔW·H·ΔWᵀ)` and needs the
-full `H` (already computed on GPTQ runs); the cheap variant
+Fixes, cheapest first: compute squared error summed across output dimensions
+and averaged across calibration examples, then apply at most one normalization
+shared by all layers. Merely dropping the per-layer energy denominator is not
+enough if the implementation still takes a mean over `out_features`; multiply
+that mean by the output width. Alternatively, use a Hessian-weighted proxy with
+the statistics the repo already knows how to collect. The exact per-layer
+expected output-MSE contribution is `tr(ΔW·H·ΔWᵀ)` and needs the full `H`
+(already computed on GPTQ runs); the cheap variant
 `Σᵢ Hᵢᵢ·‖ΔW[:,i]‖²` uses only `diag(H)` and is the standard diagonal
 approximation. Either is commensurable across layers, unlike per-layer
 relative MSE. The additive-interaction caveat and the uniform-restore guard
@@ -399,10 +413,12 @@ Ordered roughly by expected return on the size/quality frontier.
    movement of the frontier available with known techniques.
 2. **GPTQ in the product recipe (see 2.5)** with layer-streamed Hessians and
    actorder. Composes with rotation, costs nothing at inference.
-3. **Calibrated bias correction (zero bits, zero runtime):** fold
-   `μ_rot·(W_rot − Q)ᵀ` into each layer's bias (create one if absent —
-   `out_features` fp16 values ≈ 0.004 bpw). Removes the systematic component of
-   quantization error that the sketch arm chases with 100× the noise.
+3. **Calibrated bias correction (negligible amortized overhead):** fold
+   `μ_rot·(W_rot − Q)ᵀ` into each layer's bias. Existing biases cost nothing
+   extra; creating one requires `out_features` fp16 values (≈ 0.004 bpw) and a
+   fused epilogue or explicit addition. This removes the calibration-mean
+   component of quantization error that the sketch arm chases with 100× the
+   noise, subject to distribution shift.
 4. **Share rotations across same-input projections.** q/k/v (and gate/up)
    consume the same activation but currently get independent per-layer seeds —
    the same x is FWHT-rotated three times with three different rotations per

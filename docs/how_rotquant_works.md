@@ -244,16 +244,20 @@ $$
 D_{\mathrm{Shannon}}(b) = \sigma^2 2^{-2b} = \sigma^2 4^{-b}.
 $$
 
-For a unit-variance source, RotQuant's TurboQuant-bound helper records
+For a unit-variance source, the TurboQuant paper reports the corresponding
+distortion expression as
 
 $$
-D(b) \le \frac{\sqrt 3\,\pi}{2}4^{-b},
+D_{\mathrm{TQ}}(b) \lesssim \frac{\sqrt 3\,\pi}{2}4^{-b},
 $$
 
-whose constant is about `2.72` times the Shannon bound. This is a theoretical
-result for the data-oblivious rotated-vector construction described by
-[TurboQuant](https://arxiv.org/abs/2504.19874), not a promise that every finite
-LLM matrix or downstream task will attain that distortion.
+whose constant is about `2.72` times the Shannon bound. The paper presents an
+inequality with this right-hand side, but its derivation uses the Panter–Dite
+high-resolution approximation for the larger-bit regime. RotQuant's
+`turboquant_mse_bound` helper records that paper-stated, high-rate estimate; it
+should not be read as an unconditional finite-bit theorem or as a promise that
+every LLM matrix or downstream task will attain that distortion. See
+[TurboQuant](https://arxiv.org/abs/2504.19874) for the construction and proof.
 
 ### Scale selection
 
