@@ -476,7 +476,11 @@ codebook against an exact Gaussian RotQuant cache kernel.
 - Run `notebooks/rotquant_algorithm_lab_colab.ipynb`: screen exact-rate scalar
   versus finite-rate vector codebooks and scalar extensions, then promote only
   Pareto winners through allocation objectives, three seeds, and a second model
-  family. The notebook is the canonical record template for this funnel.
+  family. The pre-run protocol now requires the source/W4 sentinel, paired
+  per-window NLL intervals, matched allocation/vector controls, WikiText-2 plus
+  C4 confirmation, logit/layer/trajectory diagnostics, immutable token hashes,
+  complete persistent/runtime bytes, and atomic resumable records. The notebook
+  is the canonical record template for this funnel.
 - Measure the real-attention selective-V upper bound in that notebook. Only
   build packed-key candidate kernels if its confidence-gated quality curve
   yields a useful reduction in effective V reads.

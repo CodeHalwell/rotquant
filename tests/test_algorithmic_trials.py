@@ -4,6 +4,9 @@ from scripts.algorithmic_trials import algorithmic_trial_matrix, trial_by_name
 
 def test_algorithmic_matrix_covers_every_research_track() -> None:
     profiles = algorithmic_trial_matrix()
+    assert [profile.name for profile in profiles[:3]] == [
+        "source_fp16", "gaussian_w4_mse", "gaussian_w3_mse"
+    ]
     assert {profile.track for profile in profiles} == {
         "control", "low_bit_vector", "codebook_scale", "allocation"
     }
@@ -17,6 +20,8 @@ def test_algorithmic_matrix_covers_every_research_track() -> None:
         "calibrated_w4_mse",
         "length_w4_mse",
         "dynamic_teacher_3p625",
+        "dynamic_random_3p625",
+        "dynamic_scalar_teacher_2p75",
         "dynamic_vector_2p75",
     }
 
@@ -37,3 +42,21 @@ def test_teacher_allocator_uses_held_out_global_signal() -> None:
     assert dynamic["global_kl_batches"] > 0
     assert dynamic["global_kl_weight"] > dynamic["local_weight"]
     assert dynamic["target_bpw"] == 3.625
+
+
+def test_matched_allocation_controls_share_candidate_formats() -> None:
+    random_control = dict(
+        trial_by_name("dynamic_random_3p625").overrides
+    )["patch.dynamic"]
+    local = dict(trial_by_name("dynamic_local_3p625").overrides)["patch.dynamic"]
+    assert random_control["candidate_bits"] == local["candidate_bits"]
+    assert random_control["target_bpw"] == local["target_bpw"] == 3.625
+    assert random_control["allocation"] == "random"
+
+    scalar = dict(
+        trial_by_name("dynamic_scalar_teacher_2p75").overrides
+    )
+    vector = dict(trial_by_name("dynamic_vector_2p75").overrides)
+    assert scalar["patch.dynamic"] == vector["patch.dynamic"]
+    assert scalar["quant.codebook"] == "gaussian"
+    assert vector["quant.codebook"] == "vector"

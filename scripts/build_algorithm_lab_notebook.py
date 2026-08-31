@@ -55,6 +55,12 @@ def build_notebook():
         - Promoted profiles also receive a small held-out C4 free-running
           trajectory gate. It catches compounding token drift, but it is not a
           substitute for the planned diverse 300-prompt comparison suite.
+        - Screening stores paired per-window NLL, confidence intervals, exact
+          token identities, logit fidelity, complete persistent bytes, and wall
+          time. Aggregate PPL alone never establishes a win.
+        - The seeded random allocator and scalar 2.75-bpw allocator are negative
+          controls, not novel candidates. Allocation/vector claims require a
+          matched-format, matched-rate advantage.
         - Dense-attention top-k is an upper-bound oracle for selective V reads. It
           measures value sparsity; packed-key candidate recall is a separate gate.
         """),
@@ -62,12 +68,13 @@ def build_notebook():
         ## Trial ladder
 
         1. Synthetic exact-rate scalar-versus-vector preflight.
-        2. Seed-0, 16-sample screen of every predeclared profile.
-        3. Exact-byte checks and Pareto promotion by research track.
-        4. Three-seed, 64-sample primary-model validation with 32-token
+        2. Four-window source/W4 sentinel with historical sanity gates.
+        3. Seed-0, 16-window screen with a four-window catastrophic-loss stop.
+        4. Exact-byte, paired-confidence, and matched-control promotion gates.
+        5. Three-seed, 64-window WikiText/C4 validation with 32-token
            free-running trajectory agreement.
-        5. Cross-family PPL and trajectory confirmation of promoted profiles.
-        6. Real-attention selective-V oracle with quantized-value and dense
+        6. Cross-family PPL, logit, layer-drift, and trajectory confirmation.
+        7. Real-attention selective-V oracle with quantized-value and dense
            confidence-fallback curves.
         """),
         md("## Setup"),
@@ -111,14 +118,20 @@ def build_notebook():
         CONFIRM_EXPENSIVE_RUN = False
         FORCE_RERUN = False
         RUN_SYNTHETIC_PREFLIGHT = True
+        RUN_SENTINEL = True
         RUN_PRIMARY_SCREEN = True
         RUN_FULL_SEED_VALIDATION = True
         RUN_CROSS_FAMILY = True
         RUN_TRAJECTORY_VALIDATION = True
+        RUN_LOGIT_FIDELITY = True
+        RUN_SCREEN_LAYER_DRIFT = True
+        RUN_LAYER_DRIFT = True
         RUN_SELECTIVE_KV_ORACLE = True
         DOWNLOAD_RESULTS = True
-        REQUIRE_FAST_HADAMARD = False
+        REQUIRE_FAST_HADAMARD = True
 
+        SENTINEL_MAX_SAMPLES = 4
+        SENTINEL_W4_MAX_RELATIVE_PPL = 0.20
         SCREEN_MAX_SAMPLES = 16
         CONFIRM_MAX_SAMPLES = 64
         EVAL_SEQUENCE_LENGTH = 256
@@ -127,14 +140,38 @@ def build_notebook():
         MAX_PROMOTED_PER_TRACK = 2
         MAX_SCREEN_RELATIVE_PPL = 1.0
         MIN_ALLOCATION_BYTE_SAVING = 0.01
+        MATCHED_RATE_TOLERANCE = 0.0025
+        EARLY_STOP_AFTER = 4
+        EARLY_STOP_RELATIVE_PPL = 1.0
+        BOOTSTRAP_DRAWS = 2000
+        MATCHED_CONTROL_MAP = {
+            **{
+                f"vector_d2_w{bits}_rms": f"scalar_w{bits}_rms"
+                for bits in (1, 2, 3)
+            },
+            "dynamic_local_3p625": "dynamic_random_3p625",
+            "dynamic_teacher_3p625": "dynamic_random_3p625",
+            "dynamic_guarded_teacher_3p625": "dynamic_random_3p625",
+            "dynamic_vector_2p75": "dynamic_scalar_teacher_2p75",
+        }
+
+        DYNAMIC_TEACHER_SKIP = 2048
+        SCREEN_LAYER_DRIFT_SEQUENCE_LENGTH = 16
+        SCREEN_LAYER_DRIFT_SKIP = 4096
+        LAYER_DRIFT_SEQUENCE_LENGTH = 64
+        LAYER_DRIFT_SKIP = 6144
 
         TRAJECTORY_BATCHES = 4
         TRAJECTORY_PROMPT_LENGTH = 64
         TRAJECTORY_NEW_TOKENS = 32
-        TRAJECTORY_SKIP = 4096
+        TRAJECTORY_SKIP = 8192
+
+        LOGIT_FIDELITY_BATCHES = 2
+        LOGIT_FIDELITY_PROMPT_LENGTH = 64
+        LOGIT_FIDELITY_SKIP = 12288
 
         RETRIEVAL_PROMPT_LENGTH = 512
-        RETRIEVAL_SKIP = 4096
+        RETRIEVAL_SKIP = 16384
         RETRIEVAL_MASS_THRESHOLDS = (0.90, 0.95)
         RETRIEVAL_FRACTIONS = (1/16, 1/8, 1/4, 1/2, 1.0)
         RETRIEVAL_RECENT_WINDOW = 16
@@ -233,6 +270,10 @@ def build_notebook():
         os.environ["PYTHONUNBUFFERED"] = "1"
         torch.backends.cuda.matmul.allow_tf32 = True
         torch.set_float32_matmul_precision("high")
+        driver_version = subprocess.check_output([
+            "nvidia-smi", "--query-gpu=driver_version",
+            "--format=csv,noheader",
+        ], text=True).strip().splitlines()[0]
         tracked_distributions = [
             "transformers", "datasets", "accelerate", "safetensors",
             "sentencepiece", "scipy", "pyyaml", "pandas", "matplotlib",
@@ -241,8 +282,15 @@ def build_notebook():
         RUNTIME_MANIFEST = {
             "torch": torch.__version__,
             "cuda": torch.version.cuda,
+            "cudnn": torch.backends.cudnn.version(),
             "gpu": torch.cuda.get_device_name(0),
+            "compute_capability": list(torch.cuda.get_device_capability(0)),
+            "driver": driver_version,
             "fast_hadamard_transform": fast_hadamard_available,
+            "fast_hadamard_version": (
+                importlib.metadata.version("fast-hadamard-transform")
+                if fast_hadamard_available else None
+            ),
             "packages": {
                 name: importlib.metadata.version(name)
                 for name in tracked_distributions
@@ -351,11 +399,25 @@ def build_notebook():
         code("""
         import gc
         import hashlib
+        import time
+        import traceback
         from dataclasses import asdict
 
+        import numpy as np
+
         from scripts.run_experiment import run as run_experiment
+        from rotquant.utils import write_result
 
         trial_records = {}
+        FAILURE_ROOT = RESULT_ROOT / "failures"
+        FAILURE_ROOT.mkdir(parents=True, exist_ok=True)
+
+        def ppl_datasets(stage):
+            return (
+                ["wikitext2", "c4"]
+                if stage in {"validation", "cross_family"}
+                else ["wikitext2"]
+            )
 
         def trajectory_settings(stage):
             if not RUN_TRAJECTORY_VALIDATION or stage not in {
@@ -370,6 +432,33 @@ def build_notebook():
                 "use_cache": True,
             }
 
+        def logit_fidelity_settings(stage):
+            if not RUN_LOGIT_FIDELITY or stage not in {
+                "validation", "cross_family"
+            }:
+                return False
+            return {
+                "batches": LOGIT_FIDELITY_BATCHES,
+                "prompt_len": LOGIT_FIDELITY_PROMPT_LENGTH,
+                "skip": LOGIT_FIDELITY_SKIP,
+                "temperature": 1.0,
+            }
+
+        def layer_drift_settings(stage):
+            if stage == "screen" and RUN_SCREEN_LAYER_DRIFT:
+                return {
+                    "enabled": True,
+                    "seq_len": SCREEN_LAYER_DRIFT_SEQUENCE_LENGTH,
+                    "skip": SCREEN_LAYER_DRIFT_SKIP,
+                }
+            if RUN_LAYER_DRIFT and stage in {"validation", "cross_family"}:
+                return {
+                    "enabled": True,
+                    "seq_len": LAYER_DRIFT_SEQUENCE_LENGTH,
+                    "skip": LAYER_DRIFT_SKIP,
+                }
+            return {"enabled": False, "seq_len": 0, "skip": 0}
+
         def record_path(stage, model_case, profile, seed, max_samples):
             specification = {
                 "commit": commit,
@@ -379,7 +468,15 @@ def build_notebook():
                 "seed": seed,
                 "max_samples": max_samples,
                 "seq_len": EVAL_SEQUENCE_LENGTH,
+                "ppl_datasets": ppl_datasets(stage),
                 "trajectory": trajectory_settings(stage),
+                "logit_fidelity": logit_fidelity_settings(stage),
+                "layer_drift": layer_drift_settings(stage),
+                "dynamic_teacher_skip": DYNAMIC_TEACHER_SKIP,
+                "early_stop": {
+                    "after": EARLY_STOP_AFTER,
+                    "relative_ppl": EARLY_STOP_RELATIVE_PPL,
+                },
                 "runtime": RUNTIME_FINGERPRINT,
             }
             digest = hashlib.sha256(
@@ -392,33 +489,157 @@ def build_notebook():
             if torch.cuda.is_available():
                 torch.cuda.empty_cache()
 
+        def record_complete(record, stage):
+            try:
+                metrics = record["payload"]["metrics"]
+                for dataset in ppl_datasets(stage):
+                    assert f"ppl_{dataset}" in metrics
+                    assert f"ppl_{dataset}_details" in metrics
+                if trajectory_settings(stage):
+                    assert "trajectory" in metrics
+                if logit_fidelity_settings(stage):
+                    assert "logit_fidelity" in metrics
+                if layer_drift_settings(stage)["enabled"]:
+                    assert "layer_mse" in metrics
+                return True
+            except (AssertionError, KeyError, TypeError):
+                return False
+
+        def assert_data_partitions(metrics):
+            manifest = metrics.get("data_manifest", {})
+            calibration_names = {
+                "hessian_calibration", "activation_calibration",
+                "allocation_teacher", "block_calibration",
+            }
+            diagnostic_names = {
+                "layer_drift", "trajectory", "logit_fidelity",
+            }
+
+            def rows(name):
+                return {
+                    row for row in manifest.get(name, {}).get("source_rows", [])
+                    if row is not None
+                }
+
+            calibration_rows = set().union(*(
+                rows(name) for name in calibration_names
+            ))
+            for name in diagnostic_names:
+                assert calibration_rows.isdisjoint(rows(name)), (
+                    f"Calibration and {name} rows overlap."
+                )
+            active_diagnostics = [
+                (name, rows(name)) for name in diagnostic_names if rows(name)
+            ]
+            for index, (left_name, left_rows) in enumerate(active_diagnostics):
+                for right_name, right_rows in active_diagnostics[index + 1:]:
+                    assert left_rows.isdisjoint(right_rows), (
+                        f"Held-out partitions {left_name} and {right_name} overlap."
+                    )
+
+        def print_trial_progress(record):
+            completed = len(trial_records)
+            screen_completed = sum(
+                key[0] == "screen" for key in trial_records
+            )
+            observed = [
+                float(item.get("trial_wall_seconds", 0.0))
+                for item in trial_records.values()
+                if item.get("trial_wall_seconds")
+            ]
+            if observed:
+                mean_seconds = sum(observed) / len(observed)
+                print({
+                    "completed_records": completed,
+                    "latest_minutes": round(
+                        record.get("trial_wall_seconds", 0.0) / 60, 2
+                    ),
+                    "mean_minutes": round(mean_seconds / 60, 2),
+                    "estimated_screen_minutes_remaining": round(
+                        max(0, len(TRIALS) - screen_completed)
+                        * mean_seconds / 60, 1
+                    ),
+                })
+
         def run_trial(stage, model_case, profile, seed, max_samples):
             path = record_path(stage, model_case, profile, seed, max_samples)
             key = (stage, model_case["name"], profile.name, seed, max_samples)
             if path.exists() and not FORCE_RERUN:
-                record = json.loads(path.read_text())
-                trial_records[key] = record
-                print(f"resume {path.name}")
-                return record
+                try:
+                    record = json.loads(path.read_text())
+                except json.JSONDecodeError:
+                    record = None
+                if record is not None and record_complete(record, stage):
+                    assert_data_partitions(record["payload"]["metrics"])
+                    trial_records[key] = record
+                    print(f"resume {path.name}")
+                    return record
+                invalid_path = path.with_name(
+                    f"{path.stem}.invalid-{time.time_ns()}{path.suffix}"
+                )
+                os.replace(path, invalid_path)
+                print(f"quarantined incomplete record: {invalid_path.name}")
             sets = [
                 *profile.sets(),
                 ("patch.include", model_case["include"]),
                 ("patch.exclude", model_case["exclude"]),
+                ("dynamic_teacher_skip", DYNAMIC_TEACHER_SKIP),
                 ("eval.ppl.seq_len", EVAL_SEQUENCE_LENGTH),
                 ("eval.ppl.max_samples", max_samples),
-                ("eval.ppl_datasets", ["wikitext2"]),
+                ("eval.ppl_datasets", ppl_datasets(stage)),
                 ("eval.trajectory", trajectory_settings(stage)),
+                ("eval.logit_fidelity", logit_fidelity_settings(stage)),
+                ("eval.layer_mse", layer_drift_settings(stage)["enabled"]),
+                ("eval.layer_mse_seq_len", layer_drift_settings(stage)["seq_len"]),
+                ("eval.layer_mse_skip", layer_drift_settings(stage)["skip"]),
                 ("eval.zeroshot", False),
             ]
-            payload = run_experiment(
-                str(CONFIG_PATH),
-                output_dir=str(RAW_RUN_ROOT),
-                overrides={
-                    "model": model_case["model"], "device": "cuda", "seed": seed,
-                    "model_revision": model_case["revision"],
-                },
-                sets=sets,
-            )
+            if stage == "screen" and profile.name != "source_fp16":
+                source_key = (
+                    "screen", model_case["name"], "source_fp16", 0,
+                    SCREEN_MAX_SAMPLES,
+                )
+                source_metrics = trial_records[source_key]["payload"]["metrics"]
+                source_details = source_metrics["ppl_wikitext2_details"]
+                sets.extend([
+                    ("eval.ppl.early_stop_after", EARLY_STOP_AFTER),
+                    ("eval.ppl.early_stop_relative_ppl", EARLY_STOP_RELATIVE_PPL),
+                    ("eval.ppl.reference_window_nll_sums",
+                     source_details["window_nll_sums"]),
+                    ("eval.ppl.reference_window_tokens",
+                     source_details["window_tokens"]),
+                ])
+            started = time.perf_counter()
+            try:
+                payload = run_experiment(
+                    str(CONFIG_PATH),
+                    output_dir=str(RAW_RUN_ROOT),
+                    overrides={
+                        "model": model_case["model"], "device": "cuda",
+                        "seed": seed, "model_revision": model_case["revision"],
+                    },
+                    sets=sets,
+                )
+                assert_data_partitions(payload["metrics"])
+            except Exception as exc:
+                failure = {
+                    "stage": stage,
+                    "model_case": model_case,
+                    "profile": asdict(profile),
+                    "seed": seed,
+                    "max_samples": max_samples,
+                    "wall_seconds": time.perf_counter() - started,
+                    "error_type": type(exc).__name__,
+                    "error": str(exc),
+                    "traceback": traceback.format_exc(),
+                }
+                failure_path = FAILURE_ROOT / (
+                    f"{path.stem}.failure-{time.time_ns()}.json"
+                )
+                write_result(str(failure_path), failure)
+                raise
+            finally:
+                release_cuda_memory()
             record = {
                 "stage": stage,
                 "model_case": model_case,
@@ -426,19 +647,68 @@ def build_notebook():
                 "seed": seed,
                 "max_samples": max_samples,
                 "payload": payload,
+                "trial_wall_seconds": time.perf_counter() - started,
+                "completed_at": time.strftime("%Y-%m-%dT%H:%M:%S%z"),
             }
-            path.write_text(json.dumps(record, indent=2))
+            assert record_complete(record, stage)
+            write_result(str(path), record)
             trial_records[key] = record
-            release_cuda_memory()
+            print_trial_progress(record)
             return record
 
-        def report_row(record, source_ppl=None):
+        def paired_window_statistics(candidate, source):
+            if not candidate or not source:
+                return {}
+            windows = min(
+                len(candidate["window_mean_nll"]),
+                len(source["window_mean_nll"]),
+            )
+            assert candidate["window_hashes"][:windows] == source[
+                "window_hashes"
+            ][:windows], "paired PPL windows do not match"
+            differences = np.asarray(
+                candidate["window_mean_nll"][:windows], dtype=float
+            ) - np.asarray(source["window_mean_nll"][:windows], dtype=float)
+            rng = np.random.default_rng(20260831)
+            sampled = differences[rng.integers(
+                0, windows, size=(BOOTSTRAP_DRAWS, windows)
+            )].mean(axis=1)
+            source_tokens = sum(source["window_tokens"][:windows])
+            source_nll = sum(source["window_nll_sums"][:windows])
+            source_ppl = float(np.exp(source_nll / source_tokens))
+            return {
+                "paired_windows": windows,
+                "paired_source_ppl": source_ppl,
+                "paired_nll_delta": float(differences.mean()),
+                "paired_nll_ci_low": float(np.quantile(sampled, 0.025)),
+                "paired_nll_ci_high": float(np.quantile(sampled, 0.975)),
+                "paired_window_win_rate": float((differences < 0).mean()),
+            }
+
+        def report_row(record, source_record=None):
             payload = record["payload"]
             metrics = payload["metrics"]
             config = payload["config"]
             dynamic = metrics.get("dynamic_quantization", {})
             trajectory = metrics.get("trajectory") or {}
+            logit_fidelity = metrics.get("logit_fidelity") or {}
+            layer_mse = metrics.get("layer_mse") or {}
+            layer_errors = layer_mse.get("mse") or {}
             ppl = float(metrics["ppl_wikitext2"])
+            ppl_details = metrics.get("ppl_wikitext2_details") or {}
+            source_metrics = (
+                source_record["payload"]["metrics"]
+                if source_record is not None else {}
+            )
+            paired = paired_window_statistics(
+                ppl_details, source_metrics.get("ppl_wikitext2_details")
+            )
+            source_ppl = paired.get("paired_source_ppl")
+            c4_ppl = metrics.get("ppl_c4")
+            c4_paired = paired_window_statistics(
+                metrics.get("ppl_c4_details"),
+                source_metrics.get("ppl_c4_details"),
+            )
             quant = config.get("quant") or {}
             bits = quant.get("bits")
             codebook = str(quant.get("codebook", "gaussian")).lower()
@@ -465,7 +735,9 @@ def build_notebook():
             # Current scalar checkpoints retain one fp32 centroid table per
             # projection. Charge the same conservative per-layer scope to the
             # research vector arm even though a future format could share it.
-            codebook_bytes = centroid_values_total * 4
+            codebook_bytes = metrics.get(
+                "codebook_bytes", centroid_values_total * 4
+            )
             packed_weight_bytes = metrics.get("packed_weight_bytes")
             accounted_weight_bytes = (
                 packed_weight_bytes + codebook_bytes
@@ -487,6 +759,18 @@ def build_notebook():
                 "relative_ppl": (
                     ppl / source_ppl - 1 if source_ppl is not None else float("nan")
                 ),
+                **paired,
+                "ppl_windows": ppl_details.get("windows", 0),
+                "ppl_stopped_early": ppl_details.get("stopped_early", False),
+                "ppl_input_digest": ppl_details.get("input_digest"),
+                "ppl_c4": c4_ppl,
+                "relative_ppl_c4": (
+                    c4_ppl / c4_paired["paired_source_ppl"] - 1
+                    if c4_ppl is not None and c4_paired else float("nan")
+                ),
+                "paired_c4_nll_delta": c4_paired.get(
+                    "paired_nll_delta", float("nan")
+                ),
                 "packed_weight_bytes": packed_weight_bytes,
                 "codebook_bytes": codebook_bytes,
                 "accounted_weight_bytes": accounted_weight_bytes,
@@ -495,7 +779,18 @@ def build_notebook():
                     accounted_weight_bytes * 8 / quantized_weights
                     if quantized_weights else None
                 ),
+                "complete_persistent_model_bytes": metrics.get(
+                    "complete_persistent_model_bytes"
+                ),
+                "quality_runtime_model_bytes": metrics.get(
+                    "quality_runtime_model_bytes"
+                ),
+                "fallback_cache_bytes": metrics.get("fallback_cache_bytes", 0),
                 "patch_seconds": metrics.get("patch_seconds", 0.0),
+                "model_load_seconds": metrics.get("model_load_seconds", 0.0),
+                "peak_vram_bytes_patch": metrics.get("peak_vram_bytes_patch", 0),
+                "peak_vram_bytes_eval": metrics.get("peak_vram_bytes_eval", 0),
+                "trial_wall_seconds": record.get("trial_wall_seconds", 0.0),
                 "target_reached": dynamic.get("target_reached", True),
                 "dynamic_achieved_bpw": dynamic.get("achieved_bpw"),
                 "dynamic_counts": dynamic.get("counts_by_bits"),
@@ -509,12 +804,37 @@ def build_notebook():
                 "trajectory_mean_matching_prefix": trajectory.get(
                     "mean_matching_prefix", float("nan")
                 ),
+                "mean_teacher_kl": logit_fidelity.get(
+                    "mean_teacher_kl", float("nan")
+                ),
+                "mean_logit_cosine": logit_fidelity.get(
+                    "mean_logit_cosine", float("nan")
+                ),
+                "top1_agreement": logit_fidelity.get(
+                    "top1_agreement", float("nan")
+                ),
+                "logit_nll_delta": logit_fidelity.get(
+                    "nll_delta", float("nan")
+                ),
+                "mean_layer_nmse": (
+                    float(np.mean(list(layer_errors.values())))
+                    if layer_errors else float("nan")
+                ),
+                "worst_layer_nmse": (
+                    max(layer_errors.values())
+                    if layer_errors else float("nan")
+                ),
+                "worst_layer": (
+                    max(layer_errors, key=layer_errors.get)
+                    if layer_errors else None
+                ),
+                "data_manifest": metrics.get("data_manifest", {}),
             }
         """),
         md("### 7. Confirm the expensive matrix"),
         code("""
         requested = any([
-            RUN_PRIMARY_SCREEN, RUN_FULL_SEED_VALIDATION,
+            RUN_SENTINEL, RUN_PRIMARY_SCREEN, RUN_FULL_SEED_VALIDATION,
             RUN_CROSS_FAMILY, RUN_SELECTIVE_KV_ORACLE,
         ])
         if requested:
@@ -524,7 +844,37 @@ def build_notebook():
             )
         """),
         md("## Data & Trials"),
-        md("### 8. Run the complete primary-model seed-0 screen"),
+        md("### 8. Run the source/W4 fail-fast sentinel"),
+        code("""
+        sentinel_table = pd.DataFrame()
+        if RUN_SENTINEL:
+            sentinel_source = run_trial(
+                "sentinel", PRIMARY_MODEL, trial_by_name("source_fp16"),
+                0, SENTINEL_MAX_SAMPLES,
+            )
+            sentinel_w4 = run_trial(
+                "sentinel", PRIMARY_MODEL, trial_by_name("gaussian_w4_mse"),
+                0, SENTINEL_MAX_SAMPLES,
+            )
+            sentinel_table = pd.DataFrame([
+                report_row(sentinel_source, sentinel_source),
+                report_row(sentinel_w4, sentinel_source),
+            ])
+            w4_row = sentinel_table[
+                sentinel_table["profile"] == "gaussian_w4_mse"
+            ].iloc[0]
+            assert np.isfinite(w4_row["ppl"])
+            assert w4_row["relative_ppl"] <= SENTINEL_W4_MAX_RELATIVE_PPL, (
+                "Known W4 control missed its sentinel quality range; stop before "
+                "spending GPU time on the matrix."
+            )
+            assert w4_row["complete_persistent_model_bytes"] < sentinel_table[
+                sentinel_table["profile"] == "source_fp16"
+            ]["complete_persistent_model_bytes"].iloc[0]
+            assert sentinel_w4["payload"]["metrics"]["patched_modules"] > 0
+            display(sentinel_table)
+        """),
+        md("### 9. Run the prioritized primary-model seed-0 screen"),
         code("""
         screen_records = []
         if RUN_PRIMARY_SCREEN:
@@ -535,7 +885,7 @@ def build_notebook():
         else:
             print("Primary screen disabled.")
         """),
-        md("### 9. Check exact rates and build the screening table"),
+        md("### 10. Check exact rates and build the screening table"),
         code("""
         if screen_records:
             source_record = next(
@@ -546,8 +896,49 @@ def build_notebook():
                 source_record["payload"]["metrics"]["ppl_wikitext2"]
             )
             screen_table = pd.DataFrame([
-                report_row(record, screen_source_ppl) for record in screen_records
+                report_row(record, source_record) for record in screen_records
             ])
+            records_by_name = {
+                record["profile"]["name"]: record for record in screen_records
+            }
+            screen_table["matched_control"] = screen_table["profile"].map(
+                MATCHED_CONTROL_MAP
+            )
+            screen_table["matched_control_nll_delta"] = np.nan
+            screen_table["matched_control_ci_low"] = np.nan
+            screen_table["matched_control_ci_high"] = np.nan
+            screen_table["matched_rate"] = False
+            for candidate_name, control_name in MATCHED_CONTROL_MAP.items():
+                comparison = paired_window_statistics(
+                    records_by_name[candidate_name]["payload"]["metrics"][
+                        "ppl_wikitext2_details"
+                    ],
+                    records_by_name[control_name]["payload"]["metrics"][
+                        "ppl_wikitext2_details"
+                    ],
+                )
+                candidate_bytes = float(screen_table.loc[
+                    screen_table["profile"] == candidate_name,
+                    "complete_persistent_model_bytes",
+                ].iloc[0])
+                control_bytes = float(screen_table.loc[
+                    screen_table["profile"] == control_name,
+                    "complete_persistent_model_bytes",
+                ].iloc[0])
+                selector = screen_table["profile"] == candidate_name
+                screen_table.loc[
+                    selector, "matched_control_nll_delta"
+                ] = comparison["paired_nll_delta"]
+                screen_table.loc[
+                    selector, "matched_control_ci_low"
+                ] = comparison["paired_nll_ci_low"]
+                screen_table.loc[
+                    selector, "matched_control_ci_high"
+                ] = comparison["paired_nll_ci_high"]
+                screen_table.loc[selector, "matched_rate"] = (
+                    abs(candidate_bytes / control_bytes - 1)
+                    <= MATCHED_RATE_TOLERANCE
+                )
             for bits in (1, 2, 3):
                 pair = screen_table[screen_table["profile"].isin([
                     f"scalar_w{bits}_rms", f"vector_d2_w{bits}_rms"
@@ -559,18 +950,22 @@ def build_notebook():
                 screen_table["track"] == "allocation", "target_reached"
             ].all()
             display(screen_table.sort_values([
-                "track", "accounted_weight_bytes", "ppl"
+                "track", "complete_persistent_model_bytes", "ppl"
             ]).style.format({
                 "ppl": "{:.4f}", "relative_ppl": "{:+.2%}",
+                "paired_nll_delta": "{:+.5f}",
+                "paired_nll_ci_low": "{:+.5f}",
+                "paired_nll_ci_high": "{:+.5f}",
                 "effective_bpw": "{:.4f}", "accounted_bpw": "{:.4f}",
                 "packed_weight_bytes": "{:,.0f}",
                 "accounted_weight_bytes": "{:,.0f}",
+                "complete_persistent_model_bytes": "{:,.0f}",
             }))
         else:
             screen_source_ppl = float("nan")
             screen_table = pd.DataFrame()
         """),
-        md("### 10. Promote only bounded Pareto candidates"),
+        md("### 11. Promote only bounded, matched-control Pareto candidates"),
         code("""
         import numpy as np
 
@@ -580,10 +975,12 @@ def build_notebook():
             keep = []
             for _, row in rows.iterrows():
                 dominated = (
-                    (rows["accounted_weight_bytes"] <= row["accounted_weight_bytes"])
+                    (rows["complete_persistent_model_bytes"]
+                     <= row["complete_persistent_model_bytes"])
                     & (rows["ppl"] <= row["ppl"])
                     & (
-                        (rows["accounted_weight_bytes"] < row["accounted_weight_bytes"])
+                        (rows["complete_persistent_model_bytes"]
+                         < row["complete_persistent_model_bytes"])
                         | (rows["ppl"] < row["ppl"])
                     )
                 ).any()
@@ -594,12 +991,14 @@ def build_notebook():
         if not screen_table.empty:
             eligible = screen_table[
                 (screen_table["profile"] != "source_fp16")
+                & (screen_table["profile"] != "dynamic_random_3p625")
                 & screen_table["target_reached"]
+                & ~screen_table["ppl_stopped_early"]
                 & (screen_table["relative_ppl"] <= MAX_SCREEN_RELATIVE_PPL)
             ].copy()
             for track, group in eligible.groupby("track"):
                 frontier = pareto_rows(group).sort_values([
-                    "ppl", "accounted_weight_bytes"
+                    "ppl", "complete_persistent_model_bytes"
                 ])
                 promoted_names.update(
                     frontier["profile"].head(MAX_PROMOTED_PER_TRACK).tolist()
@@ -614,23 +1013,52 @@ def build_notebook():
                 vector = screen_table[
                     screen_table["profile"] == f"vector_d2_w{bits}_rms"
                 ].iloc[0]
-                if vector["ppl"] >= scalar["ppl"]:
+                if (
+                    not vector["matched_rate"]
+                    or vector["matched_control_nll_delta"] >= 0
+                ):
                     promoted_names.discard(vector["profile"])
+
+            for candidate_name in (
+                "dynamic_local_3p625", "dynamic_teacher_3p625",
+                "dynamic_guarded_teacher_3p625", "dynamic_vector_2p75",
+            ):
+                row = screen_table[
+                    screen_table["profile"] == candidate_name
+                ].iloc[0]
+                if not row["matched_rate"] or row[
+                    "matched_control_nll_delta"
+                ] >= 0:
+                    promoted_names.discard(candidate_name)
 
             w4_bytes = float(screen_table[
                 screen_table["profile"] == "gaussian_w4_mse"
-            ]["accounted_weight_bytes"].iloc[0])
+            ]["complete_persistent_model_bytes"].iloc[0])
             for name in promoted_names.copy():
                 row = screen_table[screen_table["profile"] == name]
                 if row.empty or row.iloc[0]["track"] != "allocation":
                     continue
-                saving = 1.0 - float(row.iloc[0]["accounted_weight_bytes"]) / w4_bytes
+                saving = 1.0 - float(
+                    row.iloc[0]["complete_persistent_model_bytes"]
+                ) / w4_bytes
                 if saving < MIN_ALLOCATION_BYTE_SAVING:
                     promoted_names.discard(name)
 
         promoted_names = sorted(promoted_names)
         promoted_profiles = [trial_by_name(name) for name in promoted_names]
-        print({"promoted_profiles": promoted_names})
+        validation_profile_names = set(promoted_names)
+        validation_profile_names.update(
+            MATCHED_CONTROL_MAP[name]
+            for name in promoted_names if name in MATCHED_CONTROL_MAP
+        )
+        validation_profile_names = sorted(validation_profile_names)
+        validation_profiles = [
+            trial_by_name(name) for name in validation_profile_names
+        ]
+        print({
+            "promoted_profiles": promoted_names,
+            "validation_profiles_including_controls": validation_profile_names,
+        })
         """),
         md("### 11. Validate promoted profiles across three full primary-model seeds"),
         code("""
@@ -641,7 +1069,7 @@ def build_notebook():
                 "validation", PRIMARY_MODEL, trial_by_name("source_fp16"),
                 0, CONFIRM_MAX_SAMPLES,
             )
-            for profile in promoted_profiles:
+            for profile in validation_profiles:
                 for seed in VALIDATION_SEEDS:
                     validation_records.append(run_trial(
                         "validation", PRIMARY_MODEL, profile,
@@ -655,12 +1083,75 @@ def build_notebook():
                 full_source_record["payload"]["metrics"]["ppl_wikitext2"]
             )
             validation_table = pd.DataFrame([
-                report_row(record, full_source_ppl) for record in validation_records
+                report_row(record, full_source_record)
+                for record in validation_records
             ])
+            for record in validation_records:
+                manifest = record["payload"]["metrics"]["data_manifest"]
+                diagnostic_digests = [
+                    manifest[name]["digest"]
+                    for name in ("layer_drift", "trajectory", "logit_fidelity")
+                    if name in manifest
+                ]
+                assert len(diagnostic_digests) == len(set(diagnostic_digests)), (
+                    "Held-out diagnostic partitions overlap."
+                )
             display(validation_table.sort_values(["profile", "seed"]))
         else:
             full_source_ppl = float("nan")
             validation_table = pd.DataFrame()
+
+        validation_control_rows = []
+        validation_by_profile_seed = {
+            (record["profile"]["name"], record["seed"]): record
+            for record in validation_records
+        }
+        for candidate_name in (promoted_names if validation_records else []):
+            control_name = MATCHED_CONTROL_MAP.get(candidate_name)
+            if control_name is None:
+                continue
+            for seed in VALIDATION_SEEDS:
+                candidate_record = validation_by_profile_seed[
+                    (candidate_name, seed)
+                ]
+                control_record = validation_by_profile_seed[(control_name, seed)]
+                candidate_metrics = candidate_record["payload"]["metrics"]
+                control_metrics = control_record["payload"]["metrics"]
+                wiki = paired_window_statistics(
+                    candidate_metrics["ppl_wikitext2_details"],
+                    control_metrics["ppl_wikitext2_details"],
+                )
+                c4 = paired_window_statistics(
+                    candidate_metrics["ppl_c4_details"],
+                    control_metrics["ppl_c4_details"],
+                )
+                candidate_bytes = candidate_metrics[
+                    "complete_persistent_model_bytes"
+                ]
+                control_bytes = control_metrics[
+                    "complete_persistent_model_bytes"
+                ]
+                validation_control_rows.append({
+                    "candidate": candidate_name,
+                    "control": control_name,
+                    "seed": seed,
+                    "complete_byte_ratio": candidate_bytes / control_bytes,
+                    "matched_rate": abs(candidate_bytes / control_bytes - 1)
+                    <= MATCHED_RATE_TOLERANCE,
+                    "wiki_nll_delta": wiki["paired_nll_delta"],
+                    "wiki_ci_low": wiki["paired_nll_ci_low"],
+                    "wiki_ci_high": wiki["paired_nll_ci_high"],
+                    "c4_nll_delta": c4["paired_nll_delta"],
+                    "c4_ci_low": c4["paired_nll_ci_low"],
+                    "c4_ci_high": c4["paired_nll_ci_high"],
+                    "confidence_confirmed": (
+                        wiki["paired_nll_ci_high"] < 0
+                        and c4["paired_nll_ci_high"] < 0
+                    ),
+                })
+        validation_control_table = pd.DataFrame(validation_control_rows)
+        if not validation_control_table.empty:
+            display(validation_control_table)
         """),
         md("### 12. Confirm promoted profiles on a second model family"),
         code("""
@@ -671,8 +1162,7 @@ def build_notebook():
                     "cross_family", model_case, trial_by_name("source_fp16"),
                     0, CONFIRM_MAX_SAMPLES,
                 )
-                source_ppl = float(source["payload"]["metrics"]["ppl_wikitext2"])
-                for profile in promoted_profiles:
+                for profile in validation_profiles:
                     for seed in CROSS_FAMILY_SEEDS:
                         cross_family_records.append(run_trial(
                             "cross_family", model_case, profile,
@@ -688,10 +1178,7 @@ def build_notebook():
                 "cross_family", model_case["name"], "source_fp16",
                 0, CONFIRM_MAX_SAMPLES,
             )
-            source_ppl = float(
-                trial_records[source_key]["payload"]["metrics"]["ppl_wikitext2"]
-            )
-            cross_rows.append(report_row(record, source_ppl))
+            cross_rows.append(report_row(record, trial_records[source_key]))
         cross_family_table = pd.DataFrame(cross_rows)
         if not cross_family_table.empty:
             display(cross_family_table.sort_values(["model", "profile", "seed"]))
@@ -709,8 +1196,13 @@ def build_notebook():
         retrieval_inputs = None
         retrieval_output = None
         retrieval_model = None
+        retrieval_manifest = None
         if RUN_SELECTIVE_KV_ORACLE:
-            from scripts.run_experiment import build_calib_loader, load_hf_model
+            from scripts.run_experiment import (
+                build_calib_loader,
+                load_hf_model,
+                token_batch_manifest,
+            )
 
             retrieval_model, retrieval_tokenizer, _ = load_hf_model(
                 PRIMARY_MODEL["model"], torch.float16, "cuda", "auto",
@@ -724,6 +1216,11 @@ def build_notebook():
                 "cuda", skip=RETRIEVAL_SKIP,
                 revision=DATASET_REVISIONS["c4"],
             )[0]
+            retrieval_manifest = token_batch_manifest(
+                [retrieval_inputs], dataset="allenai/c4", split="train",
+                revision=DATASET_REVISIONS["c4"], skip=RETRIEVAL_SKIP,
+                seq_len=RETRIEVAL_PROMPT_LENGTH,
+            )
             with torch.inference_mode():
                 retrieval_output = retrieval_model(
                     **retrieval_inputs,
@@ -842,8 +1339,16 @@ def build_notebook():
                 worst_ppl=("ppl", "max"),
                 mean_relative_ppl=("relative_ppl", "mean"),
                 worst_relative_ppl=("relative_ppl", "max"),
+                mean_ppl_c4=("ppl_c4", "mean"),
+                worst_relative_ppl_c4=("relative_ppl_c4", "max"),
+                mean_paired_nll_delta=("paired_nll_delta", "mean"),
+                worst_paired_nll_ci_high=("paired_nll_ci_high", "max"),
                 mean_packed_bytes=("packed_weight_bytes", "mean"),
                 mean_accounted_bytes=("accounted_weight_bytes", "mean"),
+                mean_complete_persistent_bytes=(
+                    "complete_persistent_model_bytes", "mean"
+                ),
+                mean_quality_runtime_bytes=("quality_runtime_model_bytes", "mean"),
                 mean_effective_bpw=("effective_bpw", "mean"),
                 mean_accounted_bpw=("accounted_bpw", "mean"),
                 mean_trajectory_token_agreement=(
@@ -856,6 +1361,14 @@ def build_notebook():
                 mean_trajectory_matching_prefix=(
                     "trajectory_mean_matching_prefix", "mean"
                 ),
+                mean_teacher_kl=("mean_teacher_kl", "mean"),
+                worst_teacher_kl=("mean_teacher_kl", "max"),
+                mean_top1_agreement=("top1_agreement", "mean"),
+                mean_logit_nll_delta=("logit_nll_delta", "mean"),
+                worst_layer_nmse=("worst_layer_nmse", "max"),
+                mean_trial_wall_seconds=("trial_wall_seconds", "mean"),
+                peak_patch_vram_bytes=("peak_vram_bytes_patch", "max"),
+                peak_eval_vram_bytes=("peak_vram_bytes_eval", "max"),
                 seeds=("seed", "nunique"),
             )
             validation_summary["status"] = np.where(
@@ -864,7 +1377,7 @@ def build_notebook():
                 "eligible for runtime prototype if cross-family gates pass",
             )
             display(validation_summary.sort_values([
-                "mean_packed_bytes", "mean_ppl"
+                "mean_complete_persistent_bytes", "mean_ppl"
             ]))
 
         retrieval_summary = pd.DataFrame()
@@ -899,12 +1412,12 @@ def build_notebook():
             quantized = screen_table[screen_table["profile"] != "source_fp16"]
             for track, group in quantized.groupby("track"):
                 ax.scatter(
-                    group["accounted_weight_bytes"] / 1e9,
+                    group["complete_persistent_model_bytes"] / 1e9,
                     group["relative_ppl"], label=track, alpha=0.8,
                 )
             ax.axhline(0, color="black", linewidth=0.8)
             ax.set(
-                xlabel="Accounted projection bytes (code + scale + codebook, GB)",
+                xlabel="Complete persistent model bytes (GB)",
                 ylabel="Relative WikiText-2 PPL",
                 title="Seed-0 algorithmic screen",
             )
@@ -947,8 +1460,11 @@ def build_notebook():
         table_paths = {}
         for name, frame in (
             ("synthetic_preflight", synthetic_table),
+            ("sentinel", sentinel_table),
             ("screen", screen_table),
             ("validation", validation_table),
+            ("validation_summary", validation_summary),
+            ("validation_matched_controls", validation_control_table),
             ("cross_family", cross_family_table),
             ("retrieval", retrieval_table),
             ("retrieval_summary", retrieval_summary),
@@ -969,6 +1485,14 @@ def build_notebook():
             "validation_seeds": list(VALIDATION_SEEDS),
             "screen_max_samples": SCREEN_MAX_SAMPLES,
             "confirm_max_samples": CONFIRM_MAX_SAMPLES,
+            "screening": {
+                "sentinel_max_samples": SENTINEL_MAX_SAMPLES,
+                "sentinel_w4_max_relative_ppl": SENTINEL_W4_MAX_RELATIVE_PPL,
+                "early_stop_after": EARLY_STOP_AFTER,
+                "early_stop_relative_ppl": EARLY_STOP_RELATIVE_PPL,
+                "bootstrap_draws": BOOTSTRAP_DRAWS,
+                "matched_rate_tolerance": MATCHED_RATE_TOLERANCE,
+            },
             "trajectory_validation": {
                 "enabled": RUN_TRAJECTORY_VALIDATION,
                 "batches": TRAJECTORY_BATCHES,
@@ -976,6 +1500,27 @@ def build_notebook():
                 "new_tokens": TRAJECTORY_NEW_TOKENS,
                 "skip": TRAJECTORY_SKIP,
                 "dataset": "C4",
+            },
+            "logit_fidelity": {
+                "enabled": RUN_LOGIT_FIDELITY,
+                "batches": LOGIT_FIDELITY_BATCHES,
+                "prompt_len": LOGIT_FIDELITY_PROMPT_LENGTH,
+                "skip": LOGIT_FIDELITY_SKIP,
+            },
+            "data_partitions": {
+                "allocation_teacher_skip": DYNAMIC_TEACHER_SKIP,
+                "screen_layer_drift_skip": SCREEN_LAYER_DRIFT_SKIP,
+                "layer_drift_skip": LAYER_DRIFT_SKIP,
+                "trajectory_skip": TRAJECTORY_SKIP,
+                "logit_fidelity_skip": LOGIT_FIDELITY_SKIP,
+                "retrieval_skip": RETRIEVAL_SKIP,
+                "retrieval_manifest": retrieval_manifest,
+            },
+            "record_data_manifests": {
+                "|".join(map(str, key)): record["payload"]["metrics"].get(
+                    "data_manifest", {}
+                )
+                for key, record in trial_records.items()
             },
             "tables": table_paths,
             "figures": [str(path) for path in figure_paths],
@@ -987,7 +1532,7 @@ def build_notebook():
             },
         }
         summary_path = RESULT_ROOT / "algorithm_lab_summary.json"
-        summary_path.write_text(json.dumps(summary, indent=2))
+        write_result(str(summary_path), summary)
 
         log_lines = [
             f"## RotQuant algorithm lab ({commit[:12]})",
@@ -998,6 +1543,8 @@ def build_notebook():
             f"- Full validation seeds: {VALIDATION_SEEDS if RUN_FULL_SEED_VALIDATION else 'disabled'}",
             f"- Cross-family validation: {'enabled' if RUN_CROSS_FAMILY else 'disabled'}",
             f"- Held-out trajectory validation: {'enabled' if RUN_TRAJECTORY_VALIDATION else 'disabled'} ({TRAJECTORY_BATCHES} prompts x {TRAJECTORY_NEW_TOKENS} tokens)",
+            f"- Held-out logit fidelity: {'enabled' if RUN_LOGIT_FIDELITY else 'disabled'}",
+            "- Promoted validation reports paired WikiText-2 and C4 window confidence intervals.",
             "- Vector profiles are research-only and cannot be exported yet.",
             "- Selective-V results use dense attention for candidate selection; packed-key recall remains open.",
         ]
@@ -1023,10 +1570,12 @@ def build_notebook():
 
         Interpret the generated tables only after all enabled gates complete:
 
-        - Promote vector quantization only if it beats its scalar control at the
-          same exact packed bytes and survives cross-family validation.
+        - Promote vector quantization only if it beats its scalar control within
+          the declared complete-byte tolerance, then confirms on paired
+          WikiText-2/C4 windows and cross-family validation.
         - Promote a mixed-bit allocator only if it saves at least the declared
-          byte threshold and does not merely trade a tiny saving for worse PPL.
+          byte threshold, beats the seeded random allocation control, and does
+          not merely trade a tiny saving for worse PPL.
         - Treat the small C4 trajectory gate as a compounding-drift check, not
           as a claim of equivalence to a diverse Divergence-300-style benchmark.
         - Treat calibrated, spherical, length-corrected, and TurboQuant-scale

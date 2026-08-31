@@ -40,6 +40,12 @@ specialized around them:
   objectives with exact packed-byte accounting;
 - [x] add a real-attention selective-V oracle that reports output error,
   selected attention mass, fallback rate, and effective V reads;
+- [x] harden the Colab with a source/W4 sentinel, paired per-window NLL and
+  bootstrap intervals, C4 confirmation, held-out logit/layer/trajectory
+  diagnostics, immutable token hashes, complete model-byte accounting, and
+  atomic resumable records;
+- [x] add seeded random-allocation and scalar 2.75-bpw controls so dynamic and
+  vector candidates must beat a matched-format, matched-rate baseline;
 - [ ] execute the staged
   [algorithm-lab Colab](../notebooks/rotquant_algorithm_lab_colab.ipynb) on the
   primary model, then promote only Pareto winners to three seeds and a second

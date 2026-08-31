@@ -64,6 +64,7 @@ def _dynamic_profile(
     codebook: str = "gaussian",
     candidate_bits: list[int] | None = None,
     scale: str = "mse_search",
+    allocation: str = "greedy",
     research_only: bool = False,
 ) -> AlgorithmicTrial:
     dynamic = {
@@ -74,6 +75,7 @@ def _dynamic_profile(
         "global_kl_weight": global_kl_weight,
         "global_kl_batches": global_kl_batches,
         "global_kl_temperature": 1.0,
+        "allocation": allocation,
         "rules": rules or [],
     }
     return AlgorithmicTrial(
@@ -102,6 +104,12 @@ def algorithmic_trial_matrix() -> tuple[AlgorithmicTrial, ...]:
         AlgorithmicTrial(
             "source_fp16", "control", (("patch.enabled", False),)
         ),
+        _weight_profile(
+            "gaussian_w4_mse", "codebook_scale", bits=4
+        ),
+        _weight_profile(
+            "gaussian_w3_mse", "codebook_scale", bits=3
+        ),
     ]
     for bits in (1, 2, 3):
         profiles.extend([
@@ -122,9 +130,6 @@ def algorithmic_trial_matrix() -> tuple[AlgorithmicTrial, ...]:
         ])
     for bits in (3, 4):
         profiles.extend([
-            _weight_profile(
-                f"gaussian_w{bits}_mse", "codebook_scale", bits=bits
-            ),
             _weight_profile(
                 f"calibrated_w{bits}_mse",
                 "codebook_scale",
@@ -152,6 +157,14 @@ def algorithmic_trial_matrix() -> tuple[AlgorithmicTrial, ...]:
         ])
     profiles.extend([
         _dynamic_profile(
+            "dynamic_random_3p625",
+            target_bpw=3.625,
+            global_kl_batches=0,
+            local_weight=1.0,
+            global_kl_weight=0.0,
+            allocation="random",
+        ),
+        _dynamic_profile(
             "dynamic_local_3p625",
             target_bpw=3.625,
             global_kl_batches=0,
@@ -175,6 +188,15 @@ def algorithmic_trial_matrix() -> tuple[AlgorithmicTrial, ...]:
                 {"match": "q_proj", "min_bits": 3},
                 {"match": "down_proj", "min_bits": 3},
             ],
+        ),
+        _dynamic_profile(
+            "dynamic_scalar_teacher_2p75",
+            target_bpw=2.75,
+            global_kl_batches=1,
+            local_weight=0.5,
+            global_kl_weight=1.0,
+            candidate_bits=[2, 3],
+            scale="rms",
         ),
         _dynamic_profile(
             "dynamic_vector_2p75",

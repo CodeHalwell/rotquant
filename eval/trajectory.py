@@ -8,6 +8,7 @@ same prompts after quantization and recovery training.
 """
 from __future__ import annotations
 
+import hashlib
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any
@@ -38,6 +39,7 @@ class TrajectoryConfig:
 class TrajectoryReference:
     inputs: dict[str, torch.Tensor]
     continuation: torch.Tensor
+    input_hash: str
 
 
 def _device_inputs(inputs: Mapping[str, Any], device) -> dict[str, Any]:
@@ -84,6 +86,9 @@ def capture_trajectories(model, tokenizer, batches: Sequence[Mapping[str, Any]],
         references.append(TrajectoryReference(
             inputs={key: value.detach().cpu() for key, value in prompt.items()},
             continuation=continuation,
+            input_hash=hashlib.sha256(
+                prompt["input_ids"].detach().cpu().contiguous().numpy().tobytes()
+            ).hexdigest(),
         ))
     if not references:
         raise ValueError("trajectory evaluation requires at least one prompt")
@@ -128,4 +133,5 @@ def evaluate_trajectories(model, tokenizer,
         "exact_trajectory_rate": exact / examples,
         "mean_matching_prefix": prefix_tokens / examples,
         "mean_first_divergence": prefix_tokens / examples,
+        "input_hashes": [reference.input_hash for reference in references],
     }
