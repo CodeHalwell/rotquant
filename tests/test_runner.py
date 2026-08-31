@@ -7,16 +7,17 @@ import importlib.util
 import os
 import sys
 from types import ModuleType, SimpleNamespace
+from typing import ClassVar
 
 import pytest
 import torch
-import torch.nn as nn
 import yaml
+from torch import nn
 
-from rotquant.patch import PatchConfig, patch_model, _cpu_staging_linear
 from rotquant.calibrate import collect_activations
-from rotquant.quantize import QuantConfig, Quantizer, _group_scales_rms
 from rotquant.linear import QuantLinear
+from rotquant.patch import PatchConfig, _cpu_staging_linear, patch_model
+from rotquant.quantize import QuantConfig, Quantizer, _group_scales_rms
 from rotquant.rotate import Identity
 
 _ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -88,7 +89,7 @@ def test_calibration_batches_are_cached_and_content_addressed(monkeypatch):
     class Tokenizer:
         name_or_path = "tiny/tokenizer"
         vocab_size = 32
-        special_tokens_map = {}
+        special_tokens_map: ClassVar[dict] = {}
 
         def __call__(self, text, return_tensors="pt"):
             del return_tensors
@@ -642,7 +643,7 @@ def test_aggregate_flattens_zeroshot():
         for s in range(2)
     ]
     table = aggregate_mod.aggregate(runs)
-    (key, agg), = table.items()
+    ((_, agg),) = table.items()
     assert agg["n_seeds"] == 2
     assert abs(agg["ppl_wikitext2"]["mean"] - 6.5) < 1e-9
     assert abs(agg["zeroshot.boolq"]["mean"] - 0.605) < 1e-9

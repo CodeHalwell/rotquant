@@ -12,30 +12,29 @@ API: :func:`capture_outputs` on the fp model *before* patching, again after, the
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Dict, List
 
 import torch
-import torch.nn as nn
+from torch import nn
 
 from rotquant.linear import QuantLinear
 
 
 @dataclass
 class LayerMSEResult:
-    mse: Dict[str, float] = field(default_factory=dict)
-    cosine: Dict[str, float] = field(default_factory=dict)
-    order: List[str] = field(default_factory=list)
+    mse: dict[str, float] = field(default_factory=dict)
+    cosine: dict[str, float] = field(default_factory=dict)
+    order: list[str] = field(default_factory=list)
 
 
 @torch.no_grad()
 def capture_outputs(model: nn.Module, batch, device,
-                    to_cpu: bool = True) -> Dict[str, torch.Tensor]:
+                    to_cpu: bool = True) -> dict[str, torch.Tensor]:
     """Forward ``batch`` once, returning each linear's output keyed by module name.
 
     Outputs are detached (and moved to CPU by default so a capture of every layer
     of a large model does not sit in VRAM between the fp and quantised passes).
     """
-    captured: Dict[str, torch.Tensor] = {}
+    captured: dict[str, torch.Tensor] = {}
     handles = []
 
     def mk(name):
@@ -60,8 +59,8 @@ def capture_outputs(model: nn.Module, batch, device,
 
 
 @torch.no_grad()
-def drift_between(fp_out: Dict[str, torch.Tensor],
-                  q_out: Dict[str, torch.Tensor]) -> LayerMSEResult:
+def drift_between(fp_out: dict[str, torch.Tensor],
+                  q_out: dict[str, torch.Tensor]) -> LayerMSEResult:
     """Normalised per-layer output MSE + cosine between two captures.
 
     Layer names must match (patching replaces modules at the same paths, so the
@@ -69,10 +68,10 @@ def drift_between(fp_out: Dict[str, torch.Tensor],
     which is module (depth) order.
     """
     result = LayerMSEResult()
-    for name in fp_out:
+    for name, fp_val in fp_out.items():
         if name not in q_out:
             continue
-        y = fp_out[name].reshape(-1).float()
+        y = fp_val.reshape(-1).float()
         yq = q_out[name].reshape(-1).to(y.device).float()
         denom = (y.pow(2).sum() + 1e-12)
         result.mse[name] = float(((y - yq).pow(2).sum() / denom).item())

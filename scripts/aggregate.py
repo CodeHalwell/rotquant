@@ -15,10 +15,10 @@ import os
 import re
 from collections import defaultdict
 from statistics import mean, pstdev
-from typing import Any, Dict, List
+from typing import Any
 
 
-def load_runs(results_dir: str) -> List[Dict[str, Any]]:
+def load_runs(results_dir: str) -> list[dict[str, Any]]:
     runs = []
     for path in glob.glob(os.path.join(results_dir, "*.json")):
         with open(path) as f:
@@ -26,7 +26,7 @@ def load_runs(results_dir: str) -> List[Dict[str, Any]]:
     return runs
 
 
-def _key(run: Dict[str, Any]) -> str:
+def _key(run: dict[str, Any]) -> str:
     cfg = run.get("config", {})
     # Group by run_id with the seed suffix stripped: seeds of one cell merge,
     # while --set sweep variants (whose overrides are baked into the run_id)
@@ -36,10 +36,10 @@ def _key(run: Dict[str, Any]) -> str:
     return f"{cfg.get('experiment', '?')}|{cfg.get('model', '?')}|{cell}"
 
 
-def _flat_metrics(metrics: Dict[str, Any]) -> Dict[str, float]:
+def _flat_metrics(metrics: dict[str, Any]) -> dict[str, float]:
     """Numeric metrics, with one level of nesting flattened as ``parent.child``
     (so the zero-shot per-task dict and ``bundle_mean`` make it into the table)."""
-    flat: Dict[str, float] = {}
+    flat: dict[str, float] = {}
     for m, v in metrics.items():
         if isinstance(v, bool):
             continue
@@ -52,14 +52,14 @@ def _flat_metrics(metrics: Dict[str, Any]) -> Dict[str, float]:
     return flat
 
 
-def aggregate(runs: List[Dict[str, Any]]) -> Dict[str, Dict[str, Any]]:
-    groups: Dict[str, List[Dict[str, Any]]] = defaultdict(list)
+def aggregate(runs: list[dict[str, Any]]) -> dict[str, dict[str, Any]]:
+    groups: dict[str, list[dict[str, Any]]] = defaultdict(list)
     for r in runs:
         groups[_key(r)].append(r)
 
-    table: Dict[str, Dict[str, Any]] = {}
+    table: dict[str, dict[str, Any]] = {}
     for key, group in groups.items():
-        agg: Dict[str, Any] = {"n_seeds": len(group)}
+        agg: dict[str, Any] = {"n_seeds": len(group)}
         flats = [_flat_metrics(r.get("metrics", {})) for r in group]
         metric_names = set()
         for f in flats:
@@ -73,7 +73,7 @@ def aggregate(runs: List[Dict[str, Any]]) -> Dict[str, Dict[str, Any]]:
     return table
 
 
-def to_markdown(table: Dict[str, Dict[str, Any]]) -> str:
+def to_markdown(table: dict[str, dict[str, Any]]) -> str:
     lines = ["| run | seeds | metric | mean | std |", "|---|---|---|---|---|"]
     for key, agg in sorted(table.items()):
         for m, v in agg.items():
@@ -83,7 +83,7 @@ def to_markdown(table: Dict[str, Dict[str, Any]]) -> str:
     return "\n".join(lines)
 
 
-def to_csv(table: Dict[str, Dict[str, Any]], path: str) -> None:
+def to_csv(table: dict[str, dict[str, Any]], path: str) -> None:
     with open(path, "w", newline="") as f:
         w = csv.writer(f)
         w.writerow(["run", "seeds", "metric", "mean", "std"])

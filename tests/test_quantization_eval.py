@@ -1,7 +1,7 @@
 import pytest
 import torch
 
-from eval.quantization import compare_quantizers
+from rotquant.eval.quantization import compare_quantizers
 from rotquant.quantize import QuantConfig
 
 

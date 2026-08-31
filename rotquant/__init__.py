@@ -1,4 +1,7 @@
 """rotquant -- rotation-based weight compression evaluation toolkit."""
+
+__version__ = "0.1.0"
+
 from .adapters import (
     AdapterRegistry,
     ModelAdapter,
@@ -153,6 +156,7 @@ __all__ = [
     "ScalarCodebook",
     "TeacherCall",
     "VectorCodebook",
+    "__version__",
     "activation_reconstruction_error",
     "build_gaussian_vector_codebook",
     "build_rotation",

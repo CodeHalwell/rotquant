@@ -11,7 +11,10 @@ import sys
 import tempfile
 import time
 from dataclasses import dataclass
-from typing import Any, Dict, Optional
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:
+    from typing import Self
 
 import numpy as np
 
@@ -56,8 +59,15 @@ def git_sha() -> str:
         return "unknown"
 
 
-def library_versions() -> Dict[str, str]:
-    versions: Dict[str, str] = {"python": sys.version.split()[0]}
+def library_versions() -> dict[str, str]:
+    versions: dict[str, str] = {"python": sys.version.split()[0]}
+    try:
+        # Local import: utils is imported during package init, but this runs later.
+        from rotquant import __version__ as _rotquant_version
+
+        versions["rotquant"] = _rotquant_version
+    except Exception:  # pragma: no cover - defensive; the attribute always exists
+        versions["rotquant"] = "unknown"
     for mod in ("torch", "numpy", "scipy", "transformers", "datasets", "lm_eval"):
         try:
             m = __import__(mod)
@@ -67,8 +77,8 @@ def library_versions() -> Dict[str, str]:
     return versions
 
 
-def gpu_info() -> Dict[str, Any]:
-    info: Dict[str, Any] = {"cuda_available": False}
+def gpu_info() -> dict[str, Any]:
+    info: dict[str, Any] = {"cuda_available": False}
     if torch is not None and torch.cuda.is_available():
         info["cuda_available"] = True
         info["device_name"] = torch.cuda.get_device_name(0)
@@ -95,7 +105,7 @@ def reset_peak_vram() -> None:
         torch.cuda.reset_peak_memory_stats()
 
 
-def environment_record() -> Dict[str, Any]:
+def environment_record() -> dict[str, Any]:
     """Full provenance block to embed in every result file."""
     return {
         "git_sha": git_sha(),
@@ -130,8 +140,8 @@ class BitBudget:
     # when designing a format, but an instantiated packed tensor can have a partial
     # final group and up to 31 padding bits in its final int32 word.  Supplying
     # these fields makes ``bits_per_weight`` describe the bytes actually retained.
-    stored_bits: Optional[float] = None
-    stored_weights: Optional[int] = None
+    stored_bits: float | None = None
+    stored_weights: int | None = None
 
     @property
     def code_bits(self) -> float:
@@ -157,7 +167,7 @@ class BitBudget:
             )
 
 
-def write_result(path: str, payload: Dict[str, Any]) -> None:
+def write_result(path: str, payload: dict[str, Any]) -> None:
     directory = os.path.dirname(os.path.abspath(path))
     os.makedirs(directory, exist_ok=True)
     temporary = None
@@ -190,9 +200,9 @@ class Timer:
     def __init__(self) -> None:
         self.elapsed = 0.0
 
-    def __enter__(self) -> "Timer":
+    def __enter__(self) -> Self:
         self._t0 = time.perf_counter()
         return self
 
-    def __exit__(self, *exc: Any) -> None:
+    def __exit__(self, *exc: object) -> None:
         self.elapsed = time.perf_counter() - self._t0

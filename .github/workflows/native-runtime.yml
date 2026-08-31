@@ -51,3 +51,20 @@ jobs:
               --out-features 64 --in-features 257 --group-size 128 \
               --batch 2 --iterations 3 --kernel scalar
           fi
+
+  sanitizers:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Configure (ASan + UBSan, Debug)
+        run: >-
+          cmake -S native -B build/native-asan
+          -DCMAKE_BUILD_TYPE=Debug
+          -DROTQUANT_NATIVE_WARNINGS_AS_ERRORS=ON
+          -DCMAKE_CXX_FLAGS="-fsanitize=address,undefined -fno-sanitize-recover=all"
+          -DCMAKE_C_FLAGS="-fsanitize=address,undefined -fno-sanitize-recover=all"
+          -DCMAKE_EXE_LINKER_FLAGS="-fsanitize=address,undefined"
+      - name: Build
+        run: cmake --build build/native-asan --parallel
+      - name: Test under sanitizers
+        run: ctest --test-dir build/native-asan --output-on-failure

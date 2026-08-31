@@ -135,7 +135,7 @@ dimension instead of its asymptotic Gaussian approximation. `length` folds a
 rowwise self-dot correction into the existing fp16 scales, so codes, artifact
 shape and bits/weight do not change. It deliberately remains optional: it fixes
 inner-product shrinkage but can increase ordinary reconstruction MSE. Use
-`eval.quantization.compare_quantizers` and the KV attention-logit metrics to
+`rotquant.eval.quantization.compare_quantizers` and the KV attention-logit metrics to
 choose it from held-out results rather than enabling it globally.
 
 For calibrated experiments, `fit_scalar_codebook(normalized_samples, levels)`

@@ -38,7 +38,7 @@ than full-model fine-tuning.
 from __future__ import annotations
 
 from dataclasses import dataclass, replace
-from typing import Any, Dict, Optional
+from typing import Any
 
 import torch
 
@@ -59,7 +59,7 @@ class RotationTrainConfig:
     # MSE scale search evaluates dozens of candidates per optimiser step. Using
     # RMS assignments for training is much faster; final packing still uses the
     # experiment's actual scale strategy.
-    assignment_scale: Optional[str] = None
+    assignment_scale: str | None = None
     max_grad_norm: float = 1.0
     restore_best: bool = True
     # After fast proxy-objective training, require this relative improvement
@@ -110,7 +110,7 @@ def select_butterfly_checkpoint(rotation: ButterflyRotation,
                                 quant_cfg: QuantConfig,
                                 activations: torch.Tensor,
                                 max_tokens: int = 64,
-                                min_improvement: float = 0.0) -> Dict[str, Any]:
+                                min_improvement: float = 0.0) -> dict[str, Any]:
     """Keep a trained butterfly only when the deployed quantizer prefers it.
 
     ``reference`` is the exact seeded FWHT initialization. If the trained
@@ -134,7 +134,7 @@ def select_butterfly_checkpoint(rotation: ButterflyRotation,
 def train_layer_rotation(rotation: Rotation, weight: torch.Tensor,
                          quant_cfg: QuantConfig,
                          config: RotationTrainConfig = None,
-                         activations: Optional[torch.Tensor] = None) -> Dict[str, Any]:
+                         activations: torch.Tensor | None = None) -> dict[str, Any]:
     """Optimise a trainable rotation in place for one layer's frozen weight.
 
     Returns ``{"initial_mse", "final_mse", "steps"}`` (rotated-domain

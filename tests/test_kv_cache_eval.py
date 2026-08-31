@@ -4,7 +4,7 @@ from types import SimpleNamespace
 import pytest
 import torch
 
-from eval.kv_cache import (
+from rotquant.eval.kv_cache import (
     KVCacheEvalConfig,
     KVDynamicConfig,
     evaluate_kv_cache,

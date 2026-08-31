@@ -16,8 +16,9 @@ Vector grids:
   (Conway & Sloane). It is not a finite-rate encoder or a packed baseline.
 * :class:`VectorCodebook` -- a finite-rate product-vector codebook trained on a
   deterministic Gaussian source for matched W1--W3 research trials.
-* :class:`TrellisCodebook`   -- bridge to QTIP's trellis-coded quantiser; raises an
-  informative error if the QTIP repo is not importable (we do not re-derive it).
+
+Trellis-coded quantisation (QTIP) is deliberately not bridged here; integrating
+it as a real packed baseline is tracked in the roadmap.
 """
 from __future__ import annotations
 
@@ -560,23 +561,3 @@ class E8LatticeCodebook:
         xb = x.reshape(*lead, d // self.dim, self.dim) / self.lattice_scale
         q = nearest_e8(xb) * self.lattice_scale
         return q.reshape(*lead, d)
-
-
-class TrellisCodebook:
-    """Bridge to QTIP's trellis-coded quantiser (we do not re-derive it).
-
-    Importing succeeds only if the QTIP repo is on ``PYTHONPATH``; otherwise the
-    constructor raises with the clone instructions from the spec.
-    """
-
-    def __init__(self, **kwargs):
-        try:  # pragma: no cover - requires the external QTIP repo
-            import qtip  # noqa: F401  type: ignore
-        except ImportError as exc:  # pragma: no cover
-            raise NotImplementedError(
-                "TrellisCodebook bridges to QTIP, which is a repo not a package. "
-                "Clone it and add to PYTHONPATH:\n"
-                "  git clone https://github.com/Cornell-RelaxML/qtip\n"
-                f"(import failed: {exc})"
-            )
-        self.kwargs = kwargs

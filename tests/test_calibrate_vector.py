@@ -4,7 +4,7 @@ Both feed downstream experiments (GPTQ in E5, vector residual in E6) but had no
 direct coverage, so a regression here would only surface as a confusing run.
 """
 import torch
-import torch.nn as nn
+from torch import nn
 
 from rotquant.calibrate import HessianAccumulator, collect_hessians
 from rotquant.codebooks import E8LatticeCodebook, nearest_e8

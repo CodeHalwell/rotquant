@@ -1,0 +1,17 @@
+cff-version: 1.2.0
+message: "If you use this software, please cite it as below."
+title: "RotQuant: rotation-based weight and KV-cache compression for LLMs"
+type: software
+authors:
+  - family-names: Halwell
+    given-names: Daniel
+repository-code: "https://github.com/CodeHalwell/rotquant"
+license: MIT
+version: 0.1.0
+date-released: 2026-08-31
+abstract: >-
+  A GPU-oriented assessment harness and runtime for TurboQuant-style
+  rotation plus weight compression: exact-rate 1-8-bit scalar profiles,
+  learned butterfly rotations, packed pickle-free checkpoints, a portable
+  native C++ runtime, and rotation-aware KV-cache quantization, evaluated
+  under a fixed matched-bits protocol.

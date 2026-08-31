@@ -30,16 +30,16 @@ import os
 import re
 import sys
 from collections import OrderedDict
-from typing import Any, Dict, List, Optional
+from typing import Any
 
 import torch
 import yaml
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from rotquant.patch import PatchConfig, patch_model  # noqa: E402
-from rotquant.quantize import QuantConfig  # noqa: E402
-from rotquant.utils import (  # noqa: E402
+from rotquant.patch import PatchConfig, patch_model
+from rotquant.quantize import QuantConfig
+from rotquant.utils import (
     Timer,
     environment_record,
     get_logger,
@@ -70,7 +70,7 @@ _TRAJECTORY_REFERENCE_CACHE: dict[str, Any] = {}
 _LOGIT_REFERENCE_CACHE: dict[str, Any] = {}
 
 
-def _deep_merge(base: Dict[str, Any], override: Dict[str, Any]) -> Dict[str, Any]:
+def _deep_merge(base: dict[str, Any], override: dict[str, Any]) -> dict[str, Any]:
     """Recursively merge ``override`` on top of ``base``. Lists are replaced."""
     out = dict(base)
     for k, v in override.items():
@@ -81,7 +81,7 @@ def _deep_merge(base: Dict[str, Any], override: Dict[str, Any]) -> Dict[str, Any
     return out
 
 
-def load_config(path: str) -> Dict[str, Any]:
+def load_config(path: str) -> dict[str, Any]:
     """Load an experiment YAML, deep-merging ``_base.yaml`` from the same dir."""
     with open(path) as f:
         cfg = yaml.safe_load(f) or {}
@@ -93,7 +93,7 @@ def load_config(path: str) -> Dict[str, Any]:
     return cfg
 
 
-def apply_set_overrides(cfg: Dict[str, Any], sets) -> None:
+def apply_set_overrides(cfg: dict[str, Any], sets) -> None:
     """Apply ``[(dotted.key, value), ...]`` overrides in place, creating
     intermediate dicts as needed."""
     for key, value in sets:
@@ -110,7 +110,7 @@ def _slug(text: str) -> str:
     return re.sub(r"[^A-Za-z0-9._=+-]+", "-", str(text)).strip("-")
 
 
-def override_slug(model: Optional[str], sets, device: Optional[str] = None) -> str:
+def override_slug(model: str | None, sets, device: str | None = None) -> str:
     """Filename fragment describing the CLI overrides that change results."""
     parts = []
     if model:
@@ -122,7 +122,7 @@ def override_slug(model: Optional[str], sets, device: Optional[str] = None) -> s
     return "_".join(parts)
 
 
-def derive_run_id(cfg: Dict[str, Any], config_path: str,
+def derive_run_id(cfg: dict[str, Any], config_path: str,
                   slug: str = "", seed_overridden: bool = False) -> str:
     """An explicit ``run_id`` with no CLI overrides is used verbatim. Otherwise
     the base name (``run_id`` > ``label`` > config file stem) gets the override
@@ -160,7 +160,7 @@ def _bounded_run_id(run_id: str, max_length: int = MAX_RUN_ID_LENGTH) -> str:
     return f"{prefix}_{digest}{seed_suffix}"
 
 
-def resolve_device_dtype(cfg: Dict[str, Any]) -> tuple:
+def resolve_device_dtype(cfg: dict[str, Any]) -> tuple:
     """Honour the config but never crash on a CUDA-less box: fall back to CPU
     (and to fp32, since fp16 matmuls on CPU are unsupported/slow)."""
     device = cfg.get("device") or ("cuda" if torch.cuda.is_available() else "cpu")
@@ -176,7 +176,7 @@ def resolve_device_dtype(cfg: Dict[str, Any]) -> tuple:
     return device, getattr(torch, dtype_name)
 
 
-def apply_device_defaults(cfg: Dict[str, Any], device) -> bool:
+def apply_device_defaults(cfg: dict[str, Any], device) -> bool:
     """Apply safe execution defaults required by a backend.
 
     MPS has no fused packed matmul in this project. Re-unpacking int32 weights on
@@ -351,21 +351,21 @@ def _reference_cache_key(kind: str, model_name: str,
     ).hexdigest()
 
 
-def footprint_metrics(model: torch.nn.Module, cfg_model: Dict[str, Any]) -> Dict[str, Any]:
+def footprint_metrics(model: torch.nn.Module, cfg_model: dict[str, Any]) -> dict[str, Any]:
     """True bits/weight + packed-vs-fp16 storage across all QuantLinear layers.
 
     Enforces the equal-bits discipline: if the config declares ``claimed_bpw``,
     every layer's BitBudget must match it (``BitBudget.assert_matches``).
     """
     from rotquant.linear import QuantLinear
-    metrics: Dict[str, Any] = {}
+    metrics: dict[str, Any] = {}
     bpws, packed_bytes, fp16_bytes = [], 0, 0
     rotation_parameter_bytes, adapter_parameter_bytes = 0, 0
     codebook_bytes = fallback_cache_bytes = 0
     total_bits, total_weights = 0.0, 0
     claimed = cfg_model.get("claimed_bpw")
     tol = float(cfg_model.get("claimed_bpw_tol", 1e-6))
-    for name, mod in model.named_modules():
+    for _, mod in model.named_modules():
         if not isinstance(mod, QuantLinear):
             continue
         budget = mod.qweight.bit_budget()
@@ -430,12 +430,12 @@ def footprint_metrics(model: torch.nn.Module, cfg_model: Dict[str, Any]) -> Dict
 
 
 def run(config_path: str, output_dir: str = "results",
-        overrides: Optional[Dict[str, Any]] = None,
-        sets: Optional[List] = None,
-        export_dir: Optional[str] = None,
+        overrides: dict[str, Any] | None = None,
+        sets: list | None = None,
+        export_dir: str | None = None,
         export_overwrite: bool = False,
         export_processor: bool = False,
-        export_deployment_metadata: Optional[str] = None) -> Dict[str, Any]:
+        export_deployment_metadata: str | None = None) -> dict[str, Any]:
     cfg = load_config(config_path)
     overrides = overrides or {}
     sets = list(sets or [])
@@ -473,7 +473,7 @@ def run(config_path: str, output_dir: str = "results",
     qcfg = QuantConfig(seed=quant_kwargs.pop("seed", seed), **quant_kwargs)
     pcfg = PatchConfig(quant=qcfg, seed=patch_kwargs.pop("seed", seed), **patch_kwargs)
 
-    metrics: Dict[str, Any] = {
+    metrics: dict[str, Any] = {
         "model_loader": selected_loader,
         "model_load_seconds": model_load_timer.elapsed,
         "data_manifest": {},
@@ -619,7 +619,7 @@ def run(config_path: str, output_dir: str = "results",
     fp_capture = None
     drift_batch = None
     if eval_cfg.get("layer_mse", False):
-        from eval.layer_mse import capture_outputs
+        from rotquant.eval.layer_mse import capture_outputs
         layer_mse_skip = int(eval_cfg.get("layer_mse_skip", 0))
         layer_mse_seq_len = int(eval_cfg.get("layer_mse_seq_len", 512))
         drift_batch = build_calib_loader(
@@ -635,7 +635,7 @@ def run(config_path: str, output_dir: str = "results",
 
     trajectory_requested = eval_cfg.get("trajectory", False)
     if trajectory_requested:
-        from eval.trajectory import TrajectoryConfig, capture_trajectories
+        from rotquant.eval.trajectory import TrajectoryConfig, capture_trajectories
         trajectory_kwargs = (trajectory_requested
                              if isinstance(trajectory_requested, dict) else {})
         trajectory_config = TrajectoryConfig(**trajectory_kwargs)
@@ -673,7 +673,7 @@ def run(config_path: str, output_dir: str = "results",
 
     logit_fidelity_requested = eval_cfg.get("logit_fidelity", False)
     if logit_fidelity_requested:
-        from eval.logit_fidelity import (
+        from rotquant.eval.logit_fidelity import (
             LogitFidelityConfig,
             capture_logit_references,
         )
@@ -709,7 +709,7 @@ def run(config_path: str, output_dir: str = "results",
         else:
             metrics["source_logit_fidelity_seconds"] = 0.0
 
-    patch_stats: Dict[str, Any] = {}
+    patch_stats: dict[str, Any] = {}
     if needs_dynamic:
         from rotquant.dynamic import select_dynamic_quantization
         with Timer() as t:
@@ -737,14 +737,14 @@ def run(config_path: str, output_dir: str = "results",
     # Evaluation -----------------------------------------------------------
     reset_peak_vram()
     if fp_capture is not None:
-        from eval.layer_mse import capture_outputs, drift_between
+        from rotquant.eval.layer_mse import capture_outputs, drift_between
         q_capture = capture_outputs(model, drift_batch, device)
         drift = drift_between(fp_capture, q_capture)
         metrics["layer_mse"] = {"mse": drift.mse, "cosine": drift.cosine,
                                 "order": drift.order}
 
     if trajectory_references is not None:
-        from eval.trajectory import evaluate_trajectories
+        from rotquant.eval.trajectory import evaluate_trajectories
         with Timer() as t:
             metrics["trajectory"] = evaluate_trajectories(
                 model, tokenizer, trajectory_references, device,
@@ -752,7 +752,7 @@ def run(config_path: str, output_dir: str = "results",
         metrics["trajectory"]["seconds"] = t.elapsed
 
     if logit_references is not None:
-        from eval.logit_fidelity import evaluate_logit_fidelity
+        from rotquant.eval.logit_fidelity import evaluate_logit_fidelity
         with Timer() as t:
             metrics["logit_fidelity"] = evaluate_logit_fidelity(
                 model, logit_references, device, logit_fidelity_config
@@ -761,7 +761,7 @@ def run(config_path: str, output_dir: str = "results",
 
     kv_cache_requested = eval_cfg.get("kv_cache", False)
     if kv_cache_requested:
-        from eval.kv_cache import KVCacheEvalConfig, evaluate_kv_cache
+        from rotquant.eval.kv_cache import KVCacheEvalConfig, evaluate_kv_cache
         kv_cache_kwargs = (kv_cache_requested
                            if isinstance(kv_cache_requested, dict) else {})
         kv_cache_kwargs = dict(kv_cache_kwargs)
@@ -769,7 +769,7 @@ def run(config_path: str, output_dir: str = "results",
         kv_cache_config = KVCacheEvalConfig(**kv_cache_kwargs)
         kv_selection_batches = 0
         if kv_cache_config.dynamic:
-            from eval.kv_cache import KVDynamicConfig
+            from rotquant.eval.kv_cache import KVDynamicConfig
             kv_selection_batches = KVDynamicConfig(
                 **kv_cache_config.dynamic).selection_batches
         kv_eval_offset = max(
@@ -789,7 +789,7 @@ def run(config_path: str, output_dir: str = "results",
         metrics["kv_cache"]["seconds"] = t.elapsed
 
     if eval_cfg.get("perplexity", True):
-        from eval.perplexity import PPLConfig, perplexity_details
+        from rotquant.eval.perplexity import PPLConfig, perplexity_details
         ppl_cfg = PPLConfig(**(eval_cfg.get("ppl") or {}))
         for ds in eval_cfg.get("ppl_datasets", ["wikitext2", "c4"]):
             with Timer() as t:
@@ -812,13 +812,13 @@ def run(config_path: str, output_dir: str = "results",
 
     tp_requested = eval_cfg.get("throughput", False)
     if tp_requested:
-        from eval.throughput import ThroughputConfig, measure_throughput
+        from rotquant.eval.throughput import ThroughputConfig, measure_throughput
         tp_kwargs = tp_requested if isinstance(tp_requested, dict) else {}
         metrics["throughput"] = measure_throughput(
             model, tokenizer, device, ThroughputConfig(**tp_kwargs))
 
     if eval_cfg.get("zeroshot", False):
-        from eval.zeroshot import zeroshot
+        from rotquant.eval.zeroshot import zeroshot
         metrics["zeroshot"] = zeroshot(model, tokenizer,
                                        tasks=eval_cfg.get("tasks"),
                                        batch_size=eval_cfg.get("zeroshot_batch_size", 8),
@@ -878,7 +878,7 @@ def run(config_path: str, output_dir: str = "results",
     return payload
 
 
-def main(argv: Optional[List[str]] = None) -> None:
+def main(argv: list[str] | None = None) -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("config", help="path to experiment YAML")
     ap.add_argument("--output-dir", default="results")

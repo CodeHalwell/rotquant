@@ -351,7 +351,7 @@ def build_notebook():
 
         synthetic_rows = []
         if RUN_SYNTHETIC_PREFLIGHT:
-            from eval.quantization import quantized_weight_metrics
+            from rotquant.eval.quantization import quantized_weight_metrics
             from rotquant.quantize import QuantConfig, Quantizer
             from rotquant.rotate import RandomizedHadamard
 

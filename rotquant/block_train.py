@@ -10,20 +10,28 @@ from __future__ import annotations
 
 import copy
 import fnmatch
+from collections.abc import Iterable, Sequence
 from dataclasses import dataclass, replace
-from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
+from typing import Any
 
 import torch
-import torch.nn as nn
 import torch.nn.functional as F
+from torch import nn
 
 from .linear import QuantLinear
 from .patch import (
-    PatchConfig, _cpu_staging_linear, _get_parent, quant_config_for,
+    PatchConfig,
+    _cpu_staging_linear,
+    _get_parent,
+    quant_config_for,
 )
 from .quantize import (
-    QuantConfig, Quantizer, _expand_scales, _group_scales_rms,
-    _quantize_groups, _storage_scales,
+    QuantConfig,
+    Quantizer,
+    _expand_scales,
+    _group_scales_rms,
+    _quantize_groups,
+    _storage_scales,
 )
 from .rotate import ButterflyRotation, RandomizedHadamard
 from .utils import get_logger
@@ -52,14 +60,14 @@ class BlockRotationTrainConfig:
     train_batches: int = 1
     validation_batches: int = 1
     selection_batches: int = 1
-    assignment_scale: Optional[str] = "rms"
+    assignment_scale: str | None = "rms"
     max_grad_norm: float = 1.0
     restore_best: bool = True
     early_stopping_patience: int = 0
     validation_min_improvement: float = 0.0
     selection_min_improvement: float = 0.0
     learn_scales: bool = False
-    scale_lr: Optional[float] = None
+    scale_lr: float | None = None
     scale_multiplier_min: float = 0.5
     scale_multiplier_max: float = 1.5
     propagate_quantized_inputs: bool = False
@@ -92,7 +100,7 @@ class BlockRotationTrainConfig:
     # bytes. Patterns are glob-matched when they contain wildcard characters,
     # otherwise they are treated as substrings (e.g. ["norm"] or
     # ["*final_layernorm.weight"]).
-    distill_existing_patterns: Tuple[str, ...] = ()
+    distill_existing_patterns: tuple[str, ...] = ()
     distill_existing_lr: float = 1e-5
     distill_existing_weight_decay: float = 0.0
 
@@ -245,7 +253,7 @@ def _replace_record_hidden(record: BlockCall,
 
 def _records_with_hidden(records: Sequence[BlockCall],
                          hidden_states: Sequence[torch.Tensor]
-                         ) -> List[BlockCall]:
+                         ) -> list[BlockCall]:
     if len(records) != len(hidden_states):
         raise ValueError("propagated hidden-state count does not match block calls")
     return [_replace_record_hidden(record, hidden)
@@ -268,7 +276,7 @@ def _input_drift(records: Sequence[BlockCall],
 def _replay_block_hidden(block: nn.Module, records: Sequence[BlockCall],
                          device, compute_dtype: torch.dtype,
                          storage_dtype: torch.dtype = torch.float16,
-                         ) -> List[torch.Tensor]:
+                         ) -> list[torch.Tensor]:
     """Run a deployed block and retain only its bounded CPU hidden outputs."""
     block.eval()
     outputs = []
@@ -280,7 +288,7 @@ def _replay_block_hidden(block: nn.Module, records: Sequence[BlockCall],
     return outputs
 
 
-def find_transformer_blocks(model: nn.Module) -> List[Tuple[str, nn.Module]]:
+def find_transformer_blocks(model: nn.Module) -> list[tuple[str, nn.Module]]:
     """Find the principal ``ModuleList`` of transformer blocks."""
     candidates = []
     for name, module in model.named_modules():
@@ -298,13 +306,13 @@ def find_transformer_blocks(model: nn.Module) -> List[Tuple[str, nn.Module]]:
 
 @torch.no_grad()
 def collect_block_calls(model: nn.Module, dataloader: Iterable, device,
-                        blocks: Optional[List[Tuple[str, nn.Module]]] = None,
+                        blocks: list[tuple[str, nn.Module]] | None = None,
                         max_batches: int = 2,
                         storage_dtype: torch.dtype = torch.float16,
-                        ) -> Dict[str, List[BlockCall]]:
+                        ) -> dict[str, list[BlockCall]]:
     """Capture bounded, replayable source-model calls and outputs per block."""
     blocks = blocks or find_transformer_blocks(model)
-    calls: Dict[str, List[BlockCall]] = {name: [] for name, _ in blocks}
+    calls: dict[str, list[BlockCall]] = {name: [] for name, _ in blocks}
     handles = []
 
     def make_hook(name):
@@ -354,7 +362,7 @@ def collect_block_calls(model: nn.Module, dataloader: Iterable, device,
 def collect_teacher_calls(model: nn.Module, dataloader: Iterable, device,
                           max_batches: int,
                           storage_dtype: torch.dtype = torch.float16,
-                          ) -> List[TeacherCall]:
+                          ) -> list[TeacherCall]:
     """Capture bounded full-model inputs and source logits for distillation."""
     calls = []
     model.eval()
@@ -415,7 +423,7 @@ class FakeQuantButterflyLinear(nn.Module):
                     scale_multiplier_min, scale_multiplier_max)
             self.log_scale_multiplier = nn.Parameter(multiplier.log())
 
-    def scale_multiplier(self) -> Optional[torch.Tensor]:
+    def scale_multiplier(self) -> torch.Tensor | None:
         if self.log_scale_multiplier is None:
             return None
         return self.log_scale_multiplier.exp().clamp(
@@ -458,7 +466,7 @@ class FakeQuantButterflyLinear(nn.Module):
         return F.linear(xr, self._assigned_weight().to(xr.dtype), self.bias)
 
 
-def _target_linears(module: nn.Module) -> List[Tuple[str, nn.Linear]]:
+def _target_linears(module: nn.Module) -> list[tuple[str, nn.Linear]]:
     return [(name, child) for name, child in module.named_modules()
             if isinstance(child, nn.Linear)]
 
@@ -480,10 +488,10 @@ def _block_loss(block: nn.Module, records: Sequence[BlockCall], device,
 
 def _fake_quant_block(source: nn.Module, global_name: str,
                       quant_cfg: QuantConfig, patch_cfg: PatchConfig,
-                      seed_by_name: Dict[str, int], device,
+                      seed_by_name: dict[str, int], device,
                       config: BlockRotationTrainConfig):
     block = copy.deepcopy(source).to(device=device, dtype=torch.float32).eval()
-    fake: Dict[str, FakeQuantButterflyLinear] = {}
+    fake: dict[str, FakeQuantButterflyLinear] = {}
     for relative, linear in _target_linears(block):
         full_name = f"{global_name}.{relative}"
         if full_name not in seed_by_name:
@@ -517,8 +525,8 @@ def _fake_quant_block(source: nn.Module, global_name: str,
     return block, fake
 
 
-def _rotation_states(fake: Dict[str, FakeQuantButterflyLinear]
-                     ) -> Dict[str, Dict[str, torch.Tensor]]:
+def _rotation_states(fake: dict[str, FakeQuantButterflyLinear]
+                     ) -> dict[str, dict[str, torch.Tensor]]:
     states = {}
     for name, module in fake.items():
         state = {
@@ -532,7 +540,7 @@ def _rotation_states(fake: Dict[str, FakeQuantButterflyLinear]
     return states
 
 
-def _restore_rotation_states(fake: Dict[str, FakeQuantButterflyLinear], states) -> None:
+def _restore_rotation_states(fake: dict[str, FakeQuantButterflyLinear], states) -> None:
     with torch.no_grad():
         for name, state in states.items():
             module = fake[name]
@@ -546,7 +554,7 @@ def _restore_rotation_states(fake: Dict[str, FakeQuantButterflyLinear], states) 
 
 def train_fake_quant_block(source: nn.Module, global_name: str,
                            records: Sequence[BlockCall], quant_cfg: QuantConfig,
-                           patch_cfg: PatchConfig, seed_by_name: Dict[str, int],
+                           patch_cfg: PatchConfig, seed_by_name: dict[str, int],
                            device, config: BlockRotationTrainConfig):
     """Optimise a block and select its checkpoint on disjoint validation calls.
 
@@ -645,7 +653,7 @@ def train_fake_quant_block(source: nn.Module, global_name: str,
 
 def _scale_override(linear: nn.Linear, rotation: nn.Module,
                     quant_cfg: QuantConfig,
-                    state: Dict[str, torch.Tensor]) -> Optional[torch.Tensor]:
+                    state: dict[str, torch.Tensor]) -> torch.Tensor | None:
     multiplier = state.get("scale_multiplier")
     if multiplier is None:
         return None
@@ -657,8 +665,8 @@ def _scale_override(linear: nn.Linear, rotation: nn.Module,
 
 def _packed_cpu_block(source: nn.Module, global_name: str,
                       quant_cfg: QuantConfig, patch_cfg: PatchConfig,
-                      seed_by_name: Dict[str, int],
-                      states: Optional[Dict[str, Dict[str, torch.Tensor]]],
+                      seed_by_name: dict[str, int],
+                      states: dict[str, dict[str, torch.Tensor]] | None,
                       device="cpu") -> nn.Module:
     """Build an exact packed block for held-out selection on ``device``.
 
@@ -695,8 +703,8 @@ def _packed_cpu_block(source: nn.Module, global_name: str,
 
 def _patch_source_block(source: nn.Module, global_name: str,
                         quant_cfg: QuantConfig, patch_cfg: PatchConfig,
-                        seed_by_name: Dict[str, int],
-                        states: Optional[Dict[str, Dict[str, torch.Tensor]]]
+                        seed_by_name: dict[str, int],
+                        states: dict[str, dict[str, torch.Tensor]] | None
                         ) -> int:
     targets = _target_linears(source)
     patched = 0
@@ -802,7 +810,7 @@ def _distill_eval_loss(model: nn.Module, calls: Sequence[TeacherCall], device,
     return sum(values) / max(len(values), 1)
 
 
-def _parameter_snapshot(parameters: Sequence[torch.Tensor]) -> List[torch.Tensor]:
+def _parameter_snapshot(parameters: Sequence[torch.Tensor]) -> list[torch.Tensor]:
     return [parameter.detach().cpu().float().clone()
             for parameter in parameters]
 
@@ -842,7 +850,7 @@ def _distill_eval_without_lora(model: nn.Module,
 
 def distill_packed_model(model: nn.Module, calls: Sequence[TeacherCall], device,
                          compute_dtype: torch.dtype,
-                         config: BlockRotationTrainConfig) -> Dict[str, Any]:
+                         config: BlockRotationTrainConfig) -> dict[str, Any]:
     """Fine-tune deployed rotations/scales with fixed 3-bit code indices."""
     required = (config.distill_train_batches
                 + config.distill_validation_batches
@@ -1071,9 +1079,9 @@ def distill_packed_model(model: nn.Module, calls: Sequence[TeacherCall], device,
 
 
 def train_and_patch_blocks(model: nn.Module, patch_cfg: PatchConfig,
-                           calls: Dict[str, List[BlockCall]],
-                           distill_calls: Optional[Sequence[TeacherCall]] = None,
-                           stats_out: Optional[Dict[str, Any]] = None) -> nn.Module:
+                           calls: dict[str, list[BlockCall]],
+                           distill_calls: Sequence[TeacherCall] | None = None,
+                           stats_out: dict[str, Any] | None = None) -> nn.Module:
     """Train, validate, exact-held-out-select, and pack transformer blocks."""
     if patch_cfg.rotation not in ("butterfly", "learned_butterfly", "structured"):
         raise ValueError("block rotation training requires rotation='butterfly'")

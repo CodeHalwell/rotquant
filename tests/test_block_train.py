@@ -2,12 +2,17 @@
 from types import SimpleNamespace
 
 import torch
-import torch.nn as nn
+from torch import nn
 
 from rotquant.block_train import (
-    BlockRotationTrainConfig, FakeQuantButterflyLinear, _packed_cpu_block,
-    collect_block_calls, collect_teacher_calls, find_transformer_blocks,
-    train_and_patch_blocks, train_fake_quant_block,
+    BlockRotationTrainConfig,
+    FakeQuantButterflyLinear,
+    _packed_cpu_block,
+    collect_block_calls,
+    collect_teacher_calls,
+    find_transformer_blocks,
+    train_and_patch_blocks,
+    train_fake_quant_block,
 )
 from rotquant.linear import QuantLinear
 from rotquant.patch import PatchConfig

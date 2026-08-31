@@ -36,8 +36,8 @@ def measure_throughput(model, tokenizer, device,
     pad_id = tokenizer.pad_token_id
     if pad_id is None:
         pad_id = tokenizer.eos_token_id
-    kwargs = dict(max_new_tokens=cfg.new_tokens, min_new_tokens=cfg.new_tokens,
-                  do_sample=False, use_cache=True, pad_token_id=pad_id)
+    kwargs = {"max_new_tokens": cfg.new_tokens, "min_new_tokens": cfg.new_tokens,
+              "do_sample": False, "use_cache": True, "pad_token_id": pad_id}
 
     for _ in range(cfg.warmup):
         model.generate(input_ids, **kwargs)

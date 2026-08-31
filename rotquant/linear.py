@@ -17,11 +17,10 @@ the patcher can build the deliberately-broken "mismatched" mode for E7.
 from __future__ import annotations
 
 import math
-from typing import Optional
 
 import torch
-import torch.nn as nn
 import torch.nn.functional as F
+from torch import nn
 
 from .codebooks import VectorCodebook
 from .pack import packed_bytes, unpack_indices
@@ -42,8 +41,8 @@ _fallback_warning_emitted = False
 
 class QuantLinear(nn.Module):
     def __init__(self, qweight: QuantizedWeight, act_rotation: Rotation,
-                 bias: Optional[torch.Tensor] = None, fallback: bool = False,
-                 fallback_dtype: Optional[torch.dtype] = None):
+                 bias: torch.Tensor | None = None, fallback: bool = False,
+                 fallback_dtype: torch.dtype | None = None):
         super().__init__()
         self.qweight = qweight
         self.act_rotation = act_rotation
@@ -55,7 +54,7 @@ class QuantLinear(nn.Module):
             self.register_buffer("bias", bias.detach().clone())
         else:
             self.bias = None
-        self._fp_cache: Optional[torch.Tensor] = None
+        self._fp_cache: torch.Tensor | None = None
         # Non-persistent caches for QJL sketch inference.  Populated lazily on the first
         # forward pass; invalidated automatically when device or dtype changes.
         self.register_buffer("_sketch_G", None, persistent=False)
@@ -75,8 +74,8 @@ class QuantLinear(nn.Module):
         # Recovery-only metadata. Neither item is a parameter/buffer, so it is
         # excluded from checkpoints and ``.to()`` does not duplicate a CPU
         # source copy onto the accelerator.
-        self._quant_config: Optional[QuantConfig] = None
-        self._recovery_source_weight: Optional[torch.Tensor] = None
+        self._quant_config: QuantConfig | None = None
+        self._recovery_source_weight: torch.Tensor | None = None
         if fallback:
             global _fallback_warning_emitted
             if not _fallback_warning_emitted:
@@ -178,7 +177,7 @@ class QuantLinear(nn.Module):
         self._fp_cache = None
         return self._log_scale_multiplier
 
-    def scale_finetuning_multiplier(self) -> Optional[torch.Tensor]:
+    def scale_finetuning_multiplier(self) -> torch.Tensor | None:
         if self._log_scale_multiplier is None:
             return None
         return self._log_scale_multiplier.exp().clamp(
@@ -228,7 +227,7 @@ class QuantLinear(nn.Module):
         return base_out
 
     def enable_lora(self, rank: int, alpha: float, *, init: str = "zero",
-                    residual: Optional[torch.Tensor] = None,
+                    residual: torch.Tensor | None = None,
                     oversample: int = 4, niter: int = 1,
                     ) -> tuple[nn.Parameter, nn.Parameter]:
         """Attach a low-rank adapter in the deployed rotated basis.
@@ -341,12 +340,12 @@ class QuantLinear(nn.Module):
 
     @classmethod
     def from_linear(cls, linear: nn.Linear, config: QuantConfig,
-                    weight_rotation: Optional[Rotation] = None,
-                    act_rotation: Optional[Rotation] = None,
-                    H: Optional[torch.Tensor] = None,
-                    scales_override: Optional[torch.Tensor] = None,
+                    weight_rotation: Rotation | None = None,
+                    act_rotation: Rotation | None = None,
+                    H: torch.Tensor | None = None,
+                    scales_override: torch.Tensor | None = None,
                     fallback: bool = False,
-                    fallback_dtype: Optional[torch.dtype] = None) -> "QuantLinear":
+                    fallback_dtype: torch.dtype | None = None) -> QuantLinear:
         """Quantise an ``nn.Linear``.
 
         ``weight_rotation`` rotates the weight before quantisation; ``act_rotation``

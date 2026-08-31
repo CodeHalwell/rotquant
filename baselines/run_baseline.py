@@ -203,7 +203,7 @@ def main() -> None:
                                calib_min_chars=args.calib_min_chars)
     model.eval()
 
-    from eval.perplexity import PPLConfig, perplexity
+    from rotquant.eval.perplexity import PPLConfig, perplexity
 
     metrics: dict[str, Any] = {}
     ppl_config = PPLConfig(
@@ -214,7 +214,7 @@ def main() -> None:
     for ds in args.datasets:
         metrics[f"ppl_{ds}"] = perplexity(model, tok, ds, ppl_config, args.device)
     if args.zeroshot:
-        from eval.zeroshot import zeroshot
+        from rotquant.eval.zeroshot import zeroshot
         metrics["zeroshot"] = zeroshot(
             model,
             tok,

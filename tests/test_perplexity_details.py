@@ -4,7 +4,7 @@ from types import SimpleNamespace
 import torch
 from torch import nn
 
-import eval.perplexity as ppl
+import rotquant.eval.perplexity as ppl
 
 
 class ConstantLossModel(nn.Module):
