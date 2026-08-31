@@ -42,6 +42,10 @@ def test_algorithm_lab_notebook_covers_every_track_and_requires_confirmation():
     assert "RUN_SCREEN_LAYER_DRIFT = True" in source
     assert "RUN_LAYER_DRIFT = True" in source
     assert "REQUIRE_FAST_HADAMARD = True" in source
+    assert 'fht_release = "v1.1.0.post2"' in source
+    assert "fht_wheel_url" in source
+    assert "Fast Hadamard CUDA smoke test passed" in source
+    assert '"fast_hadamard_install_method"' in source
     assert 'stage not in {\n        "validation", "cross_family"' in source
     assert "trajectory_token_agreement" in source
     assert "paired_window_statistics" in source
