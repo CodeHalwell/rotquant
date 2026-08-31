@@ -37,6 +37,10 @@ def test_algorithm_lab_notebook_covers_every_track_and_requires_confirmation():
     assert "algorithmic_trial_matrix" in source
     assert "MIN_ALLOCATION_BYTE_SAVING" in source
     assert "RUN_CROSS_FAMILY = True" in source
+    assert "RUN_TRAJECTORY_VALIDATION = True" in source
+    assert 'stage not in {\n        "validation", "cross_family"' in source
+    assert "trajectory_token_agreement" in source
+    assert "Divergence-300-style" in source
     assert "oracle_value_retrieval_curve" in source
     assert '"packed_key_recall_measured": False' in source
 

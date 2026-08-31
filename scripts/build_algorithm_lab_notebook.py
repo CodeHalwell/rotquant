@@ -52,6 +52,9 @@ def build_notebook():
           table per projection, including the larger vector tables.
         - Seed-0 screening is developmental. Promotion requires the full protocol,
           three seeds on the primary model, and optional cross-family confirmation.
+        - Promoted profiles also receive a small held-out C4 free-running
+          trajectory gate. It catches compounding token drift, but it is not a
+          substitute for the planned diverse 300-prompt comparison suite.
         - Dense-attention top-k is an upper-bound oracle for selective V reads. It
           measures value sparsity; packed-key candidate recall is a separate gate.
         """),
@@ -61,8 +64,9 @@ def build_notebook():
         1. Synthetic exact-rate scalar-versus-vector preflight.
         2. Seed-0, 16-sample screen of every predeclared profile.
         3. Exact-byte checks and Pareto promotion by research track.
-        4. Three-seed, 64-sample primary-model validation.
-        5. Cross-family confirmation of promoted profiles.
+        4. Three-seed, 64-sample primary-model validation with 32-token
+           free-running trajectory agreement.
+        5. Cross-family PPL and trajectory confirmation of promoted profiles.
         6. Real-attention selective-V oracle with quantized-value and dense
            confidence-fallback curves.
         """),
@@ -110,6 +114,7 @@ def build_notebook():
         RUN_PRIMARY_SCREEN = True
         RUN_FULL_SEED_VALIDATION = True
         RUN_CROSS_FAMILY = True
+        RUN_TRAJECTORY_VALIDATION = True
         RUN_SELECTIVE_KV_ORACLE = True
         DOWNLOAD_RESULTS = True
         REQUIRE_FAST_HADAMARD = False
@@ -122,6 +127,11 @@ def build_notebook():
         MAX_PROMOTED_PER_TRACK = 2
         MAX_SCREEN_RELATIVE_PPL = 1.0
         MIN_ALLOCATION_BYTE_SAVING = 0.01
+
+        TRAJECTORY_BATCHES = 4
+        TRAJECTORY_PROMPT_LENGTH = 64
+        TRAJECTORY_NEW_TOKENS = 32
+        TRAJECTORY_SKIP = 4096
 
         RETRIEVAL_PROMPT_LENGTH = 512
         RETRIEVAL_SKIP = 4096
@@ -347,6 +357,19 @@ def build_notebook():
 
         trial_records = {}
 
+        def trajectory_settings(stage):
+            if not RUN_TRAJECTORY_VALIDATION or stage not in {
+                "validation", "cross_family"
+            }:
+                return False
+            return {
+                "batches": TRAJECTORY_BATCHES,
+                "prompt_len": TRAJECTORY_PROMPT_LENGTH,
+                "new_tokens": TRAJECTORY_NEW_TOKENS,
+                "skip": TRAJECTORY_SKIP,
+                "use_cache": True,
+            }
+
         def record_path(stage, model_case, profile, seed, max_samples):
             specification = {
                 "commit": commit,
@@ -356,6 +379,7 @@ def build_notebook():
                 "seed": seed,
                 "max_samples": max_samples,
                 "seq_len": EVAL_SEQUENCE_LENGTH,
+                "trajectory": trajectory_settings(stage),
                 "runtime": RUNTIME_FINGERPRINT,
             }
             digest = hashlib.sha256(
@@ -383,6 +407,7 @@ def build_notebook():
                 ("eval.ppl.seq_len", EVAL_SEQUENCE_LENGTH),
                 ("eval.ppl.max_samples", max_samples),
                 ("eval.ppl_datasets", ["wikitext2"]),
+                ("eval.trajectory", trajectory_settings(stage)),
                 ("eval.zeroshot", False),
             ]
             payload = run_experiment(
@@ -412,6 +437,7 @@ def build_notebook():
             metrics = payload["metrics"]
             config = payload["config"]
             dynamic = metrics.get("dynamic_quantization", {})
+            trajectory = metrics.get("trajectory") or {}
             ppl = float(metrics["ppl_wikitext2"])
             quant = config.get("quant") or {}
             bits = quant.get("bits")
@@ -473,6 +499,16 @@ def build_notebook():
                 "target_reached": dynamic.get("target_reached", True),
                 "dynamic_achieved_bpw": dynamic.get("achieved_bpw"),
                 "dynamic_counts": dynamic.get("counts_by_bits"),
+                "trajectory_prompts": trajectory.get("prompts", 0),
+                "trajectory_token_agreement": trajectory.get(
+                    "token_agreement", float("nan")
+                ),
+                "trajectory_exact_rate": trajectory.get(
+                    "exact_trajectory_rate", float("nan")
+                ),
+                "trajectory_mean_matching_prefix": trajectory.get(
+                    "mean_matching_prefix", float("nan")
+                ),
             }
         """),
         md("### 7. Confirm the expensive matrix"),
@@ -810,6 +846,16 @@ def build_notebook():
                 mean_accounted_bytes=("accounted_weight_bytes", "mean"),
                 mean_effective_bpw=("effective_bpw", "mean"),
                 mean_accounted_bpw=("accounted_bpw", "mean"),
+                mean_trajectory_token_agreement=(
+                    "trajectory_token_agreement", "mean"
+                ),
+                worst_trajectory_token_agreement=(
+                    "trajectory_token_agreement", "min"
+                ),
+                mean_trajectory_exact_rate=("trajectory_exact_rate", "mean"),
+                mean_trajectory_matching_prefix=(
+                    "trajectory_mean_matching_prefix", "mean"
+                ),
                 seeds=("seed", "nunique"),
             )
             validation_summary["status"] = np.where(
@@ -923,6 +969,14 @@ def build_notebook():
             "validation_seeds": list(VALIDATION_SEEDS),
             "screen_max_samples": SCREEN_MAX_SAMPLES,
             "confirm_max_samples": CONFIRM_MAX_SAMPLES,
+            "trajectory_validation": {
+                "enabled": RUN_TRAJECTORY_VALIDATION,
+                "batches": TRAJECTORY_BATCHES,
+                "prompt_len": TRAJECTORY_PROMPT_LENGTH,
+                "new_tokens": TRAJECTORY_NEW_TOKENS,
+                "skip": TRAJECTORY_SKIP,
+                "dataset": "C4",
+            },
             "tables": table_paths,
             "figures": [str(path) for path in figure_paths],
             "boundaries": {
@@ -943,6 +997,7 @@ def build_notebook():
             f"- Promoted profiles: {', '.join(promoted_names) or 'none'}",
             f"- Full validation seeds: {VALIDATION_SEEDS if RUN_FULL_SEED_VALIDATION else 'disabled'}",
             f"- Cross-family validation: {'enabled' if RUN_CROSS_FAMILY else 'disabled'}",
+            f"- Held-out trajectory validation: {'enabled' if RUN_TRAJECTORY_VALIDATION else 'disabled'} ({TRAJECTORY_BATCHES} prompts x {TRAJECTORY_NEW_TOKENS} tokens)",
             "- Vector profiles are research-only and cannot be exported yet.",
             "- Selective-V results use dense attention for candidate selection; packed-key recall remains open.",
         ]
@@ -972,6 +1027,8 @@ def build_notebook():
           same exact packed bytes and survives cross-family validation.
         - Promote a mixed-bit allocator only if it saves at least the declared
           byte threshold and does not merely trade a tiny saving for worse PPL.
+        - Treat the small C4 trajectory gate as a compounding-drift check, not
+          as a claim of equivalence to a diverse Divergence-300-style benchmark.
         - Treat calibrated, spherical, length-corrected, and TurboQuant-scale
           profiles as independent ablations; do not combine them until one wins.
         - Use the selective-V curve to decide whether an architecture-specific

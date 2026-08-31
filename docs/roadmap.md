@@ -44,6 +44,9 @@ specialized around them:
   [algorithm-lab Colab](../notebooks/rotquant_algorithm_lab_colab.ipynb) on the
   primary model, then promote only Pareto winners to three seeds and a second
   architecture family;
+- [ ] build a pinned, calibration-disjoint 300-prompt/32-token free-running
+  divergence suite spanning agentic, code, maths, multilingual, and long-document
+  prompts; compare the source, RotQuant, same-size GGUF, and Unsloth baselines;
 - [ ] implement packed-key candidate generation only if the dense-attention
   oracle shows a useful V-read/quality region.
 
