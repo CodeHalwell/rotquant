@@ -26,13 +26,13 @@ real models with fixed metrics:
 ## Layout
 
 ```
-rotquant/      core library  (api, adapters, format, quantize, pack, linear, rotate, patch, calibration)
-eval/          fixed eval protocol (perplexity, zeroshot, layer_mse)
-baselines/     working GPTQ/AWQ/AQLM wrappers through the same evaluation harness
-tests/         correctness tests that must pass before trusting any experiment
-scripts/       run_experiment.py (config -> quantise -> eval -> JSON), aggregate.py
+rotquant/       core library  (api, adapters, format, quantize, pack, linear, rotate, patch, calibration)
+rotquant/eval/  fixed eval protocol (perplexity, zeroshot, layer_mse)
+baselines/      working GPTQ/AWQ/AQLM wrappers through the same evaluation harness
+tests/          correctness tests that must pass before trusting any experiment
+scripts/        run_experiment.py (config -> quantise -> eval -> JSON), aggregate.py
 configs/        one YAML per experiment cell (E1..E8)
-results/       JSON per run + generated tables/figures
+results/        JSON per run + generated tables/figures
 ```
 
 The chronological [experiment log](docs/experiment_log.md) records successful
@@ -201,6 +201,11 @@ any experiment until they pass:
 ```bash
 pytest tests/ -q
 ```
+
+CI runs the full suite (including the cross-language native conformance
+tests) on Python 3.10/3.11/3.12 plus ruff lint on every push and pull
+request; the native workflow additionally builds with ASan/UBSan and checks
+that the pinned llama.cpp patch still applies.
 
 * `test_rotation_invariance` — rotating the activation then matmul equals
   dequant-then-matmul (~1e-3), and every rotation is orthogonal.
@@ -555,3 +560,10 @@ W2, and W3. It is an algorithmic research path, not a deployable artifact:
 vector checkpoints and native vector kernels deliberately fail closed.
 `nearest_e8` remains a tested lattice primitive, not a finite-rate packed codec;
 no E8, QuIP#, QTIP, or HIGGS result should be reported from this repository yet.
+
+## License and citation
+
+MIT — see [`LICENSE`](LICENSE). If you use this software in research, cite it
+via [`CITATION.cff`](CITATION.cff). Contributions are welcome under the
+conventions in [`CONTRIBUTING.md`](CONTRIBUTING.md); software changes are
+tracked in [`CHANGELOG.md`](CHANGELOG.md).
