@@ -174,6 +174,8 @@ def patch_model(model: nn.Module, cfg: PatchConfig,
         if (include_terms is None or any(term in name for term in include_terms))
         and not any(term in name for term in exclude_terms)
     ]
+    if stats_out is not None:
+        stats_out["patched_modules"] = 0
     if not targets:
         logger.warning(
             "patch_model found NO nn.Linear or adapter-specific quantizable "
@@ -284,6 +286,8 @@ def patch_model(model: nn.Module, cfg: PatchConfig,
         adapter.replace_quantized_module(
             parent, attr, source_module, qlin
         )
+        if stats_out is not None:
+            stats_out["patched_modules"] = i + 1
         if i == 0 or (i + 1) % 8 == 0:
             logger.info("patched %d/%d layers (last: %s)", i + 1, len(targets), name)
 

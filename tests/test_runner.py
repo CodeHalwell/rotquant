@@ -73,6 +73,48 @@ def test_shipped_configs_all_resolve_a_model():
         PatchConfig(quant=qcfg, seed=patch_kwargs.pop("seed", 0), **patch_kwargs)
 
 
+def test_calibration_batches_are_cached_and_content_addressed(monkeypatch):
+    calls = {"loads": 0, "tokens": 0}
+
+    def load_dataset(*args, **kwargs):
+        del args, kwargs
+        calls["loads"] += 1
+        return [{"text": "abcdefghijk"}, {"text": "mnopqrstuvw"}]
+
+    datasets = ModuleType("datasets")
+    datasets.load_dataset = load_dataset
+    monkeypatch.setitem(sys.modules, "datasets", datasets)
+
+    class Tokenizer:
+        name_or_path = "tiny/tokenizer"
+        vocab_size = 32
+        special_tokens_map = {}
+
+        def __call__(self, text, return_tensors="pt"):
+            del return_tensors
+            calls["tokens"] += 1
+            return SimpleNamespace(
+                input_ids=torch.tensor([[ord(char) % 32 for char in text]])
+            )
+
+    run_experiment._CALIB_CACHE.clear()
+    first = run_experiment.build_calib_loader(
+        Tokenizer(), 1, 8, "cpu", revision="pinned"
+    )
+    second = run_experiment.build_calib_loader(
+        Tokenizer(), 1, 8, "cpu", revision="pinned"
+    )
+    assert calls == {"loads": 1, "tokens": 1}
+    assert torch.equal(first[0]["input_ids"], second[0]["input_ids"])
+    manifest = run_experiment.token_batch_manifest(
+        first, dataset="allenai/c4", split="train", revision="pinned",
+        skip=0, seq_len=8,
+    )
+    assert manifest["batches"] == 1
+    assert manifest["source_rows"] == [0]
+    assert len(manifest["digest"]) == 64
+
+
 def test_run_id_seed_suffix_and_explicit():
     assert run_experiment.derive_run_id({"label": "e1_fwht", "seed": 2},
                                         "configs/e1.yaml") == "e1_fwht_s2"
@@ -511,6 +553,11 @@ def test_quantlinear_lora_is_zero_initialized_and_fully_accounted():
             == metrics["packed_weight_bytes"]
             + metrics["rotation_parameter_bytes"]
             + expected_adapter_bytes)
+    assert metrics["complete_persistent_model_bytes"] > packed_bytes
+    assert metrics["quality_runtime_model_bytes"] == (
+        metrics["complete_persistent_model_bytes"]
+        + metrics["fallback_cache_bytes"]
+    )
 
 
 def test_footprint_bpw_is_size_weighted():

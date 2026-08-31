@@ -16,6 +16,7 @@ selection stages.
 from __future__ import annotations
 
 import fnmatch
+import random
 from collections.abc import Sequence
 from dataclasses import asdict, dataclass, replace
 from typing import Any
@@ -49,6 +50,10 @@ class DynamicQuantConfig:
     global_kl_weight: float = 1.0
     global_kl_temperature: float = 1.0
     global_kl_batches: int = 0
+    # ``random`` is a matched-budget negative control. It follows a seeded
+    # random downgrade order while retaining the exact same candidate formats
+    # and byte accounting as the sensitivity-guided allocator.
+    allocation: str = "greedy"
     # Each rule is ``{"match": "pattern", "min_bits": 4}``,
     # ``max_bits`` or an exact ``bits`` value. Later rules take precedence.
     rules: tuple[dict[str, Any], ...] = ()
@@ -70,6 +75,8 @@ class DynamicQuantConfig:
             raise ValueError("global_kl_temperature must be > 0")
         if self.global_kl_batches < 0:
             raise ValueError("global_kl_batches must be >= 0")
+        if self.allocation not in {"greedy", "random"}:
+            raise ValueError("dynamic allocation must be 'greedy' or 'random'")
         object.__setattr__(self, "rules", tuple(self.rules or ()))
         for rule in self.rules:
             if "match" not in rule:
@@ -281,6 +288,7 @@ def select_dynamic_quantization(
         model, targets, patch_cfg, config, activations or {}, teacher_calls)
 
     selected = {name: len(items) - 1 for name, items in scores.items()}
+    randomizer = random.Random(patch_cfg.seed)
     total_weights = sum(
         target_by_name[name].weight.numel() for name in selected)
     target_bits = config.target_bpw * total_weights
@@ -292,7 +300,7 @@ def select_dynamic_quantization(
     # Multiple-choice rate allocation: begin at each tensor's highest allowed
     # precision, then repeatedly take the least harmful next downgrade per byte.
     while stored_bits() > target_bits:
-        best = None
+        moves = []
         for order, name in enumerate(selected):
             index = selected[name]
             if index == 0:
@@ -307,11 +315,14 @@ def select_dynamic_quantization(
             # then source module order.
             ratio = penalty / savings
             key = (ratio, -savings, order)
-            if best is None or key < best[0]:
-                best = (key, name)
-        if best is None:
+            moves.append((key, name))
+        if not moves:
             break
-        selected[best[1]] -= 1
+        if config.allocation == "random":
+            _, selected_name = randomizer.choice(moves)
+        else:
+            _, selected_name = min(moves)
+        selected[selected_name] -= 1
 
     achieved_bits = stored_bits()
     recipe = {

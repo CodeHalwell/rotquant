@@ -8,8 +8,9 @@ import os
 import random
 import subprocess
 import sys
+import tempfile
 import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Any, Dict, Optional
 
 import numpy as np
@@ -157,9 +158,22 @@ class BitBudget:
 
 
 def write_result(path: str, payload: Dict[str, Any]) -> None:
-    os.makedirs(os.path.dirname(os.path.abspath(path)), exist_ok=True)
-    with open(path, "w") as f:
-        json.dump(payload, f, indent=2, default=_json_default)
+    directory = os.path.dirname(os.path.abspath(path))
+    os.makedirs(directory, exist_ok=True)
+    temporary = None
+    try:
+        with tempfile.NamedTemporaryFile(
+            mode="w", dir=directory, prefix=".rotquant-", suffix=".json.tmp",
+            delete=False,
+        ) as handle:
+            temporary = handle.name
+            json.dump(payload, handle, indent=2, default=_json_default)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(temporary, path)
+    finally:
+        if temporary is not None and os.path.exists(temporary):
+            os.unlink(temporary)
 
 
 def _json_default(obj: Any) -> Any:

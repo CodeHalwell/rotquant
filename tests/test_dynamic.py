@@ -86,3 +86,65 @@ def test_teacher_logit_kl_is_zero_for_source_and_positive_after_perturbation():
         model.layers[0].weight.add_(0.5)
     assert teacher_logit_kl(
         model, calls, "cpu", torch.float32) > 1e-6
+
+
+def test_dynamic_allocator_can_score_and_patch_vector_candidates():
+    torch.manual_seed(4)
+    model = TinyLM().eval()
+    patch_cfg = PatchConfig(
+        quant=QuantConfig(
+            bits=3,
+            codebook="vector",
+            scale="rms",
+            group_size=16,
+            vector_dim=2,
+            vector_samples=1024,
+            vector_iters=5,
+        ),
+        rotation="fwht",
+        block=16,
+        include=("layers.",),
+        exclude=(),
+        dynamic={
+            "candidate_bits": [2, 3],
+            "target_bpw": 3.0,
+            "global_kl_weight": 0.0,
+        },
+    )
+    activations = {
+        "layers.0": torch.randn(16, 16),
+        "layers.1": torch.randn(16, 16),
+    }
+
+    recipe, stats = select_dynamic_quantization(
+        model, patch_cfg, activations=activations
+    )
+    assert stats["target_reached"]
+    assert all(config.codebook == "vector" for config in recipe.values())
+
+    patch_cfg.layer_quant = recipe
+    patch_model(model, patch_cfg)
+    for layer in model.layers:
+        assert layer.qweight.packed.bits == layer._quant_config.bits * 2
+
+
+def test_random_allocator_is_a_seeded_matched_format_control():
+    torch.manual_seed(5)
+    activations = {
+        "layers.0": torch.randn(16, 16),
+        "layers.1": torch.randn(16, 16),
+    }
+    recipes = []
+    for _ in range(2):
+        model = TinyLM().eval()
+        patch_cfg = _patch_cfg(
+            candidate_bits=[2, 3, 4], target_bpw=3.0,
+            global_kl_weight=0.0, allocation="random",
+        )
+        recipe, stats = select_dynamic_quantization(
+            model, patch_cfg, activations=activations
+        )
+        assert stats["config"]["allocation"] == "random"
+        assert stats["target_reached"]
+        recipes.append({name: quant.bits for name, quant in recipe.items()})
+    assert recipes[0] == recipes[1]

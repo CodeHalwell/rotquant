@@ -266,6 +266,154 @@ def kv_retrieval_metrics(
     }
 
 
+@torch.no_grad()
+def oracle_value_retrieval_curve(
+    attention_weights: torch.Tensor,
+    values: torch.Tensor,
+    retrieval_counts: tuple[int, ...] | list[int],
+    *,
+    reference_values: torch.Tensor | None = None,
+    recent_window: int = 0,
+    sink_tokens: int = 0,
+    mass_threshold: float | None = None,
+) -> list[dict[str, float | int]]:
+    """Measure the upper bound from gathering only high-attention V rows.
+
+    This consumes real dense attention probabilities and cache values, making it
+    useful before an architecture-specific query hook exists. Selection by the
+    dense probabilities is an oracle: it measures whether value sparsity is
+    present, not whether packed-key scoring can recover the same candidates.
+    The latter remains a separate required experiment.
+
+    ``attention_weights`` has shape ``[batch, query_heads, queries, sequence]``
+    and ``values`` has shape ``[batch, kv_heads, sequence, head_dim]``. Pass the
+    source cache as ``reference_values`` when ``values`` is quantized so the
+    reported error includes both V quantization and selective retrieval. Grouped
+    query attention is expanded using the normal consecutive-head mapping.
+    """
+
+    if attention_weights.ndim != 4 or values.ndim != 4:
+        raise ValueError(
+            "attention weights and values must have four dimensions"
+        )
+    batch, query_heads, queries, sequence = attention_weights.shape
+    if values.shape[0] != batch or values.shape[2] != sequence:
+        raise ValueError("attention weights and values have incompatible shapes")
+    if reference_values is not None and reference_values.shape != values.shape:
+        raise ValueError("reference values must have the same shape as values")
+    kv_heads = values.shape[1]
+    if query_heads % kv_heads:
+        raise ValueError("query heads must be divisible by KV heads")
+    if recent_window < 0 or sink_tokens < 0:
+        raise ValueError("recent_window and sink_tokens must be nonnegative")
+    if mass_threshold is not None and not 0.0 < mass_threshold <= 1.0:
+        raise ValueError("mass_threshold must be in (0, 1]")
+    counts = tuple(sorted({int(value) for value in retrieval_counts}))
+    if not counts or counts[0] < 1 or counts[-1] > sequence:
+        raise ValueError("retrieval counts must be within the sequence length")
+    weights = attention_weights.detach().float()
+    if (weights < 0).any() or not torch.isfinite(weights).all():
+        raise ValueError("attention weights must be finite and nonnegative")
+    row_mass = weights.sum(dim=-1, keepdim=True)
+    if (row_mass <= 0).any():
+        raise ValueError("attention rows must have positive mass")
+    weights = weights / row_mass
+
+    repeat = query_heads // kv_heads
+    candidate_values = values.detach().float().repeat_interleave(repeat, dim=1)
+    expanded_values = candidate_values.unsqueeze(2).expand(
+        batch, query_heads, queries, sequence, values.shape[-1]
+    )
+    reference_values = values if reference_values is None else reference_values
+    source_values = reference_values.detach().float().repeat_interleave(
+        repeat, dim=1
+    )
+    reference = torch.matmul(weights, source_values)
+    dense_candidate = torch.matmul(weights, candidate_values)
+    reference_energy = reference.square().mean().clamp_min(1e-12)
+    dense_value_relative_mse = float(
+        ((dense_candidate - reference).square().mean() / reference_energy).item()
+    )
+    dense_value_cosine = float(F.cosine_similarity(
+        dense_candidate.reshape(-1, dense_candidate.shape[-1]),
+        reference.reshape(-1, reference.shape[-1]),
+        dim=-1,
+    ).mean().item())
+
+    forced = torch.zeros(sequence, dtype=torch.bool, device=weights.device)
+    forced[:min(sink_tokens, sequence)] = True
+    if recent_window:
+        forced[max(0, sequence - recent_window):] = True
+    forced_count = int(forced.sum().item())
+
+    results = []
+    for retrieval_k in counts:
+        if forced_count > retrieval_k:
+            raise ValueError(
+                "retrieval count is smaller than mandatory sink/recent tokens"
+            )
+        ranking = weights.masked_fill(
+            forced.reshape(1, 1, 1, sequence), torch.inf
+        )
+        selected = torch.topk(
+            ranking, k=retrieval_k, dim=-1, sorted=False
+        ).indices
+        selected_weights = torch.gather(weights, -1, selected)
+        selected_mass = selected_weights.sum(dim=-1)
+        normalized = selected_weights / selected_mass.unsqueeze(-1).clamp_min(1e-12)
+        selected_values = torch.gather(
+            expanded_values,
+            -2,
+            selected.unsqueeze(-1).expand(*selected.shape, values.shape[-1]),
+        )
+        candidate = (normalized.unsqueeze(-1) * selected_values).sum(dim=-2)
+        relative_mse = (
+            (candidate - reference).square().mean() / reference_energy
+        )
+        cosine = F.cosine_similarity(
+            candidate.reshape(-1, candidate.shape[-1]),
+            reference.reshape(-1, reference.shape[-1]),
+            dim=-1,
+        ).mean()
+        fallback_fraction = 0.0
+        effective_read_fraction = retrieval_k / sequence
+        gated_relative_mse = float(relative_mse.item())
+        if mass_threshold is not None:
+            fallback = selected_mass < mass_threshold
+            fallback_fraction = float(fallback.float().mean().item())
+            # A confidence fallback reads every stored V row. When ``values``
+            # is quantized this is the dense quantized result, not an impossible
+            # fallback to source values that are no longer resident.
+            gated = torch.where(
+                fallback.unsqueeze(-1), dense_candidate, candidate
+            )
+            gated_relative_mse = float(
+                ((gated - reference).square().mean() / reference_energy).item()
+            )
+            effective_read_fraction = (
+                (1.0 - fallback_fraction) * retrieval_k / sequence
+                + fallback_fraction
+            )
+        results.append({
+            "retrieval_k": retrieval_k,
+            "sequence_length": sequence,
+            "selected_fraction": retrieval_k / sequence,
+            "mean_attention_mass": float(selected_mass.mean().item()),
+            "p05_attention_mass": float(
+                torch.quantile(selected_mass.flatten(), 0.05).item()
+            ),
+            "dense_value_relative_attention_mse": dense_value_relative_mse,
+            "dense_value_cosine": dense_value_cosine,
+            "relative_attention_mse": float(relative_mse.item()),
+            "cosine": float(cosine.item()),
+            "mass_threshold": mass_threshold or 0.0,
+            "dense_fallback_fraction": fallback_fraction,
+            "gated_relative_attention_mse": gated_relative_mse,
+            "effective_value_read_fraction": effective_read_fraction,
+        })
+    return results
+
+
 def _fake_quant(tensor: torch.Tensor, config: KVQuantConfig,
                 *, value: bool = False) -> torch.Tensor:
     rows = tensor.reshape(-1, tensor.shape[-1])

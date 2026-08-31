@@ -159,3 +159,23 @@ def test_public_api_rejects_models_without_quantizable_modules() -> None:
     model = nn.Sequential(nn.ReLU())
     with pytest.raises(ValueError, match="found no quantizable modules"):
         optimize_model(model, RotQuantConfig(rotation="none"))
+
+
+@pytest.mark.parametrize(
+    "selection",
+    [
+        {"include": ("does-not-exist",)},
+        {"exclude": ("proj", "lm_head")},
+    ],
+)
+def test_public_api_rejects_empty_filtered_selection(selection) -> None:
+    model = TinyModel()
+
+    with pytest.raises(ValueError, match="selected no quantizable modules"):
+        optimize_model(
+            model,
+            RotQuantConfig(rotation="none", **selection),
+        )
+
+    assert isinstance(model.proj, nn.Linear)
+    assert isinstance(model.lm_head, nn.Linear)

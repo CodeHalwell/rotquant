@@ -32,6 +32,10 @@ implement the fused CUDA operation once, adapt that operation to vLLM, then port
 the same tensor contract to SGLang. Unsloth remains a producer of training
 checkpoints rather than a separate deployment format.
 
+The ordered implementation work, architecture tiers, per-bit kernel rollout,
+and definition of done are maintained in [`roadmap.md`](roadmap.md). Its Stage
+2.0 reliability checks are merge gates for all backend work.
+
 ## Acceptance gates
 
 A backend is not considered supported merely because it loads:

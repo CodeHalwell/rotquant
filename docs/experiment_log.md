@@ -473,10 +473,26 @@ codebook against an exact Gaussian RotQuant cache kernel.
 
 ## Open experiments
 
+- Run `notebooks/rotquant_algorithm_lab_colab.ipynb`: screen exact-rate scalar
+  versus finite-rate vector codebooks and scalar extensions, then promote only
+  Pareto winners through allocation objectives, three seeds, and a second model
+  family. The pre-run protocol now requires the source/W4 sentinel, paired
+  per-window NLL intervals, matched allocation/vector controls, WikiText-2 plus
+  C4 confirmation, logit/layer/trajectory diagnostics, immutable token hashes,
+  complete persistent/runtime bytes, and atomic resumable records. The notebook
+  is the canonical record template for this funnel.
+- Measure the real-attention selective-V upper bound in that notebook. Only
+  build packed-key candidate kernels if its confidence-gated quality curve
+  yields a useful reduction in effective V reads.
+
 - Measure packed checkpoint and native process resident memory and peak
   transient memory; artifact and tensor-file bytes are now verified.
 - Measure longer trajectory agreement, long-context perplexity, and retrieval
   for the matched-gate winner and its controls.
+- Formalize that trajectory work as a pinned, calibration-disjoint
+  300-prompt/32-token suite across agentic, code, maths, multilingual, and
+  long-document prompts, with source, same-size GGUF, and Unsloth controls. The
+  algorithm-lab notebook's four C4 prompts are only an early drift gate.
 - Revisit dynamic weight allocation only if a sensitivity objective can beat
   uniform W4 at a meaningful byte delta; the current 3.93-MB saving is not worth
   the observed PPL loss.

@@ -5,7 +5,10 @@ import json
 
 import pytest
 import torch
+from torch import nn
 
+import rotquant.checkpoint as checkpoint_module
+from rotquant.adapters import ADAPTERS, ModelAdapter
 from rotquant.checkpoint import (
     MANIFEST_NAME,
     MODEL_STATE_NAME,
@@ -17,6 +20,46 @@ from rotquant.checkpoint import (
 from rotquant.linear import QuantLinear
 from rotquant.patch import PatchConfig, patch_model
 from rotquant.quantize import QuantConfig
+
+
+class _Conv1DProjection(nn.Module):
+    def __init__(self, in_features: int, out_features: int) -> None:
+        super().__init__()
+        self.weight = nn.Parameter(torch.randn(in_features, out_features) * 0.1)
+        self.bias = nn.Parameter(torch.randn(out_features) * 0.1)
+
+    def forward(self, value: torch.Tensor) -> torch.Tensor:
+        return value @ self.weight + self.bias
+
+
+class _Conv1DCheckpointAdapter(ModelAdapter):
+    def iter_quantizable_modules(self, model):
+        for name, module in model.named_modules():
+            if isinstance(module, _Conv1DProjection):
+                yield name, module
+
+    def to_linear(self, module):
+        linear = nn.Linear(
+            module.weight.shape[0],
+            module.weight.shape[1],
+            bias=module.bias is not None,
+            device=module.weight.device,
+            dtype=module.weight.dtype,
+        )
+        with torch.no_grad():
+            linear.weight.copy_(module.weight.T)
+            linear.bias.copy_(module.bias)
+        return linear
+
+
+class _CustomCheckpointModel(nn.Module):
+    def __init__(self, config) -> None:
+        super().__init__()
+        self.config = config
+        self.proj = _Conv1DProjection(8, 6)
+
+    def forward(self, value: torch.Tensor) -> torch.Tensor:
+        return self.proj(value)
 
 
 def _tiny_packed_llama(rotation="butterfly"):
@@ -168,3 +211,124 @@ def test_checkpoint_rejects_non_json_deployment_metadata(tmp_path):
             deployment_metadata={"tensor": torch.tensor(1)},
         )
     assert not (tmp_path / "packed").exists()
+
+
+@pytest.mark.parametrize("family", ["encoder", "encoder-decoder"])
+def test_checkpoint_auto_loader_uses_saved_adapter_family(tmp_path, family):
+    transformers = pytest.importorskip("transformers")
+    pytest.importorskip("safetensors")
+    if family == "encoder":
+        config = transformers.BertConfig(
+            vocab_size=32,
+            hidden_size=16,
+            intermediate_size=32,
+            num_hidden_layers=1,
+            num_attention_heads=2,
+            max_position_embeddings=32,
+        )
+        model = transformers.BertModel(config).eval()
+        inputs = {"input_ids": torch.tensor([[1, 7, 3, 2]])}
+        include = None
+
+        def output(result):
+            return result.last_hidden_state
+    else:
+        config = transformers.T5Config(
+            vocab_size=32,
+            d_model=16,
+            d_ff=32,
+            num_layers=1,
+            num_decoder_layers=1,
+            num_heads=2,
+            decoder_start_token_id=0,
+            pad_token_id=0,
+            eos_token_id=1,
+        )
+        model = transformers.T5ForConditionalGeneration(config).eval()
+        inputs = {
+            "input_ids": torch.tensor([[1, 7, 3, 2]]),
+            "decoder_input_ids": torch.tensor([[0, 5, 4]]),
+        }
+        # T5's feed-forward wrapper directly introspects ``wo.weight``. That
+        # module needs an architecture-specific wrapper before the whole family
+        # can claim fused runtime support; attention projections exercise the
+        # checkpoint loader contract without making that broader claim.
+        include = ("SelfAttention.q",)
+
+        def output(result):
+            return result.logits
+
+    patch_model(
+        model,
+        PatchConfig(
+            quant=QuantConfig(
+                bits=4,
+                codebook="gaussian",
+                scale="rms",
+                group_size=8,
+            ),
+            rotation="none",
+            include=include,
+        ),
+    )
+    with torch.no_grad():
+        expected = output(model(**inputs))
+
+    export_dir = tmp_path / family
+    save_packed_checkpoint(model, export_dir, model_loader="auto")
+    manifest = checkpoint_manifest(export_dir)
+    assert manifest["architecture"]["adapter"] == family
+
+    restored = load_packed_model(export_dir, dtype=torch.float32)
+    with torch.no_grad():
+        actual = output(restored(**inputs))
+    torch.testing.assert_close(actual, expected, rtol=0, atol=0)
+
+
+def test_checkpoint_uses_saved_custom_adapter_hooks_before_model_build(
+    tmp_path, monkeypatch
+):
+    transformers = pytest.importorskip("transformers")
+    pytest.importorskip("safetensors")
+    adapter = _Conv1DCheckpointAdapter("checkpoint-conv1d")
+    monkeypatch.setitem(ADAPTERS._adapters, adapter.name, adapter)
+    model = _CustomCheckpointModel(transformers.BertConfig()).eval()
+    inputs = torch.randn(3, 8)
+    patch_model(
+        model,
+        PatchConfig(
+            quant=QuantConfig(
+                bits=4,
+                codebook="gaussian",
+                scale="rms",
+                group_size=4,
+            ),
+            rotation="none",
+            exclude=(),
+            adapter=adapter.name,
+        ),
+    )
+    with torch.no_grad():
+        expected = model(inputs)
+
+    export_dir = tmp_path / "custom-adapter"
+    save_packed_checkpoint(model, export_dir, model_loader="auto")
+
+    class CustomAutoModel:
+        @classmethod
+        def from_config(cls, config, **kwargs):
+            del kwargs
+            return _CustomCheckpointModel(config)
+
+    def resolve_model_class(config, model_loader, saved_adapter):
+        del config, model_loader
+        assert saved_adapter is adapter
+        return CustomAutoModel
+
+    monkeypatch.setattr(
+        checkpoint_module, "_resolve_model_class", resolve_model_class
+    )
+    restored = load_packed_model(export_dir, dtype=torch.float32)
+    with torch.no_grad():
+        actual = restored(inputs)
+    torch.testing.assert_close(actual, expected, rtol=0, atol=0)

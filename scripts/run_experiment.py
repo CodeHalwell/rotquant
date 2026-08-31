@@ -29,6 +29,7 @@ import json
 import os
 import re
 import sys
+from collections import OrderedDict
 from typing import Any, Dict, List, Optional
 
 import torch
@@ -36,18 +37,37 @@ import yaml
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from rotquant.utils import (  # noqa: E402
-    Timer, environment_record, get_logger, set_seed, write_result,
-    peak_vram_bytes, reset_peak_vram,
-)
-from rotquant.quantize import QuantConfig  # noqa: E402
 from rotquant.patch import PatchConfig, patch_model  # noqa: E402
+from rotquant.quantize import QuantConfig  # noqa: E402
+from rotquant.utils import (  # noqa: E402
+    Timer,
+    environment_record,
+    get_logger,
+    peak_vram_bytes,
+    reset_peak_vram,
+    set_seed,
+    write_result,
+)
 
 logger = get_logger()
 
 BASE_CONFIG_NAME = "_base.yaml"
 MAX_RUN_ID_LENGTH = 220  # leaves room for the .json suffix under NAME_MAX=255
 MODEL_LOADERS = ("auto", "causal_lm", "multimodal_lm")
+class TokenBatch(dict):
+    """Model-input mapping carrying a non-forwarded source-row identity."""
+
+    def __init__(self, input_ids: torch.Tensor, source_row: int):
+        super().__init__(input_ids=input_ids)
+        self.source_row = source_row
+
+
+_CALIB_CACHE: OrderedDict[
+    str, tuple[tuple[torch.Tensor, int], ...]
+] = OrderedDict()
+_CALIB_CACHE_LIMIT = 32
+_TRAJECTORY_REFERENCE_CACHE: dict[str, Any] = {}
+_LOGIT_REFERENCE_CACHE: dict[str, Any] = {}
 
 
 def _deep_merge(base: Dict[str, Any], override: Dict[str, Any]) -> Dict[str, Any]:
@@ -230,23 +250,105 @@ def load_hf_model(model_name: str, dtype: torch.dtype, device,
 
 
 def build_calib_loader(tokenizer, n_seq: int, seq_len: int, device,
-                       skip: int = 0):
+                       skip: int = 0, revision: str | None = None):
     """Tokenised C4/WikiText-train calibration sequences (128-512 typical)."""
+    tokenizer_identity = {
+        "class": type(tokenizer).__name__,
+        "name_or_path": getattr(tokenizer, "name_or_path", None),
+        "vocab_size": getattr(tokenizer, "vocab_size", None),
+        "special_tokens": getattr(tokenizer, "special_tokens_map", None),
+        "revision": (getattr(tokenizer, "init_kwargs", {}) or {}).get(
+            "revision"
+        ),
+        "commit_hash": (getattr(tokenizer, "init_kwargs", {}) or {}).get(
+            "_commit_hash"
+        ),
+    }
+    key = hashlib.sha256(json.dumps({
+        "tokenizer": tokenizer_identity,
+        "revision": revision,
+        "n_seq": n_seq,
+        "seq_len": seq_len,
+        "skip": skip,
+    }, sort_keys=True, default=str).encode()).hexdigest()
+    cached = _CALIB_CACHE.get(key)
+    if cached is not None:
+        _CALIB_CACHE.move_to_end(key)
+        return [TokenBatch(ids.to(device), source_row) for ids, source_row in cached]
+
     from datasets import load_dataset
-    ds = load_dataset("allenai/c4", "en", split="train", streaming=True)
+    ds = load_dataset(
+        "allenai/c4",
+        "en",
+        split="train",
+        streaming=True,
+        revision=revision,
+    )
     batches, count, eligible = [], 0, 0
-    for row in ds:
+    for source_row, row in enumerate(ds):
         ids = tokenizer(row["text"], return_tensors="pt").input_ids
         if ids.shape[1] < seq_len:
             continue
         if eligible < skip:
             eligible += 1
             continue
-        batches.append({"input_ids": ids[:, :seq_len].to(device)})
+        batches.append(TokenBatch(ids[:, :seq_len].cpu(), source_row))
         count += 1
         if count >= n_seq:
             break
-    return batches
+    cached_batches = tuple(
+        (batch["input_ids"], batch.source_row) for batch in batches
+    )
+    _CALIB_CACHE[key] = cached_batches
+    _CALIB_CACHE.move_to_end(key)
+    while len(_CALIB_CACHE) > _CALIB_CACHE_LIMIT:
+        _CALIB_CACHE.popitem(last=False)
+    return [
+        TokenBatch(ids.to(device), source_row)
+        for ids, source_row in cached_batches
+    ]
+
+
+def token_batch_manifest(batches, *, dataset: str, split: str,
+                         revision: str | None, skip: int,
+                         seq_len: int) -> dict[str, Any]:
+    """Return immutable identities for exact token batches used by a stage."""
+
+    hashes = [hashlib.sha256(
+        batch["input_ids"].detach().cpu().contiguous().numpy().tobytes()
+    ).hexdigest() for batch in batches]
+    return {
+        "dataset": dataset,
+        "split": split,
+        "revision": revision,
+        "skip": skip,
+        "seq_len": seq_len,
+        "batches": len(hashes),
+        "source_rows": [getattr(batch, "source_row", None) for batch in batches],
+        "token_hashes": hashes,
+        "digest": hashlib.sha256("".join(hashes).encode()).hexdigest(),
+    }
+
+
+def _reference_cache_key(kind: str, model_name: str,
+                         model_revision: str | None, config,
+                         batches) -> str:
+    payload = {
+        "kind": kind,
+        "model": model_name,
+        "model_revision": model_revision,
+        "config": vars(config),
+        "token_hashes": token_batch_manifest(
+            batches, dataset="allenai/c4", split="train",
+            revision=None, skip=int(getattr(config, "skip", 0)),
+            seq_len=int(getattr(
+                config, "prompt_len", getattr(config, "seq_len", 0)
+            )),
+        )["token_hashes"],
+    }
+    return hashlib.sha256(
+        json.dumps(payload, sort_keys=True, default=str).encode()
+    ).hexdigest()
 
 
 def footprint_metrics(model: torch.nn.Module, cfg_model: Dict[str, Any]) -> Dict[str, Any]:
@@ -259,6 +361,7 @@ def footprint_metrics(model: torch.nn.Module, cfg_model: Dict[str, Any]) -> Dict
     metrics: Dict[str, Any] = {}
     bpws, packed_bytes, fp16_bytes = [], 0, 0
     rotation_parameter_bytes, adapter_parameter_bytes = 0, 0
+    codebook_bytes = fallback_cache_bytes = 0
     total_bits, total_weights = 0.0, 0
     claimed = cfg_model.get("claimed_bpw")
     tol = float(cfg_model.get("claimed_bpw_tol", 1e-6))
@@ -273,6 +376,14 @@ def footprint_metrics(model: torch.nn.Module, cfg_model: Dict[str, Any]) -> Dict
         total_bits += budget.bits_per_weight * n_weights
         total_weights += n_weights
         packed_bytes += mod.packed_state_bytes()
+        codebook = getattr(mod.qweight, "codebook", None)
+        centroids = getattr(codebook, "centroids", None)
+        if centroids is not None:
+            codebook_bytes += centroids.numel() * centroids.element_size()
+        if mod._fp_cache is not None:
+            fallback_cache_bytes += (
+                mod._fp_cache.numel() * mod._fp_cache.element_size()
+            )
         fp16_bytes += n_weights * 2
         rotation_parameter_bytes += sum(
             p.numel() * p.element_size() for p in mod.act_rotation.parameters())
@@ -302,6 +413,19 @@ def footprint_metrics(model: torch.nn.Module, cfg_model: Dict[str, Any]) -> Dict
                 effective_bytes * 8 / total_weights)
             metrics["effective_compression_ratio"] = (
                 fp16_bytes / effective_bytes)
+    registered_bytes = sum(
+        tensor.numel() * tensor.element_size()
+        for tensor in list(model.parameters()) + list(model.buffers())
+    )
+    metrics["registered_model_bytes"] = registered_bytes
+    metrics["codebook_bytes"] = codebook_bytes
+    metrics["complete_persistent_model_bytes"] = (
+        registered_bytes + packed_bytes + codebook_bytes
+    )
+    metrics["fallback_cache_bytes"] = fallback_cache_bytes
+    metrics["quality_runtime_model_bytes"] = (
+        metrics["complete_persistent_model_bytes"] + fallback_cache_bytes
+    )
     return metrics
 
 
@@ -334,9 +458,10 @@ def run(config_path: str, output_dir: str = "results",
     logger.info("run %s: model=%s device=%s dtype=%s seed=%d",
                 run_id, model_name, device, dtype, seed)
 
-    model, tokenizer, selected_loader = load_hf_model(
-        model_name, dtype, device, cfg.get("model_loader", "auto"),
-        cfg.get("model_revision"))
+    with Timer() as model_load_timer:
+        model, tokenizer, selected_loader = load_hf_model(
+            model_name, dtype, device, cfg.get("model_loader", "auto"),
+            cfg.get("model_revision"))
     model.eval()
 
     # Let a per-block ``seed:`` override the top-level one, but don't explode if
@@ -348,8 +473,13 @@ def run(config_path: str, output_dir: str = "results",
     qcfg = QuantConfig(seed=quant_kwargs.pop("seed", seed), **quant_kwargs)
     pcfg = PatchConfig(quant=qcfg, seed=patch_kwargs.pop("seed", seed), **patch_kwargs)
 
-    metrics: Dict[str, Any] = {"model_loader": selected_loader}
+    metrics: Dict[str, Any] = {
+        "model_loader": selected_loader,
+        "model_load_seconds": model_load_timer.elapsed,
+        "data_manifest": {},
+    }
     eval_cfg = cfg.get("eval") or {}
+    calibration_revision = cfg.get("calib_dataset_revision")
 
     hessians = None
     activations = None
@@ -358,6 +488,8 @@ def run(config_path: str, output_dir: str = "results",
     dynamic_calls = None
     trajectory_references = None
     trajectory_config = None
+    logit_references = None
+    logit_fidelity_config = None
     needs_hessians = pcfg.enabled and (
         qcfg.error_comp == "gptq" or cfg.get("calibrate", False))
     rotation_train_cfg = pcfg.train_rotation or {}
@@ -371,7 +503,13 @@ def run(config_path: str, output_dir: str = "results",
     if needs_hessians:
         calib_loader = build_calib_loader(
             tokenizer, cfg.get("n_calib", 128),
-            cfg.get("calib_seq_len", 2048), device)
+            cfg.get("calib_seq_len", 2048), device,
+            revision=calibration_revision)
+        metrics["data_manifest"]["hessian_calibration"] = token_batch_manifest(
+            calib_loader, dataset="allenai/c4", split="train",
+            revision=calibration_revision, skip=0,
+            seq_len=int(cfg.get("calib_seq_len", 2048)),
+        )
 
     if needs_hessians:
         from rotquant.calibrate import collect_hessians
@@ -401,7 +539,13 @@ def run(config_path: str, output_dir: str = "results",
             minimum_batches = max(1, (max_tokens + calib_seq_len - 1) // calib_seq_len)
             n_batches = int(cfg.get("rotation_n_calib", minimum_batches))
             calib_loader = build_calib_loader(
-                tokenizer, n_batches, calib_seq_len, device)
+                tokenizer, n_batches, calib_seq_len, device,
+                revision=calibration_revision)
+        metrics["data_manifest"]["activation_calibration"] = token_batch_manifest(
+            calib_loader, dataset="allenai/c4", split="train",
+            revision=calibration_revision, skip=0,
+            seq_len=int(cfg.get("calib_seq_len", 2048)),
+        )
         with Timer() as t:
             activation_calib = collect_activations(
                 model, calib_loader, device,
@@ -414,9 +558,17 @@ def run(config_path: str, output_dir: str = "results",
         if needs_dynamic else 0
     if dynamic_global_batches:
         from rotquant.block_train import collect_teacher_calls
+        dynamic_teacher_skip = int(cfg.get("dynamic_teacher_skip", 0))
         dynamic_loader = build_calib_loader(
             tokenizer, dynamic_global_batches,
-            int(cfg.get("calib_seq_len", 256)), device)
+            int(cfg.get("calib_seq_len", 256)), device,
+            skip=dynamic_teacher_skip,
+            revision=calibration_revision)
+        metrics["data_manifest"]["allocation_teacher"] = token_batch_manifest(
+            dynamic_loader, dataset="allenai/c4", split="train",
+            revision=calibration_revision, skip=dynamic_teacher_skip,
+            seq_len=int(cfg.get("calib_seq_len", 256)),
+        )
         with Timer() as t:
             dynamic_calls = collect_teacher_calls(
                 model, dynamic_loader, device,
@@ -425,7 +577,8 @@ def run(config_path: str, output_dir: str = "results",
 
     if needs_block_calls:
         from rotquant.block_train import (
-            collect_block_calls, collect_teacher_calls,
+            collect_block_calls,
+            collect_teacher_calls,
             find_transformer_blocks,
         )
         train_batches = int(rotation_train_cfg.get("train_batches", 1))
@@ -443,7 +596,13 @@ def run(config_path: str, output_dir: str = "results",
         if calib_loader is None or len(calib_loader) < total_block_batches:
             calib_loader = build_calib_loader(
                 tokenizer, total_block_batches,
-                int(cfg.get("calib_seq_len", 256)), device)
+                int(cfg.get("calib_seq_len", 256)), device,
+                revision=calibration_revision)
+        metrics["data_manifest"]["block_calibration"] = token_batch_manifest(
+            calib_loader[:total_block_batches], dataset="allenai/c4",
+            split="train", revision=calibration_revision, skip=0,
+            seq_len=int(cfg.get("calib_seq_len", 256)),
+        )
         with Timer() as t:
             block_calls = collect_block_calls(
                 model, calib_loader[:n_block_batches], device,
@@ -461,8 +620,17 @@ def run(config_path: str, output_dir: str = "results",
     drift_batch = None
     if eval_cfg.get("layer_mse", False):
         from eval.layer_mse import capture_outputs
+        layer_mse_skip = int(eval_cfg.get("layer_mse_skip", 0))
+        layer_mse_seq_len = int(eval_cfg.get("layer_mse_seq_len", 512))
         drift_batch = build_calib_loader(
-            tokenizer, 1, eval_cfg.get("layer_mse_seq_len", 512), device)[0]
+            tokenizer, 1, layer_mse_seq_len, device,
+            skip=layer_mse_skip,
+            revision=calibration_revision)[0]
+        metrics["data_manifest"]["layer_drift"] = token_batch_manifest(
+            [drift_batch], dataset="allenai/c4", split="train",
+            revision=calibration_revision, skip=layer_mse_skip,
+            seq_len=layer_mse_seq_len,
+        )
         fp_capture = capture_outputs(model, drift_batch, device)
 
     trajectory_requested = eval_cfg.get("trajectory", False)
@@ -474,12 +642,72 @@ def run(config_path: str, output_dir: str = "results",
         trajectory_batches = build_calib_loader(
             tokenizer, trajectory_config.batches,
             trajectory_config.prompt_len, device,
-            skip=trajectory_config.skip)
-        with Timer() as t:
-            trajectory_references = capture_trajectories(
-                model, tokenizer, trajectory_batches, device,
-                trajectory_config)
-        metrics["source_trajectory_seconds"] = t.elapsed
+            skip=trajectory_config.skip,
+            revision=calibration_revision)
+        metrics["data_manifest"]["trajectory"] = token_batch_manifest(
+            trajectory_batches, dataset="allenai/c4", split="train",
+            revision=calibration_revision, skip=trajectory_config.skip,
+            seq_len=trajectory_config.prompt_len,
+        )
+        trajectory_cache_key = _reference_cache_key(
+            "trajectory", model_name, cfg.get("model_revision"),
+            trajectory_config, trajectory_batches,
+        )
+        trajectory_references = _TRAJECTORY_REFERENCE_CACHE.get(
+            trajectory_cache_key
+        )
+        metrics["source_trajectory_cache_hit"] = (
+            trajectory_references is not None
+        )
+        if trajectory_references is None:
+            with Timer() as t:
+                trajectory_references = capture_trajectories(
+                    model, tokenizer, trajectory_batches, device,
+                    trajectory_config)
+            metrics["source_trajectory_seconds"] = t.elapsed
+            _TRAJECTORY_REFERENCE_CACHE[trajectory_cache_key] = (
+                trajectory_references
+            )
+        else:
+            metrics["source_trajectory_seconds"] = 0.0
+
+    logit_fidelity_requested = eval_cfg.get("logit_fidelity", False)
+    if logit_fidelity_requested:
+        from eval.logit_fidelity import (
+            LogitFidelityConfig,
+            capture_logit_references,
+        )
+        logit_kwargs = (
+            logit_fidelity_requested
+            if isinstance(logit_fidelity_requested, dict) else {}
+        )
+        logit_fidelity_config = LogitFidelityConfig(**logit_kwargs)
+        logit_batches = build_calib_loader(
+            tokenizer, logit_fidelity_config.batches,
+            logit_fidelity_config.prompt_len, device,
+            skip=logit_fidelity_config.skip,
+            revision=calibration_revision,
+        )
+        metrics["data_manifest"]["logit_fidelity"] = token_batch_manifest(
+            logit_batches, dataset="allenai/c4", split="train",
+            revision=calibration_revision, skip=logit_fidelity_config.skip,
+            seq_len=logit_fidelity_config.prompt_len,
+        )
+        logit_cache_key = _reference_cache_key(
+            "logit_fidelity", model_name, cfg.get("model_revision"),
+            logit_fidelity_config, logit_batches,
+        )
+        logit_references = _LOGIT_REFERENCE_CACHE.get(logit_cache_key)
+        metrics["source_logit_fidelity_cache_hit"] = logit_references is not None
+        if logit_references is None:
+            with Timer() as t:
+                logit_references = capture_logit_references(
+                    model, logit_batches, device, logit_fidelity_config
+                )
+            metrics["source_logit_fidelity_seconds"] = t.elapsed
+            _LOGIT_REFERENCE_CACHE[logit_cache_key] = logit_references
+        else:
+            metrics["source_logit_fidelity_seconds"] = 0.0
 
     patch_stats: Dict[str, Any] = {}
     if needs_dynamic:
@@ -507,6 +735,7 @@ def run(config_path: str, output_dir: str = "results",
     metrics.update(footprint_metrics(model, cfg))
 
     # Evaluation -----------------------------------------------------------
+    reset_peak_vram()
     if fp_capture is not None:
         from eval.layer_mse import capture_outputs, drift_between
         q_capture = capture_outputs(model, drift_batch, device)
@@ -521,6 +750,14 @@ def run(config_path: str, output_dir: str = "results",
                 model, tokenizer, trajectory_references, device,
                 trajectory_config)
         metrics["trajectory"]["seconds"] = t.elapsed
+
+    if logit_references is not None:
+        from eval.logit_fidelity import evaluate_logit_fidelity
+        with Timer() as t:
+            metrics["logit_fidelity"] = evaluate_logit_fidelity(
+                model, logit_references, device, logit_fidelity_config
+            )
+        metrics["logit_fidelity"]["seconds"] = t.elapsed
 
     kv_cache_requested = eval_cfg.get("kv_cache", False)
     if kv_cache_requested:
@@ -544,6 +781,7 @@ def run(config_path: str, output_dir: str = "results",
              + kv_cache_config.continuation_len + 1),
             device,
             skip=kv_cache_config.skip,
+            revision=calibration_revision,
         )
         with Timer() as t:
             metrics["kv_cache"] = evaluate_kv_cache(
@@ -551,11 +789,25 @@ def run(config_path: str, output_dir: str = "results",
         metrics["kv_cache"]["seconds"] = t.elapsed
 
     if eval_cfg.get("perplexity", True):
-        from eval.perplexity import perplexity, PPLConfig
+        from eval.perplexity import PPLConfig, perplexity_details
         ppl_cfg = PPLConfig(**(eval_cfg.get("ppl") or {}))
         for ds in eval_cfg.get("ppl_datasets", ["wikitext2", "c4"]):
             with Timer() as t:
-                metrics[f"ppl_{ds}"] = perplexity(model, tokenizer, ds, ppl_cfg, device)
+                ppl_details = perplexity_details(
+                    model, tokenizer, ds, ppl_cfg, device
+                )
+                metrics[f"ppl_{ds}"] = ppl_details["ppl"]
+                metrics[f"ppl_{ds}_details"] = ppl_details
+                metrics["data_manifest"][f"ppl_{ds}"] = {
+                    "dataset": ds,
+                    "split": "test" if ds == "wikitext2" else "validation",
+                    "revision": (
+                        ppl_cfg.wikitext_revision
+                        if ds == "wikitext2" else ppl_cfg.c4_revision
+                    ),
+                    "digest": ppl_details["input_digest"],
+                    "window_hashes": ppl_details["window_hashes"],
+                }
             metrics[f"ppl_{ds}_seconds"] = t.elapsed
 
     tp_requested = eval_cfg.get("throughput", False)
@@ -572,6 +824,8 @@ def run(config_path: str, output_dir: str = "results",
                                        batch_size=eval_cfg.get("zeroshot_batch_size", 8),
                                        device=device,
                                        limit=eval_cfg.get("limit"))
+
+    metrics["peak_vram_bytes_eval"] = peak_vram_bytes()
 
     if export_dir:
         deployment_metadata = None

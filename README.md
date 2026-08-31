@@ -16,9 +16,9 @@ real models with fixed metrics:
 3. **Gaussian MSE-optimal grid > uniform** at the same bit budget. *(E2)*
 4. **Data-free scale-search** is a free win over RMS scales at identical bits. *(E4)*
 5. **GPTQ helps — with real activations.** *(E5)*
-6. **Scalar has a hard ceiling** at low bit rates. The scalar 2-bit control is
-   implemented; a fixed-rate vector/trellis arm is still required before drawing
-   the vector-comparison conclusion. *(E6, incomplete)*
+6. **Scalar has a hard ceiling** at low bit rates. A finite-rate dimension-2
+   vector arm now provides an exact-rate W1--W3 research comparison; model-level
+   results are still required before drawing the vector conclusion. *(E6)*
 7. **The consistency trap** — rotating weights without the matching activation
    basis change causes cross-layer drift. *(E7)*
 8. **Footprint & speed** — packed `QuantLinear` vs fp16 fallback. *(E8)*
@@ -44,6 +44,11 @@ The [serving-backend matrix](docs/serving_backends.md) tracks which runtimes
 preserve the packed RotQuant representation, the extension point for each
 backend, and the conformance gates required before claiming support.
 
+The [implementation roadmap](docs/roadmap.md) defines the next canonical GPU
+serving stage: checkpoint reliability gates, a sharded Transformers artifact,
+specialized W1--W8 kernels, vLLM integration, architecture tiers, and packed-KV
+acceptance criteria.
+
 The [packed checkpoint v1 specification](docs/packed_format_v1.md) fixes the
 word layout, bit order, compatibility rules, and native-runtime conformance
 boundary for all 1–8-bit production profiles.
@@ -51,6 +56,12 @@ boundary for all 1–8-bit production profiles.
 The [native runtime v2 contract](docs/native_runtime_v2.md) generalises native
 weight blocks and fail-closed kernel dispatch across 1–8 bits while preserving
 the deployed 4-bit GGUF v1 bytes exactly.
+
+The [algorithm-lab Colab](notebooks/rotquant_algorithm_lab_colab.ipynb) runs the
+next research funnel: exact-rate scalar/vector controls, calibrated and
+TurboQuant-style variants, mixed-bit allocation, cross-family replication, and
+a real-attention selective-V upper-bound oracle. It is resumable through Google
+Drive and leaves expensive cells disabled until explicitly confirmed.
 
 ## Install
 
@@ -132,6 +143,11 @@ returns a normal packed `ScalarCodebook`; pass it to
 `Quantizer(config, codebook=...)`. No runtime or checkpoint format extension is
 needed because centroid values already travel with native-v2 artifacts.
 
+`QuantConfig(codebook="vector", vector_dim=2)` is the finite-rate vector
+research arm. Its packed index rate exactly matches the requested bits per
+weight, but it intentionally fails closed for stable checkpoints and native
+kernels until a versioned vector-codebook contract is implemented.
+
 Use `save_pretrained(model, output_dir, ...)` and
 `from_pretrained(output_dir, ...)` for the pickle-free packed checkpoint. New
 artifacts embed the exact int32/LSB-first packing contract; legacy v1 artifacts
@@ -194,6 +210,13 @@ pytest tests/ -q
   0.0625 / 0.0156; the bits/weight accounting assertion holds.
 
 ## Running an experiment
+
+For the complete staged algorithm trial on Google Colab, open
+[`notebooks/rotquant_algorithm_lab_colab.ipynb`](notebooks/rotquant_algorithm_lab_colab.ipynb).
+The notebook performs a cheap synthetic rate/correctness preflight first, then
+requires `CONFIRM_EXPENSIVE_RUN = True` before model downloads or GPU trials.
+Results are written as content-addressed records in Google Drive, so interrupted
+runs resume without silently mixing configurations.
 
 ```bash
 # Plumbing smoke test first (tiny random model, CPU, <1 min):
@@ -527,6 +550,8 @@ aggregation — is smoke-tested end-to-end on CPU via `configs/smoke_cpu.yaml`.
 A GPU (+ HF access for gated models) is needed for real-model numbers, the
 zero-shot bundle at scale, and the CUDA FWHT kernel.
 
-E6 currently provides the scalar 2-bit GPTQ control only. `nearest_e8` is a
-tested lattice nearest-point primitive, not a finite-rate packed codec; no E8,
-QuIP#, QTIP, or HIGGS result should be reported from this repository yet.
+E6 now includes a deterministic dimension-2 finite-rate vector control at W1,
+W2, and W3. It is an algorithmic research path, not a deployable artifact:
+vector checkpoints and native vector kernels deliberately fail closed.
+`nearest_e8` remains a tested lattice primitive, not a finite-rate packed codec;
+no E8, QuIP#, QTIP, or HIGGS result should be reported from this repository yet.

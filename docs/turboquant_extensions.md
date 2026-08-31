@@ -8,6 +8,15 @@ RotQuant now exposes three compatible scalar-codebook tiers:
 - calibrated: `fit_scalar_codebook` fitted from representative values and
   supplied through `Quantizer(..., codebook=...)`.
 
+The algorithm laboratory also exposes a finite-rate dimension-2 vector
+codebook. A Wb vector profile has `2**(2b)` centroids and stores one `2b`-bit
+index for each pair of weights, so its nominal and packed rates can be compared
+directly with scalar Wb. The current implementation uses deterministic
+k-means++/Lloyd fitting on Gaussian samples and exact nearest-centroid search.
+It is deliberately research-only: stable checkpoint export, scale finetuning,
+and production kernels reject it rather than substituting a scalar or dense
+fallback.
+
 `bias_correction="length"` additionally enforces
 `<w, reconstructed_w> / ||w||^2 ~= 1` per row. The correction is folded into
 existing scales after code assignment, so it changes neither codes nor stored
