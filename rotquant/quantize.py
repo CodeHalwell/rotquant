@@ -28,6 +28,7 @@ from __future__ import annotations
 
 import hashlib
 import math
+import random
 from dataclasses import dataclass
 
 import torch
@@ -35,6 +36,7 @@ import torch
 from .codebooks import (
     ScalarCodebook,
     VectorCodebook,
+    build_finite_e8_codebook,
     build_gaussian_vector_codebook,
     build_scalar_codebook,
     fit_scalar_codebook,
@@ -58,25 +60,30 @@ def _calibration_sample_indices(
     sample_count: int,
     *,
     device: torch.device | str,
+    seed: int = 0,
 ) -> torch.Tensor:
-    """Return exact, evenly spaced int64 indices including both endpoints.
+    """Return a seeded uniform sample without replacement in O(sample_count).
 
-    Float32 ``linspace`` can round ``total_values - 1`` up to ``total_values``
-    once a matrix exceeds 2**24 elements.  On CUDA that becomes a delayed
-    device-side bounds assertion.  Integer arithmetic keeps every index valid
-    for the large projection matrices used by real models.
+    Floyd's algorithm avoids both the column-periodic aliasing of evenly spaced
+    indices and the O(total_values) temporary allocated by ``randperm``.  The
+    returned indices are sorted so the subsequent device gather is coalesced;
+    sorting does not change the sampled set used by the Lloyd fit.
     """
 
     if total_values < 2:
         raise ValueError("total_values must be at least 2")
     if not 2 <= sample_count <= total_values:
         raise ValueError("sample_count must be in [2, total_values]")
-    positions = torch.arange(sample_count, dtype=torch.int64, device="cpu")
-    indices = torch.div(
-        positions * (total_values - 1),
-        sample_count - 1,
-        rounding_mode="floor",
-    )
+    if not isinstance(seed, int) or isinstance(seed, bool):
+        raise TypeError("seed must be an integer")
+    rng = random.Random(seed)
+    selected: set[int] = set()
+    for upper in range(total_values - sample_count, total_values):
+        candidate = rng.randrange(upper + 1)
+        selected.add(upper if candidate in selected else candidate)
+    indices = torch.tensor(sorted(selected), dtype=torch.int64)
+    if indices.numel() != sample_count:  # Floyd's invariant; defensive guard.
+        raise RuntimeError("bounded calibration sampler returned the wrong size")
     return indices.to(device=device)
 
 
@@ -103,14 +110,17 @@ class QuantConfig:
     residual_codebook: str = "gaussian"
     percdamp: float = 0.01              # Hessian damping (1% of mean diagonal)
     gptq_block: int = 128               # lazy-update block width for GPTQ
+    gptq_actorder: bool = True          # process columns by descending Hessian diagonal
+    gptq_recompute_scales: bool = True  # refit each stored group from updated weights
     mse_search_grid: int = 41           # candidate scales for mse_search
     mse_search_lo: float = 0.5
     mse_search_hi: float = 1.5
     seed: int = 0
     scale_bits: float = 16.0
+    scale_quant_group_size: int = 256  # second-level block for 8-bit scales
     sketch_k: int = 64                  # QJL projection dimension (error_comp="turboquant")
     codebook_dim: int | None = None      # spherical marginal dimension; defaults to group_size
-    bias_correction: str = "none"       # none | length (rowwise shrinkage correction)
+    bias_correction: str = "none"       # none | length | mean | length_mean
     vector_dim: int = 2                  # product-vector width for codebook="vector"
     vector_samples: int = 16384          # deterministic Gaussian training samples
     vector_iters: int = 25               # Lloyd/k-means refinement iterations
@@ -130,6 +140,7 @@ class QuantConfig:
             "uniform", "nf", "normalfloat", "normal_float",
             "calibrated", "empirical", "weight_calibrated",
             "vector", "vector_kmeans", "product_vector", "pq",
+            "e8", "e8p", "finite_e8", "e8_product",
         }:
             raise ValueError(f"unknown codebook kind: {self.codebook}")
         if self.codebook_dim is not None and (
@@ -156,25 +167,40 @@ class QuantConfig:
             if self.residual_codebook.lower() not in valid:
                 raise ValueError(
                     f"unknown residual scalar codebook kind: {self.residual_codebook}")
-        if self.scale_bits not in (16.0, 32.0):
+        if self.scale_bits not in (8.0, 16.0, 32.0):
             raise ValueError(
-                "scale_bits must be 16 or 32; lower-bit scale encoding is not implemented")
+                "scale_bits must be 8, 16, or 32")
+        if (not isinstance(self.scale_quant_group_size, int)
+                or isinstance(self.scale_quant_group_size, bool)
+                or self.scale_quant_group_size < 2):
+            raise ValueError("scale_quant_group_size must be an integer >= 2")
         if self.percdamp < 0:
             raise ValueError("percdamp must be >= 0")
         if self.gptq_block < 1:
             raise ValueError("gptq_block must be >= 1")
+        if not isinstance(self.gptq_actorder, bool):
+            raise TypeError("gptq_actorder must be boolean")
+        if not isinstance(self.gptq_recompute_scales, bool):
+            raise TypeError("gptq_recompute_scales must be boolean")
         if self.mse_search_grid < 1:
             raise ValueError("mse_search_grid must be >= 1")
         if self.mse_search_lo <= 0 or self.mse_search_hi < self.mse_search_lo:
             raise ValueError("mse_search bounds must satisfy 0 < lo <= hi")
         if self.error_comp == "turboquant" and self.sketch_k < 1:
             raise ValueError("sketch_k must be >= 1 for TurboQuant correction")
-        if self.bias_correction not in {"none", "length"}:
+        if self.bias_correction not in {"none", "length", "mean", "length_mean"}:
             raise ValueError(
-                "bias_correction must be one of {'none', 'length'}")
-        vector = self.codebook.lower() in {
-            "vector", "vector_kmeans", "product_vector", "pq"
+                "bias_correction must be one of "
+                "{'none', 'length', 'mean', 'length_mean'}")
+        e8 = self.codebook.lower() in {
+            "e8", "e8p", "finite_e8", "e8_product"
         }
+        vector = self.codebook.lower() in {
+            "vector", "vector_kmeans", "product_vector", "pq",
+            "e8", "e8p", "finite_e8", "e8_product",
+        }
+        if e8:
+            self.vector_dim = 8
         if not isinstance(self.vector_dim, int) or isinstance(self.vector_dim, bool):
             raise TypeError("vector_dim must be an integer")
         if vector and self.vector_dim < 2:
@@ -215,6 +241,31 @@ class QuantizedWeight:
     # TurboQuant uses scale_group_size=in_features (one scale per output row), which
     # gives (scale_bits / in_features) bpw overhead instead of (scale_bits / group_size).
     scale_group_size: int | None = None
+    # For scale_bits=8, ``scales`` stores uint8 codes. Each consecutive metadata
+    # block has one fp16 offset and fp16 step (double quantization).
+    scale_offsets: torch.Tensor | None = None
+    scale_steps: torch.Tensor | None = None
+    scale_quant_group_size: int = 256
+    residual_scale_offsets: torch.Tensor | None = None
+    residual_scale_steps: torch.Tensor | None = None
+
+    def main_scales(self) -> torch.Tensor | None:
+        return _decode_storage_scales(
+            self.scales,
+            self.scale_bits_main,
+            self.scale_offsets,
+            self.scale_steps,
+            self.scale_quant_group_size,
+        )
+
+    def residual_scale_values(self) -> torch.Tensor | None:
+        return _decode_storage_scales(
+            self.residual_scales,
+            self.scale_bits_residual,
+            self.residual_scale_offsets,
+            self.residual_scale_steps,
+            self.scale_quant_group_size,
+        )
 
     def dequantize(self) -> torch.Tensor:
         idx = unpack_indices(self.packed)
@@ -226,16 +277,18 @@ class QuantizedWeight:
             idx = idx.reshape(self.out_features, self.in_features)
             centroids = self.codebook.centroids.to(idx.device)
             q = centroids[idx]
-        if self.scales is not None:
+        scales = self.main_scales()
+        if scales is not None:
             sgs = self.scale_group_size if self.scale_group_size is not None else self.group_size
-            w = q * _expand_scales(self.scales, sgs, self.in_features)
+            w = q * _expand_scales(scales, sgs, self.in_features)
         else:
             w = q
         if self.residual_packed is not None:
             ridx = unpack_indices(self.residual_packed).reshape(
                 self.out_features, self.in_features)
             rc = self.residual_codebook.centroids.to(ridx.device)[ridx]
-            rs = _expand_scales(self.residual_scales, self.group_size, self.in_features)
+            rs = _expand_scales(
+                self.residual_scale_values(), self.group_size, self.in_features)
             w = w + rc * rs
         return w
 
@@ -261,11 +314,17 @@ class QuantizedWeight:
         stored_bits = self.packed.data.numel() * self.packed.data.element_size() * 8
         if self.scales is not None:
             stored_bits += self.scales.numel() * self.scales.element_size() * 8
+            if self.scale_offsets is not None:
+                stored_bits += self.scale_offsets.numel() * 16
+                stored_bits += self.scale_steps.numel() * 16
         if self.residual_packed is not None:
             stored_bits += (self.residual_packed.data.numel()
                             * self.residual_packed.data.element_size() * 8)
             stored_bits += (self.residual_scales.numel()
                             * self.residual_scales.element_size() * 8)
+            if self.residual_scale_offsets is not None:
+                stored_bits += self.residual_scale_offsets.numel() * 16
+                stored_bits += self.residual_scale_steps.numel() * 16
         if self.sketch is not None:
             stored_bits += self.sketch.data.numel() * self.sketch.data.element_size() * 8
             stored_bits += (self.sketch_row_norms.numel()
@@ -304,7 +363,8 @@ def _group_counts(in_features: int, group_size: int, device) -> torch.Tensor:
 
 
 def _storage_scales(scales: torch.Tensor | None,
-                    scale_bits: float) -> torch.Tensor | None:
+                    scale_bits: float,
+                    scale_quant_group_size: int = 256) -> torch.Tensor | None:
     """Round scales to the precision the bit accounting claims.
 
     The protocol charges ``scale_bits`` (default 16) per scale, so the stored
@@ -312,13 +372,91 @@ def _storage_scales(scales: torch.Tensor | None,
     *rounded* values so pack-time indices and dequant agree. Floored at the
     smallest normal fp16 so the fp32 ``1e-12`` clamp on all-zero groups does not
     underflow to zero and divide out to NaN. The only other supported format is
-    fp32 (``scale_bits=32``); lower-bit scale encodings are rejected until a real
-    codec exists.
+    fp32 (``scale_bits=32``). For 8-bit storage this returns the values after a
+    real blockwise uint8 encode/decode round trip, so code assignment agrees
+    exactly with deployment. The codes and second-level metadata are retained
+    later by :func:`_encode_storage_scales`.
     """
     if scales is None or scale_bits == 32.0:
         return scales
-    return scales.to(torch.float16).clamp_min(
+    if scale_bits == 16.0:
+        return scales.to(torch.float16).clamp_min(
+            torch.finfo(torch.float16).smallest_normal)
+    if scale_bits == 8.0:
+        stored, offsets, steps = _encode_storage_scales(
+            scales, scale_bits, scale_quant_group_size)
+        return _decode_storage_scales(
+            stored, scale_bits, offsets, steps, scale_quant_group_size)
+    raise ValueError("scale_bits must be 8, 16, or 32")
+
+
+def _encode_storage_scales(
+    scales: torch.Tensor | None,
+    scale_bits: float,
+    group_size: int = 256,
+) -> tuple[torch.Tensor | None, torch.Tensor | None, torch.Tensor | None]:
+    """Encode scale metadata at its actual retained precision.
+
+    The 8-bit path is QLoRA-style double quantization: flattened primary scales
+    are affine-quantized in bounded blocks, while each block stores one fp16
+    offset and one fp16 step. The exact metadata overhead is included in packed
+    byte accounting rather than hidden in a nominal bits/weight claim.
+    """
+
+    if scales is None:
+        return None, None, None
+    if scale_bits == 32.0:
+        return scales.float(), None, None
+    if scale_bits == 16.0:
+        return (scales.to(torch.float16).clamp_min(
+            torch.finfo(torch.float16).smallest_normal), None, None)
+    if scale_bits != 8.0:
+        raise ValueError("scale_bits must be 8, 16, or 32")
+    if group_size < 2:
+        raise ValueError("scale quantization group size must be >= 2")
+    flat = scales.detach().float().reshape(-1)
+    if flat.numel() == 0:
+        return torch.empty_like(scales, dtype=torch.uint8), None, None
+    blocks = (flat.numel() + group_size - 1) // group_size
+    pad = blocks * group_size - flat.numel()
+    padded = torch.cat([flat, flat[-1:].expand(pad)]) if pad else flat
+    grouped = padded.reshape(blocks, group_size)
+    minimum = grouped.amin(dim=1)
+    maximum = grouped.amax(dim=1)
+    offsets = minimum.to(torch.float16).clamp_min(
         torch.finfo(torch.float16).smallest_normal)
+    steps = ((maximum - offsets.float()).clamp_min(0.0) / 255.0).to(
+        torch.float16)
+    safe_steps = steps.float().clamp_min(torch.finfo(torch.float16).smallest_normal)
+    codes = torch.round(
+        (grouped - offsets.float().unsqueeze(1)) / safe_steps.unsqueeze(1)
+    ).clamp_(0, 255).to(torch.uint8)
+    # A constant block has no range; a zero step is an exact compact encoding.
+    constant = maximum <= offsets.float()
+    codes[constant] = 0
+    steps[constant] = 0
+    return codes.reshape(-1)[:flat.numel()].reshape(scales.shape), offsets, steps
+
+
+def _decode_storage_scales(
+    stored: torch.Tensor | None,
+    scale_bits: float,
+    offsets: torch.Tensor | None,
+    steps: torch.Tensor | None,
+    group_size: int = 256,
+) -> torch.Tensor | None:
+    """Decode retained scale metadata to fp32 values used by dequantization."""
+
+    if stored is None or scale_bits != 8.0:
+        return stored
+    if offsets is None or steps is None:
+        raise ValueError("8-bit scales require offset and step metadata")
+    flat = stored.reshape(-1).float()
+    block_ids = torch.arange(flat.numel(), device=flat.device) // group_size
+    return (
+        offsets.to(device=flat.device, dtype=torch.float32)[block_ids]
+        + flat * steps.to(device=flat.device, dtype=torch.float32)[block_ids]
+    ).reshape(stored.shape)
 
 
 def _group_scales_rms(w: torch.Tensor, group_size: int) -> torch.Tensor:
@@ -384,11 +522,26 @@ class Quantizer:
     ):
         self.cfg = config
         vector = config.codebook.lower() in {
-            "vector", "vector_kmeans", "product_vector", "pq"
+            "vector", "vector_kmeans", "product_vector", "pq",
+            "e8", "e8p", "finite_e8", "e8_product",
+        }
+        e8 = config.codebook.lower() in {
+            "e8", "e8p", "finite_e8", "e8_product"
         }
         spherical = config.codebook.lower() in {
             "sphere", "spherical", "beta", "finite_beta"}
-        dimension = (config.codebook_dim or config.group_size) if spherical else None
+        self._auto_spherical_dimension = (
+            spherical
+            and config.codebook_dim is None
+            and config.scale == "turboquant"
+            and codebook is None
+        )
+        self._spherical_dimension: int | None = None
+        dimension = (
+            config.codebook_dim or config.group_size
+            if spherical and not self._auto_spherical_dimension
+            else None
+        )
         calibrated = config.codebook.lower() in {
             "calibrated", "empirical", "weight_calibrated"
         }
@@ -399,7 +552,9 @@ class Quantizer:
         self._auto_calibrated = calibrated and codebook is None
         self._calibrated_key: str | None = None
         self.codebook = codebook or (
-            build_gaussian_vector_codebook(
+            build_finite_e8_codebook(config.bits)
+            if e8
+            else build_gaussian_vector_codebook(
                 config.bits,
                 config.vector_dim,
                 seed=config.seed,
@@ -408,7 +563,7 @@ class Quantizer:
             )
             if vector
             else None
-            if calibrated
+            if calibrated or self._auto_spherical_dimension
             else build_scalar_codebook(config.codebook, 2 ** config.bits, dimension)
         )
         expected_levels = 2 ** (
@@ -440,6 +595,7 @@ class Quantizer:
                 normalized.numel(),
                 self.cfg.calibrated_samples,
                 device=normalized.device,
+                seed=self.cfg.seed,
             )
             normalized = normalized[indices]
         self.codebook = fit_scalar_codebook(
@@ -448,6 +604,18 @@ class Quantizer:
             name=f"calibrated_w{self.cfg.bits}",
             iters=self.cfg.calibrated_iters,
         )
+
+    def _ensure_dimension_dependent_codebook(self, in_features: int) -> None:
+        """Build a spherical grid for the actual normalization dimension."""
+
+        if not self._auto_spherical_dimension:
+            return
+        if self.codebook is not None and self._spherical_dimension == in_features:
+            return
+        self.codebook = build_scalar_codebook(
+            self.cfg.codebook, 2 ** self.cfg.bits, in_features
+        )
+        self._spherical_dimension = in_features
 
     # ------------------------------------------------------------------ #
     # scale selection
@@ -458,6 +626,7 @@ class Quantizer:
         Public because calibration/training modules must reproduce exactly the
         scales the packer would choose. Returns None for scale-free profiles.
         """
+        self._ensure_dimension_dependent_codebook(w.shape[1])
         if self.codebook is None:
             raise RuntimeError(
                 "scale selection requires a codebook; calibrated quantizers fit "
@@ -559,6 +728,7 @@ class Quantizer:
         """
         w = weight.detach().to(torch.float32)
         out, inf = w.shape
+        self._ensure_dimension_dependent_codebook(inf)
         if self._auto_calibrated:
             # Exact content digest: summary statistics (sums, norms) collide
             # for distinct matrices (e.g. any permutation), which would silently
@@ -585,7 +755,11 @@ class Quantizer:
             if (not torch.isfinite(selected_scales).all()
                     or (selected_scales <= 0).any()):
                 raise ValueError("scales_override must be finite and positive")
-        scales = _storage_scales(selected_scales, self.cfg.scale_bits)
+        scales = _storage_scales(
+            selected_scales,
+            self.cfg.scale_bits,
+            self.cfg.scale_quant_group_size,
+        )
 
         vector = isinstance(self.codebook, VectorCodebook)
         if vector:
@@ -598,11 +772,11 @@ class Quantizer:
                     "GPTQ requires per-group scales with group_size < in_features; "
                     "set scale='rms' or 'mse_search' when error_comp='gptq'."
                 )
-            q_w, idx = self._gptq(w, scales, H)
+            q_w, idx, scales = self._gptq(w, scales, H)
         else:
             q_w, idx = _quantize_groups(w, scales, self.codebook, self.cfg.group_size)
 
-        if self.cfg.bias_correction == "length":
+        if self.cfg.bias_correction in {"length", "length_mean"}:
             # Scalar quantisation shortens reconstructed directions.  The
             # self-dot multiplier ||w||^2/<w,q(w)> is TurboVec's length
             # renormalisation expressed in our already-scaled domain.
@@ -614,7 +788,10 @@ class Quantizer:
             correction = torch.ones_like(energy)
             correction[usable] = energy[usable] / alignment[usable]
             corrected_scales = _storage_scales(
-                scales.float() * correction.unsqueeze(1), self.cfg.scale_bits)
+                scales.float() * correction.unsqueeze(1),
+                self.cfg.scale_bits,
+                self.cfg.scale_quant_group_size,
+            )
             expanded = _expand_scales(
                 corrected_scales,
                 inf if self.cfg.scale == "turboquant" else self.cfg.group_size,
@@ -633,10 +810,15 @@ class Quantizer:
         # TurboQuant uses one scale per output row; pass scale_group_size=in_features
         # so dequantize() and bit_budget() use the right expansion factor.
         scale_group_size = inf if self.cfg.scale == "turboquant" else None
+        stored_scales, scale_offsets, scale_steps = _encode_storage_scales(
+            scales, self.cfg.scale_bits, self.cfg.scale_quant_group_size)
         qw = QuantizedWeight(
-            packed=packed, scales=scales, codebook=self.codebook,
+            packed=packed, scales=stored_scales, codebook=self.codebook,
             group_size=self.cfg.group_size, out_features=out, in_features=inf,
             scale_group_size=scale_group_size,
+            scale_offsets=scale_offsets,
+            scale_steps=scale_steps,
+            scale_quant_group_size=self.cfg.scale_quant_group_size,
             scale_bits_main=self.cfg.scale_bits,
         )
 
@@ -650,7 +832,8 @@ class Quantizer:
     # GPTQ error feedback
     # ------------------------------------------------------------------ #
     def _gptq(self, w: torch.Tensor, scales: torch.Tensor,
-              H: torch.Tensor | None) -> tuple[torch.Tensor, torch.Tensor]:
+              H: torch.Tensor | None,
+              ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         """Blocked GPTQ (lazy batch updates, as in the reference implementation).
 
         Columns inside a ``gptq_block``-wide block are processed sequentially with
@@ -676,11 +859,22 @@ class Quantizer:
         dead = torch.diag(H) == 0
         H[dead, dead] = 1.0
 
+        permutation = (
+            torch.argsort(torch.diag(H), descending=True, stable=True)
+            if self.cfg.gptq_actorder
+            else torch.arange(inf, device=H.device)
+        )
+        H = H[permutation][:, permutation]
         Hinv = self._stable_hinv(H)
 
-        W = w.clone()
+        W = w[:, permutation].clone()
         Q = torch.zeros_like(W)
         Idx = torch.zeros_like(W, dtype=torch.int64)
+        working_scales = scales.float().clone()
+        original_groups = torch.div(permutation, gs, rounding_mode="floor")
+        scale_ready = torch.zeros(
+            working_scales.shape[1], dtype=torch.bool, device=W.device
+        )
         centroids = self.codebook.centroids.to(w.device)
         bounds = (centroids[:-1] + centroids[1:]) / 2.0
 
@@ -690,7 +884,27 @@ class Quantizer:
             for i in range(i1, i2):
                 d = Hinv[i, i]
                 col = W[:, i]
-                sc = scales[:, i // gs].clamp_min(1e-12)
+                group = int(original_groups[i].item())
+                if self.cfg.gptq_recompute_scales and not scale_ready[group]:
+                    group_positions = torch.nonzero(
+                        original_groups == group, as_tuple=False
+                    ).flatten()
+                    group_weight = W[:, group_positions]
+                    group_rms = _group_scales_rms(
+                        group_weight, group_weight.shape[1]
+                    )
+                    selected = (
+                        group_rms
+                        if self.cfg.scale == "rms"
+                        else self._mse_search_scales(group_weight, group_rms)
+                    )
+                    working_scales[:, group] = _storage_scales(
+                        selected,
+                        self.cfg.scale_bits,
+                        self.cfg.scale_quant_group_size,
+                    )[:, 0]
+                    scale_ready[group] = True
+                sc = working_scales[:, group].clamp_min(1e-12)
                 idx = torch.bucketize(col / sc, bounds)
                 q = centroids[idx] * sc
                 Q[:, i] = q
@@ -701,7 +915,13 @@ class Quantizer:
                     W[:, i + 1:i2] -= err.unsqueeze(1) * Hinv[i, i + 1:i2].unsqueeze(0)
             if i2 < inf:
                 W[:, i2:] -= Err @ Hinv[i1:i2, i2:]
-        return Q, Idx
+        inverse = torch.empty_like(permutation)
+        inverse[permutation] = torch.arange(inf, device=permutation.device)
+        return Q[:, inverse], Idx[:, inverse], _storage_scales(
+            working_scales,
+            self.cfg.scale_bits,
+            self.cfg.scale_quant_group_size,
+        )
 
     def _stable_hinv(self, H: torch.Tensor) -> torch.Tensor:
         """Upper-triangular Cholesky factor of H^{-1}, with auto-increasing damping."""
@@ -728,8 +948,11 @@ class Quantizer:
     def _add_residual(self, qw: QuantizedWeight, w: torch.Tensor,
                       q_w: torch.Tensor) -> None:
         r = w - q_w
-        rscales = _storage_scales(_group_scales_rms(r, self.cfg.group_size),
-                                  self.cfg.scale_bits)
+        rscales = _storage_scales(
+            _group_scales_rms(r, self.cfg.group_size),
+            self.cfg.scale_bits,
+            self.cfg.scale_quant_group_size,
+        )
         if self.cfg.error_comp == "residual":
             rcb = build_scalar_codebook(self.cfg.residual_codebook,
                                         2 ** self.cfg.residual_bits)
@@ -737,7 +960,10 @@ class Quantizer:
         else:  # qjl: stochastic 1-bit residual (the deliberate loser)
             rcb, ridx = self._qjl_residual(r, rscales)
         qw.residual_packed = pack_indices(ridx.reshape(-1), self.cfg.residual_bits)
-        qw.residual_scales = rscales
+        (qw.residual_scales,
+         qw.residual_scale_offsets,
+         qw.residual_scale_steps) = _encode_storage_scales(
+            rscales, self.cfg.scale_bits, self.cfg.scale_quant_group_size)
         qw.residual_codebook = rcb
         qw.scale_bits_residual = self.cfg.scale_bits
 

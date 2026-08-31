@@ -183,22 +183,30 @@ def teacher_logit_kl(model: nn.Module, calls: Sequence[Any], device,
 
 def _local_error(source: nn.Linear, candidate: QuantLinear,
                  activations: torch.Tensor | None, max_tokens: int) -> float:
+    """Expected summed output distortion for one invocation of ``source``.
+
+    A per-layer relative mean is not comparable across projections with
+    different output widths.  Summing output dimensions gives the sampled
+    counterpart of ``tr(ΔW H ΔWᵀ)``; with no activations, an identity input
+    covariance reduces that expression to the squared Frobenius norm.
+    """
     device = candidate.qweight.packed.data.device
     with torch.no_grad():
         rotated_weight = candidate.act_rotation.rotate_weight(
             source.weight.detach().to(device=device, dtype=torch.float32))
         quantized_weight = candidate.qweight.dequantize().float()
         if activations is None:
-            denominator = rotated_weight.pow(2).mean().clamp_min(1e-12)
-            return float(((quantized_weight - rotated_weight).pow(2).mean()
-                          / denominator).item())
+            return float(
+                (quantized_weight - rotated_weight).pow(2).sum().item()
+            )
         inputs = activations[:max_tokens].to(device=device, dtype=torch.float32)
         rotated_inputs = candidate.act_rotation.rotate_activation(inputs)
         reference = F.linear(rotated_inputs, rotated_weight)
         quantized = F.linear(rotated_inputs, quantized_weight)
-        denominator = reference.pow(2).mean().clamp_min(1e-12)
-        return float(((quantized - reference).pow(2).mean()
-                      / denominator).item())
+        token_errors = (quantized - reference).pow(2).reshape(
+            -1, reference.shape[-1]
+        ).sum(dim=-1)
+        return float(token_errors.mean().item())
 
 
 def _candidate_linear(source: nn.Linear, quant: QuantConfig, patch_cfg,

@@ -36,10 +36,12 @@ def test_gptq_blocked_matches_column_at_a_time():
     H = X.T @ X
 
     cfg = QuantConfig(bits=3, codebook="gaussian", scale="rms", group_size=32,
-                      gptq_block=16)  # several blocks over d=96
+                      gptq_block=16, gptq_actorder=False,
+                      gptq_recompute_scales=False)  # several blocks over d=96
     qz = Quantizer(cfg)
     scales = qz.select_scales(W)
-    Q_blocked, _ = qz._gptq(W.clone(), scales, H.clone())
+    Q_blocked, _, output_scales = qz._gptq(W.clone(), scales, H.clone())
+    assert torch.equal(output_scales, scales.half())
 
     # Naive reference: identical setup, full-width rank-1 update per column.
     Hd = H.to(torch.float32).clone()
@@ -78,3 +80,22 @@ def test_gptq_reduces_error_with_real_hessian():
         return (e @ H * e).sum().item()
 
     assert proxy_err(gptq) <= proxy_err(plain) * 1.001
+
+
+def test_gptq_actorder_and_refitted_scales_preserve_packed_layout():
+    torch.manual_seed(11)
+    out, d = 8, 64
+    weight = torch.randn(out, d)
+    activations = torch.randn(256, d) * torch.linspace(0.2, 3.0, d)
+    hessian = activations.T @ activations
+    quantized = Quantizer(QuantConfig(
+        bits=3,
+        codebook="gaussian",
+        scale="mse_search",
+        group_size=16,
+        error_comp="gptq",
+        gptq_actorder=True,
+        gptq_recompute_scales=True,
+    )).quantize_weight(weight, H=hessian)
+    assert quantized.scales.shape == (out, 4)
+    assert quantized.dequantize().shape == weight.shape

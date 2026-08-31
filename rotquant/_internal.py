@@ -20,6 +20,7 @@ from __future__ import annotations
 import torch
 from torch import nn
 
+from .quantize import _encode_storage_scales as encode_storage_scales
 from .quantize import _expand_scales as expand_scales
 from .quantize import _generate_sketch_matrix as generate_sketch_matrix
 from .quantize import _group_scales_rms as group_scales_rms
@@ -28,6 +29,7 @@ from .quantize import _storage_scales as storage_scales
 
 __all__ = [
     "cpu_staging_linear",
+    "encode_storage_scales",
     "expand_scales",
     "generate_sketch_matrix",
     "get_parent",

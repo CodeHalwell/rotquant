@@ -1,0 +1,85 @@
+# Properly budgeted Qwen3.5-4B recovery protocol.
+#
+# Block reconstruction is streamed one block at a time with minibatch updates.
+# End-to-end KD sees >=1M unique train tokens, validates on ~50k held-out
+# tokens, stores top-k teacher targets, and can resume from an atomic checkpoint.
+experiment: QWEN35_RECOVERY
+label: qwen35_4b_w4_streamed_qat_cuda
+model: unsloth/Qwen3.5-4B
+model_loader: multimodal_lm
+device: cuda
+dtype: float16
+seed: 0
+calib_seq_len: 128
+quant:
+  bits: 4
+  codebook: gaussian
+  scale: mse_search
+  group_size: 128
+  error_comp: none
+patch:
+  rotation: butterfly
+  block: 128
+  mode: consistent
+  fallback: true
+  include: [model.language_model.layers.]
+  exclude: [linear_attn.in_proj_a, linear_attn.in_proj_b]
+  train_rotation:
+    objective: block
+    stream_blocks: true
+    steps: 2000
+    train_batches: 512
+    validation_batches: 64
+    selection_batches: 64
+    train_batches_per_step: 1
+    validation_interval: 50
+    lr: 0.001
+    assignment_scale: rms
+    learn_scales: true
+    scale_lr: 0.002
+    max_grad_norm: 1.0
+    restore_best: true
+    early_stopping_patience: 8
+    validation_min_improvement: 0.0001
+    selection_min_improvement: 0.0005
+    propagate_quantized_inputs: true
+    distill_steps: 7813
+    distill_train_batches: 7813
+    distill_validation_batches: 391
+    distill_selection_batches: 391
+    distill_batches_per_step: 1
+    distill_validation_interval: 250
+    distill_teacher_topk: 32
+    distill_temperature: 2.0
+    distill_kl_weight: 1.0
+    distill_ce_weight: 0.1
+    distill_max_grad_norm: 1.0
+    distill_early_stopping_patience: 8
+    distill_validation_min_improvement: 0.0001
+    distill_selection_min_improvement: 0.0005
+    distill_lora_rank: 8
+    distill_lora_alpha: 16.0
+    distill_lora_lr: 0.0005
+    distill_lora_init: residual_svd
+    distill_train_rotations: false
+    distill_train_scales: true
+    distill_scale_lr: 0.001
+    distill_checkpoint_path: results/checkpoints/qwen35_4b_w4_recovery.pt
+    distill_checkpoint_interval: 100
+    distill_resume: true
+eval:
+  perplexity: true
+  ppl_datasets: [wikitext2, c4]
+  ppl:
+    seq_len: 512
+    max_samples: 128
+  zeroshot: false
+  logit_fidelity:
+    batches: 16
+    prompt_len: 128
+    skip: 16384
+  trajectory:
+    batches: 16
+    prompt_len: 128
+    new_tokens: 32
+    skip: 20000

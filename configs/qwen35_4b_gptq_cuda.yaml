@@ -1,0 +1,46 @@
+# Production-candidate Qwen3.5-4B weight recipe: FWHT + streamed GPTQ.
+# Sweep quant.bits over 3/4 after validating the W4 sentinel. Hessians are
+# replay-collected one layer at a time and disk-offloaded before patching.
+experiment: QWEN35_GPTQ
+label: qwen35_4b_fwht_gptq_w4_cuda
+model: unsloth/Qwen3.5-4B
+model_loader: multimodal_lm
+device: cuda
+dtype: float16
+seed: 0
+n_calib: 128
+calib_seq_len: 512
+hessian_collection: streamed
+hessian_layers_per_pass: 1
+quant:
+  bits: 4
+  codebook: gaussian
+  scale: mse_search
+  group_size: 128
+  error_comp: gptq
+  gptq_block: 128
+  gptq_actorder: true
+  gptq_recompute_scales: true
+patch:
+  rotation: fwht
+  block: 128
+  mode: consistent
+  fallback: true
+  include: [model.language_model.layers.]
+  exclude: [linear_attn.in_proj_a, linear_attn.in_proj_b]
+eval:
+  perplexity: true
+  ppl_datasets: [wikitext2, c4]
+  ppl:
+    seq_len: 512
+    max_samples: 64
+  zeroshot: false
+  logit_fidelity:
+    batches: 8
+    prompt_len: 128
+    skip: 8192
+  trajectory:
+    batches: 8
+    prompt_len: 128
+    new_tokens: 32
+    skip: 12288

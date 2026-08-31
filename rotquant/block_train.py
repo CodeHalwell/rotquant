@@ -10,8 +10,10 @@ from __future__ import annotations
 
 import copy
 import fnmatch
+import os
 from collections.abc import Iterable, Sequence
 from dataclasses import dataclass, replace
+from pathlib import Path
 from typing import Any
 
 import torch
@@ -45,7 +47,9 @@ class BlockCall:
 @dataclass
 class TeacherCall:
     inputs: dict
-    logits: torch.Tensor
+    logits: torch.Tensor | None = None
+    topk_indices: torch.Tensor | None = None
+    topk_logits: torch.Tensor | None = None
 
 
 @dataclass
@@ -67,6 +71,9 @@ class BlockRotationTrainConfig:
     scale_multiplier_min: float = 0.5
     scale_multiplier_max: float = 1.5
     propagate_quantized_inputs: bool = False
+    stream_blocks: bool = False
+    train_batches_per_step: int = 0
+    validation_interval: int = 1
     distill_steps: int = 0
     distill_lr: float = 2e-4
     distill_scale_lr: float = 5e-3
@@ -99,6 +106,14 @@ class BlockRotationTrainConfig:
     distill_existing_patterns: tuple[str, ...] = ()
     distill_existing_lr: float = 1e-5
     distill_existing_weight_decay: float = 0.0
+    # Scalable recovery controls. A value of zero keeps the legacy full-epoch
+    # update / dense-teacher behavior for small experiments.
+    distill_teacher_topk: int = 0
+    distill_batches_per_step: int = 0
+    distill_validation_interval: int = 1
+    distill_checkpoint_path: str | None = None
+    distill_checkpoint_interval: int = 0
+    distill_resume: bool = False
 
     def __post_init__(self) -> None:
         if self.objective != "block":
@@ -124,6 +139,12 @@ class BlockRotationTrainConfig:
                 "scale multiplier bounds require 0 < min <= max")
         if self.scale_lr is not None and self.scale_lr <= 0:
             raise ValueError("scale_lr must be > 0 when provided")
+        if not isinstance(self.stream_blocks, bool):
+            raise TypeError("stream_blocks must be boolean")
+        if self.train_batches_per_step < 0:
+            raise ValueError("train_batches_per_step must be >= 0")
+        if self.validation_interval < 1:
+            raise ValueError("validation_interval must be >= 1")
         if self.distill_steps < 0:
             raise ValueError("distill_steps must be >= 0")
         if self.distill_steps:
@@ -177,6 +198,20 @@ class BlockRotationTrainConfig:
                 raise ValueError("distill_existing_lr must be > 0")
             if self.distill_existing_weight_decay < 0:
                 raise ValueError("distill_existing_weight_decay must be >= 0")
+            if self.distill_teacher_topk < 0:
+                raise ValueError("distill_teacher_topk must be >= 0")
+            if self.distill_batches_per_step < 0:
+                raise ValueError("distill_batches_per_step must be >= 0")
+            if self.distill_validation_interval < 1:
+                raise ValueError("distill_validation_interval must be >= 1")
+            if self.distill_checkpoint_interval < 0:
+                raise ValueError("distill_checkpoint_interval must be >= 0")
+            if self.distill_resume and not self.distill_checkpoint_path:
+                raise ValueError("distill_resume requires distill_checkpoint_path")
+            if self.distill_checkpoint_interval and not self.distill_checkpoint_path:
+                raise ValueError(
+                    "distill_checkpoint_interval requires distill_checkpoint_path"
+                )
             if (not self.distill_train_rotations
                     and not self.distill_train_scales
                     and not self.distill_lora_rank
@@ -358,8 +393,11 @@ def collect_block_calls(model: nn.Module, dataloader: Iterable, device,
 def collect_teacher_calls(model: nn.Module, dataloader: Iterable, device,
                           max_batches: int,
                           storage_dtype: torch.dtype = torch.float16,
+                          topk: int = 0,
                           ) -> list[TeacherCall]:
-    """Capture bounded full-model inputs and source logits for distillation."""
+    """Capture dense or memory-bounded top-k teacher targets."""
+    if topk < 0:
+        raise ValueError("teacher topk must be nonnegative")
     calls = []
     model.eval()
     for index, batch in enumerate(dataloader):
@@ -374,14 +412,29 @@ def collect_teacher_calls(model: nn.Module, dataloader: Iterable, device,
         work.setdefault("use_cache", False)
         output = model(**work)
         logits = output.logits if hasattr(output, "logits") else output[0]
-        calls.append(TeacherCall(
-            inputs=inputs,
-            logits=_tree_copy_cpu(logits, storage_dtype),
-        ))
+        if topk:
+            width = min(topk, logits.shape[-1])
+            topk_logits, topk_indices = torch.topk(logits, width, dim=-1)
+            calls.append(TeacherCall(
+                inputs=inputs,
+                topk_indices=topk_indices.detach().to(
+                    device="cpu", dtype=torch.int32
+                ),
+                topk_logits=_tree_copy_cpu(topk_logits, storage_dtype),
+            ))
+        else:
+            calls.append(TeacherCall(
+                inputs=inputs,
+                logits=_tree_copy_cpu(logits, storage_dtype),
+            ))
     if len(calls) < max_batches:
         raise RuntimeError(
             f"captured {len(calls)} teacher calls, expected {max_batches}")
-    logger.info("Captured %d teacher-logit calls", len(calls))
+    logger.info(
+        "Captured %d teacher calls (%s)",
+        len(calls),
+        f"top-{topk}" if topk else "dense logits",
+    )
     return calls
 
 
@@ -432,7 +485,11 @@ class FakeQuantButterflyLinear(nn.Module):
         rms = group_scales_rms(
             rotated, self.quantizer.cfg.group_size).detach()
         scales = rms * self.scale_multiplier()
-        stored = storage_scales(scales, self.quantizer.cfg.scale_bits)
+        stored = storage_scales(
+            scales,
+            self.quantizer.cfg.scale_bits,
+            self.quantizer.cfg.scale_quant_group_size,
+        )
         # Match packed fp16 values in the forward pass while keeping a stable
         # fp32 identity gradient through the storage rounding operation.
         return scales + (stored.to(scales.dtype) - scales).detach()
@@ -591,26 +648,39 @@ def train_fake_quant_block(source: nn.Module, global_name: str,
     steps_run = 0
     for step in range(1, config.steps + 1):
         optimizer.zero_grad()
-        loss = _block_loss(block, train_records, device, grad=True)
+        if (config.train_batches_per_step
+                and config.train_batches_per_step < len(train_records)):
+            start = ((step - 1) * config.train_batches_per_step) % len(train_records)
+            step_records = [
+                train_records[(start + offset) % len(train_records)]
+                for offset in range(config.train_batches_per_step)
+            ]
+        else:
+            step_records = train_records
+        loss = _block_loss(block, step_records, device, grad=True)
         loss.backward()
         if config.max_grad_norm:
             torch.nn.utils.clip_grad_norm_(params, config.max_grad_norm)
         optimizer.step()
 
         steps_run = step
-        validation = float(
-            _block_loss(block, validation_records, device, grad=False).item())
-        if validation < best_validation:
-            best_validation, best_step = validation, step
-            best_states = _rotation_states(fake)
-        threshold = patience_validation * (
-            1.0 - config.validation_min_improvement)
-        if validation < threshold:
-            patience_validation = validation
-            stale_steps = 0
-        else:
-            stale_steps += 1
-        if (config.early_stopping_patience
+        validated = (
+            step % config.validation_interval == 0 or step == config.steps
+        )
+        if validated:
+            validation = float(
+                _block_loss(block, validation_records, device, grad=False).item())
+            if validation < best_validation:
+                best_validation, best_step = validation, step
+                best_states = _rotation_states(fake)
+            threshold = patience_validation * (
+                1.0 - config.validation_min_improvement)
+            if validation < threshold:
+                patience_validation = validation
+                stale_steps = 0
+            else:
+                stale_steps += 1
+        if (validated and config.early_stopping_patience
                 and stale_steps >= config.early_stopping_patience):
             break
 
@@ -636,6 +706,10 @@ def train_fake_quant_block(source: nn.Module, global_name: str,
         "stopped_early": steps_run < config.steps,
         "layers": len(fake),
         "learned_scales": bool(scale_multipliers),
+        "train_batches_per_step": (
+            config.train_batches_per_step or config.train_batches
+        ),
+        "validation_interval": config.validation_interval,
     }
     if scale_multipliers:
         multipliers = torch.cat(scale_multipliers)
@@ -663,6 +737,7 @@ def _packed_cpu_block(source: nn.Module, global_name: str,
                       quant_cfg: QuantConfig, patch_cfg: PatchConfig,
                       seed_by_name: dict[str, int],
                       states: dict[str, dict[str, torch.Tensor]] | None,
+                      activation_means: dict[str, torch.Tensor] | None = None,
                       device="cpu") -> nn.Module:
     """Build an exact packed block for held-out selection on ``device``.
 
@@ -691,7 +766,15 @@ def _packed_cpu_block(source: nn.Module, global_name: str,
             linear, selected_quant,
             weight_rotation=rotation, act_rotation=rotation,
             scales_override=scales_override,
-            fallback=True, fallback_dtype=torch.float32)
+            fallback=True, fallback_dtype=torch.float32,
+            activation_bits=patch_cfg.activation_bits)
+        if selected_quant.bias_correction in {"mean", "length_mean"}:
+            mean = (activation_means or {}).get(full_name)
+            if mean is None:
+                raise ValueError(
+                    f"mean bias correction requires activation mean for {full_name}"
+                )
+            qlinear.apply_mean_bias_correction(linear.weight, mean)
         parent, attr = get_parent(block, relative)
         setattr(parent, attr, qlinear)
     return block
@@ -700,7 +783,8 @@ def _packed_cpu_block(source: nn.Module, global_name: str,
 def _patch_source_block(source: nn.Module, global_name: str,
                         quant_cfg: QuantConfig, patch_cfg: PatchConfig,
                         seed_by_name: dict[str, int],
-                        states: dict[str, dict[str, torch.Tensor]] | None
+                        states: dict[str, dict[str, torch.Tensor]] | None,
+                        activation_means: dict[str, torch.Tensor] | None = None,
                         ) -> int:
     targets = _target_linears(source)
     patched = 0
@@ -731,7 +815,15 @@ def _patch_source_block(source: nn.Module, global_name: str,
             work, selected_quant,
             weight_rotation=rotation, act_rotation=rotation,
             scales_override=scales_override,
-            fallback=patch_cfg.fallback, fallback_dtype=source_dtype)
+            fallback=patch_cfg.fallback, fallback_dtype=source_dtype,
+            activation_bits=patch_cfg.activation_bits)
+        if selected_quant.bias_correction in {"mean", "length_mean"}:
+            mean = (activation_means or {}).get(full_name)
+            if mean is None:
+                raise ValueError(
+                    f"mean bias correction requires activation mean for {full_name}"
+                )
+            qlinear.apply_mean_bias_correction(work.weight, mean)
         recovery = patch_cfg.train_rotation or {}
         lora_rank = int(recovery.get("distill_lora_rank", 0))
         lora_init = str(recovery.get("distill_lora_init", "zero"))
@@ -770,7 +862,6 @@ def _teacher_call_loss(model: nn.Module, call: TeacherCall, device,
     output = model(**inputs)
     student = output.logits if hasattr(output, "logits") else output[0]
     student = student[:, :-1].float()
-    teacher = call.logits.to(device=device, dtype=torch.float32)[:, :-1]
     labels = inputs["input_ids"][:, 1:]
     mask = inputs.get("attention_mask")
     if mask is None:
@@ -782,10 +873,35 @@ def _teacher_call_loss(model: nn.Module, call: TeacherCall, device,
     total = student.new_zeros(())
     if config.distill_kl_weight:
         temperature = config.distill_temperature
-        teacher_prob = F.softmax(teacher / temperature, dim=-1)
         student_log_prob = F.log_softmax(student / temperature, dim=-1)
-        token_kl = F.kl_div(
-            student_log_prob, teacher_prob, reduction="none").sum(dim=-1)
+        if call.logits is not None:
+            teacher = call.logits.to(
+                device=device, dtype=torch.float32
+            )[:, :-1]
+            teacher_prob = F.softmax(teacher / temperature, dim=-1)
+            token_kl = F.kl_div(
+                student_log_prob, teacher_prob, reduction="none"
+            ).sum(dim=-1)
+        elif call.topk_indices is not None and call.topk_logits is not None:
+            indices = call.topk_indices.to(
+                device=device, dtype=torch.int64
+            )[:, :-1]
+            teacher_topk = call.topk_logits.to(
+                device=device, dtype=torch.float32
+            )[:, :-1]
+            teacher_prob = F.softmax(teacher_topk / temperature, dim=-1)
+            teacher_log_prob = F.log_softmax(
+                teacher_topk / temperature, dim=-1
+            )
+            selected_student = torch.gather(student_log_prob, -1, indices)
+            # KL against the teacher distribution renormalized over its top-k
+            # support. Student probabilities remain globally normalized, so
+            # mass assigned outside that support is still penalized.
+            token_kl = (
+                teacher_prob * (teacher_log_prob - selected_student)
+            ).sum(dim=-1)
+        else:
+            raise ValueError("teacher call contains no dense or top-k targets")
         kl = (token_kl * token_mask).sum() / denominator
         total = total + config.distill_kl_weight * kl * temperature ** 2
     if config.distill_ce_weight:
@@ -842,6 +958,31 @@ def _distill_eval_without_lora(model: nn.Module,
     finally:
         for module, value in saved:
             module.lora_B.copy_(value)
+
+
+def _distill_step_calls(
+    calls: Sequence[TeacherCall], step: int, batches_per_step: int
+) -> list[TeacherCall]:
+    if batches_per_step <= 0 or batches_per_step >= len(calls):
+        return list(calls)
+    start = ((step - 1) * batches_per_step) % len(calls)
+    return [calls[(start + offset) % len(calls)]
+            for offset in range(batches_per_step)]
+
+
+def _save_distill_checkpoint(path: str, state: dict[str, Any]) -> None:
+    destination = Path(path)
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    temporary = destination.with_suffix(destination.suffix + ".tmp")
+    torch.save(state, temporary)
+    os.replace(temporary, destination)
+
+
+def _load_distill_checkpoint(path: str) -> dict[str, Any]:
+    state = torch.load(path, map_location="cpu", weights_only=True)
+    if not isinstance(state, dict) or state.get("format") != "rotquant-distill-v1":
+        raise ValueError("invalid RotQuant distillation checkpoint")
+    return state
 
 
 def distill_packed_model(model: nn.Module, calls: Sequence[TeacherCall], device,
@@ -937,15 +1078,38 @@ def distill_packed_model(model: nn.Module, calls: Sequence[TeacherCall], device,
     best_snapshot = initial_snapshot
     stale_steps = 0
     steps_run = 0
+    resumed = False
+    start_step = 1
+    checkpoint_path = config.distill_checkpoint_path
+    if config.distill_resume and checkpoint_path and Path(checkpoint_path).exists():
+        checkpoint = _load_distill_checkpoint(checkpoint_path)
+        if int(checkpoint.get("parameter_count", -1)) != len(parameters):
+            raise ValueError("distillation checkpoint parameter layout changed")
+        _restore_parameter_snapshot(parameters, checkpoint["parameters"])
+        optimizer.load_state_dict(checkpoint["optimizer"])
+        best_snapshot = checkpoint["best_snapshot"]
+        best_validation = float(checkpoint["best_validation"])
+        patience_validation = float(checkpoint["patience_validation"])
+        best_step = int(checkpoint["best_step"])
+        stale_steps = int(checkpoint["stale_steps"])
+        steps_run = int(checkpoint["steps_run"])
+        start_step = steps_run + 1
+        resumed = True
+        if config.distill_code_refresh_interval:
+            for module in quant_linears:
+                module.refresh_quantization()
 
-    for step in range(1, config.distill_steps + 1):
+    for step in range(start_step, config.distill_steps + 1):
         optimizer.zero_grad()
         train_value = 0.0
-        for call in train_calls:
+        step_calls = _distill_step_calls(
+            train_calls, step, config.distill_batches_per_step
+        )
+        for call in step_calls:
             loss = _teacher_call_loss(
                 model, call, device, compute_dtype, config)
-            train_value += float(loss.detach().item()) / len(train_calls)
-            (loss / len(train_calls)).backward()
+            train_value += float(loss.detach().item()) / len(step_calls)
+            (loss / len(step_calls)).backward()
         if rotation_params and config.distill_angle_l2:
             angle_loss = torch.stack([
                 (parameter - reference).pow(2).mean()
@@ -963,20 +1127,39 @@ def distill_packed_model(model: nn.Module, calls: Sequence[TeacherCall], device,
                 module.refresh_quantization()
         steps_run = step
 
-        validation = _distill_eval_loss(
-            model, validation_calls, device, compute_dtype, config)
-        if validation < best_validation:
-            best_validation = validation
-            best_step = step
-            best_snapshot = _parameter_snapshot(parameters)
-        threshold = patience_validation * (
-            1.0 - config.distill_validation_min_improvement)
-        if validation < threshold:
-            patience_validation = validation
-            stale_steps = 0
-        else:
-            stale_steps += 1
-        if (config.distill_early_stopping_patience
+        validated = (
+            step % config.distill_validation_interval == 0
+            or step == config.distill_steps
+        )
+        if validated:
+            validation = _distill_eval_loss(
+                model, validation_calls, device, compute_dtype, config)
+            if validation < best_validation:
+                best_validation = validation
+                best_step = step
+                best_snapshot = _parameter_snapshot(parameters)
+            threshold = patience_validation * (
+                1.0 - config.distill_validation_min_improvement)
+            if validation < threshold:
+                patience_validation = validation
+                stale_steps = 0
+            else:
+                stale_steps += 1
+        if (checkpoint_path and config.distill_checkpoint_interval
+                and step % config.distill_checkpoint_interval == 0):
+            _save_distill_checkpoint(checkpoint_path, {
+                "format": "rotquant-distill-v1",
+                "parameter_count": len(parameters),
+                "parameters": _parameter_snapshot(parameters),
+                "optimizer": optimizer.state_dict(),
+                "best_snapshot": best_snapshot,
+                "best_validation": best_validation,
+                "patience_validation": patience_validation,
+                "best_step": best_step,
+                "stale_steps": stale_steps,
+                "steps_run": steps_run,
+            })
+        if (validated and config.distill_early_stopping_patience
                 and stale_steps >= config.distill_early_stopping_patience):
             break
 
@@ -1037,6 +1220,13 @@ def distill_packed_model(model: nn.Module, calls: Sequence[TeacherCall], device,
         "steps_run": steps_run,
         "best_step": best_step,
         "stopped_early": steps_run < config.distill_steps,
+        "resumed": resumed,
+        "checkpoint_path": checkpoint_path,
+        "batches_per_step": (
+            config.distill_batches_per_step or config.distill_train_batches
+        ),
+        "validation_interval": config.distill_validation_interval,
+        "teacher_topk": config.distill_teacher_topk,
         "accepted": accepted,
         "lora_rank": config.distill_lora_rank,
         "lora_init": config.distill_lora_init,
@@ -1077,6 +1267,7 @@ def distill_packed_model(model: nn.Module, calls: Sequence[TeacherCall], device,
 def train_and_patch_blocks(model: nn.Module, patch_cfg: PatchConfig,
                            calls: dict[str, list[BlockCall]],
                            distill_calls: Sequence[TeacherCall] | None = None,
+                           activation_means: dict[str, torch.Tensor] | None = None,
                            stats_out: dict[str, Any] | None = None) -> nn.Module:
     """Train, validate, exact-held-out-select, and pack transformer blocks."""
     if patch_cfg.rotation not in ("butterfly", "learned_butterfly", "structured"):
@@ -1122,12 +1313,14 @@ def train_and_patch_blocks(model: nn.Module, patch_cfg: PatchConfig,
         stats["input_drift_mse"] = _input_drift(records, source_records)
         candidate = _packed_cpu_block(
             block, global_name, patch_cfg.quant, patch_cfg, seed_by_name, states,
+            activation_means=activation_means,
             device=selection_device)
         candidate_error = float(_block_loss(
             candidate, selection_records, selection_device, grad=False).item())
         del candidate
         reference = _packed_cpu_block(
             block, global_name, patch_cfg.quant, patch_cfg, seed_by_name, None,
+            activation_means=activation_means,
             device=selection_device)
         reference_error = float(_block_loss(
             reference, selection_records, selection_device, grad=False).item())
@@ -1142,7 +1335,7 @@ def train_and_patch_blocks(model: nn.Module, patch_cfg: PatchConfig,
         })
         total_patched += _patch_source_block(
             block, global_name, patch_cfg.quant, patch_cfg,
-            seed_by_name, selected_states)
+            seed_by_name, selected_states, activation_means)
         if config.propagate_quantized_inputs and index + 1 < len(blocks):
             propagated_hidden = _replay_block_hidden(
                 block, records, device, compute_dtype,
@@ -1224,3 +1417,80 @@ def train_and_patch_blocks(model: nn.Module, patch_cfg: PatchConfig,
             stats_out["distillation"] = distill_stats
     logger.info("Block-trained and patched %d linear layers", total_patched)
     return model
+
+
+class _StreamingBlockCalls:
+    """Lazily capture one source block after the deployed prefix is patched."""
+
+    def __init__(self, model: nn.Module, dataloader: Iterable, device,
+                 blocks: Sequence[tuple[str, nn.Module]], max_batches: int):
+        self.model = model
+        self.dataloader = (
+            dataloader if isinstance(dataloader, Sequence) else list(dataloader)
+        )
+        self.device = device
+        self.blocks = dict(blocks)
+        self.max_batches = max_batches
+
+    def __getitem__(self, name: str) -> list[BlockCall]:
+        block = self.blocks[name]
+        return collect_block_calls(
+            self.model,
+            self.dataloader,
+            self.device,
+            blocks=[(name, block)],
+            max_batches=self.max_batches,
+        )[name]
+
+
+def train_and_patch_blocks_streamed(
+    model: nn.Module,
+    patch_cfg: PatchConfig,
+    dataloader: Iterable,
+    *,
+    distill_calls: Sequence[TeacherCall] | None = None,
+    activation_means: dict[str, torch.Tensor] | None = None,
+    stats_out: dict[str, Any] | None = None,
+) -> nn.Module:
+    """Train one block at a time without retaining all block activations.
+
+    Each block's source targets are captured only when that block is reached,
+    after the preceding blocks have been packed. This naturally exposes the
+    current block to deployed-prefix activations while bounding host storage to
+    one block's train/validation/selection calls.
+    """
+
+    train_config = dict(patch_cfg.train_rotation or {})
+    config = BlockRotationTrainConfig(**train_config)
+    if not config.stream_blocks:
+        raise ValueError("streamed block training requires stream_blocks=true")
+    total_batches = (
+        config.train_batches
+        + config.validation_batches
+        + config.selection_batches
+    )
+    blocks = find_transformer_blocks(model)
+    calls = _StreamingBlockCalls(
+        model, dataloader, next(model.parameters()).device, blocks, total_batches
+    )
+    # The lazy captures already include the exactly deployed prefix. Avoid the
+    # older in-memory hidden propagation path, which would duplicate that work.
+    streamed_cfg = copy.copy(patch_cfg)
+    streamed_cfg.train_rotation = dict(train_config)
+    streamed_cfg.train_rotation["propagate_quantized_inputs"] = False
+    streamed_cfg.train_rotation["stream_blocks"] = False
+    result = train_and_patch_blocks(
+        model,
+        streamed_cfg,
+        calls,  # type: ignore[arg-type]
+        distill_calls=distill_calls,
+        activation_means=activation_means,
+        stats_out=stats_out,
+    )
+    if stats_out is not None and "rotation_train" in stats_out:
+        stats_out["rotation_train"].update({
+            "stream_blocks": True,
+            "deployed_prefix_capture": True,
+            "resident_block_call_sets": 1,
+        })
+    return result

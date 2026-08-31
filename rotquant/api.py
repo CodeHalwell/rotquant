@@ -36,6 +36,7 @@ class RotQuantConfig:
     codebook: str = "gaussian"
     scale: str = "mse_search"
     scale_bits: float = 16.0
+    scale_quant_group_size: int = 256
     error_comp: str = "none"
     residual_bits: int = 1
     residual_codebook: str = "gaussian"
@@ -49,6 +50,8 @@ class RotQuantConfig:
     adapter: str | None = None
     codebook_dim: int | None = None
     bias_correction: str = "none"
+    share_rotations: bool = True
+    activation_bits: int | None = None
 
     def __post_init__(self) -> None:
         validate_profile_bits(self.bits)
@@ -61,14 +64,10 @@ class RotQuantConfig:
         self.to_quant_config()
 
     def to_quant_config(self) -> QuantConfig:
-        spherical = self.codebook.lower() in {
-            "sphere", "spherical", "beta", "finite_beta"}
         return QuantConfig(
             bits=self.bits,
             codebook=self.codebook,
-            codebook_dim=(
-                self.codebook_dim or self.rotation_block
-            ) if spherical else None,
+            codebook_dim=self.codebook_dim,
             scale=self.scale,
             group_size=self.group_size,
             error_comp=self.error_comp,
@@ -77,6 +76,7 @@ class RotQuantConfig:
             residual_codebook=self.residual_codebook,
             seed=self.seed,
             scale_bits=self.scale_bits,
+            scale_quant_group_size=self.scale_quant_group_size,
         )
 
     def to_patch_config(self) -> PatchConfig:
@@ -90,6 +90,8 @@ class RotQuantConfig:
             fallback=self.fallback,
             seed=self.seed,
             adapter=self.adapter,
+            share_rotations=self.share_rotations,
+            activation_bits=self.activation_bits,
         )
 
 
@@ -105,6 +107,7 @@ def optimize_model(
     *,
     hessians: Mapping[str, torch.Tensor] | None = None,
     activations: Mapping[str, torch.Tensor] | None = None,
+    activation_means: Mapping[str, torch.Tensor] | None = None,
     report: MutableMapping[str, Any] | None = None,
 ) -> nn.Module:
     """Optimise ``model`` in place and return the same model instance.
@@ -129,6 +132,7 @@ def optimize_model(
         resolved.to_patch_config(),
         hessians=dict(hessians or {}),
         activations=dict(activations or {}),
+        activation_means=dict(activation_means or {}),
         stats_out=stats,
     )
     if not stats.get("patched_modules"):

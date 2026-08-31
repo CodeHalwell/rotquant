@@ -16,9 +16,12 @@ def test_algorithmic_matrix_covers_every_research_track() -> None:
         "vector_d2_w1_rms",
         "scalar_w3_rms",
         "vector_d2_w3_rms",
+        "e8p_d8_w2_rms",
         "gaussian_w4_mse",
         "calibrated_w4_mse",
         "length_w4_mse",
+        "mean_w4_mse",
+        "gaussian_w3_mse_scale8",
         "dynamic_teacher_3p625",
         "dynamic_random_3p625",
         "dynamic_scalar_teacher_2p75",
@@ -34,6 +37,14 @@ def test_vector_and_scalar_low_bit_arms_are_exactly_matched() -> None:
         assert scalar["quant.scale"] == vector["quant.scale"] == "rms"
         assert scalar["quant.group_size"] == vector["quant.group_size"] == 128
         assert vector["quant.codebook"] == "vector"
+
+    e8p = dict(trial_by_name("e8p_d8_w2_rms").overrides)
+    scalar = dict(trial_by_name("scalar_w2_rms").overrides)
+    assert e8p["quant.bits"] == scalar["quant.bits"] == 2
+    assert e8p["quant.scale"] == scalar["quant.scale"] == "rms"
+    assert e8p["quant.group_size"] == scalar["quant.group_size"] == 128
+    assert e8p["quant.codebook"] == "e8p"
+    assert e8p["quant.vector_dim"] == 8
 
 
 def test_teacher_allocator_uses_held_out_global_signal() -> None:

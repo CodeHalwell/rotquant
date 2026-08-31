@@ -13,6 +13,7 @@ from rotquant.block_train import (
     collect_teacher_calls,
     find_transformer_blocks,
     train_and_patch_blocks,
+    train_and_patch_blocks_streamed,
     train_fake_quant_block,
 )
 from rotquant.linear import QuantLinear
@@ -212,6 +213,37 @@ def test_propagation_uses_deployed_prefix_outputs_for_later_blocks():
     assert summary["propagate_quantized_inputs"]
     assert summary["final_input_drift_mse"] > 0
     assert summary["mean_input_drift_mse"] > 0
+
+
+def test_streamed_block_training_keeps_only_current_call_set():
+    torch.manual_seed(17)
+    model = ToyTransformer(n=2).eval()
+    batches = [torch.randn(1, 8, 16) for _ in range(3)]
+    cfg = _pcfg(steps=1)
+    cfg.train_rotation["stream_blocks"] = True
+    cfg.train_rotation["propagate_quantized_inputs"] = True
+    stats = {}
+    train_and_patch_blocks_streamed(
+        model, cfg, batches, stats_out=stats
+    )
+    summary = stats["rotation_train"]
+    assert summary["stream_blocks"]
+    assert summary["deployed_prefix_capture"]
+    assert summary["resident_block_call_sets"] == 1
+    assert isinstance(model.layers[0].fc1, QuantLinear)
+    assert isinstance(model.layers[1].fc1, QuantLinear)
+
+
+def test_teacher_topk_capture_is_memory_bounded():
+    torch.manual_seed(18)
+    model = ToyCausalLM().eval()
+    batches = [{"input_ids": torch.randint(0, 32, (1, 8))} for _ in range(2)]
+    calls = collect_teacher_calls(
+        model, batches, "cpu", max_batches=2, topk=4
+    )
+    assert calls[0].logits is None
+    assert calls[0].topk_indices.shape[-1] == 4
+    assert calls[0].topk_logits.shape[-1] == 4
 
 
 def test_end_to_end_distillation_commits_packed_parameters():

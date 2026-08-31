@@ -34,6 +34,13 @@ kernel. `kv_retrieval_metrics` reports:
 - selected/value-read fraction;
 - exact packed KV bytes.
 
+The sink/recent policy now also applies to storage: those rotated rows remain
+fp16 while only the cache middle is quantized. Retrieval reservations and
+storage tiers use the same position definitions but are independent decisions;
+one can evaluate dense attention over a tiered cache before enabling sparse V
+reads. `qwen35_4b_long_context_kv_cuda.yaml` is the pinned 8k confirmation
+profile and reports the actual fp16 element fraction and effective cache bpv.
+
 The retrieval path changes attention semantics whenever fewer than all positions
 are selected. It should therefore be enabled only at long contexts and only when
 held-out teacher-KL, perplexity and attention-mass gates pass. Prefill should stay

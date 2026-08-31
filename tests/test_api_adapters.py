@@ -149,6 +149,33 @@ def test_public_api_optimizes_every_profile_bit_width(bits: int) -> None:
     assert report["model_support"]["adapter"] == "dense-decoder"
 
 
+def test_public_api_w4a8_uses_per_token_activation_quantization() -> None:
+    torch.manual_seed(3)
+    model = TinyModel()
+    optimize_model(
+        model,
+        RotQuantConfig(
+            bits=4,
+            activation_bits=8,
+            group_size=4,
+            scale="rms",
+            rotation="none",
+        ),
+    )
+    assert model.proj.activation_bits == 8
+    activation = torch.tensor([
+        [0.0, 0.125, -0.75, 2.0, -1.0, 0.3, 0.9, -0.2],
+        [0.0, 8.0, -2.0, 1.0, 0.1, -0.1, 3.0, -4.0],
+    ])
+    quantized = model.proj._quantize_activation(activation)
+    assert quantized.shape == activation.shape
+    assert torch.isfinite(quantized).all()
+    assert not torch.equal(quantized, activation)
+    # Each row receives its own dynamic scale.
+    assert quantized[0].abs().max() == pytest.approx(2.0)
+    assert quantized[1].abs().max() == pytest.approx(8.0)
+
+
 @pytest.mark.parametrize("bits", [0, 4.0, 9, True])
 def test_public_profiles_fail_closed_outside_one_to_eight(bits) -> None:
     with pytest.raises(ValueError, match="profile bits"):

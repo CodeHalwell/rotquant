@@ -6,7 +6,13 @@ direct coverage, so a regression here would only surface as a confusing run.
 import torch
 from torch import nn
 
-from rotquant.calibrate import HessianAccumulator, collect_hessians
+from rotquant.calibrate import (
+    DiskHessianStore,
+    HessianAccumulator,
+    collect_activation_means,
+    collect_hessians,
+    collect_hessians_streamed,
+)
 from rotquant.codebooks import E8LatticeCodebook, nearest_e8
 
 
@@ -36,6 +42,35 @@ def test_collect_hessians_over_toy_model():
     assert result.hessians["0"].shape == (16, 16)
     assert result.hessians["2"].shape == (16, 16)
     assert result.n_samples["0"] == 4 * 3
+
+
+def test_streamed_hessian_collection_matches_joint_and_disk_offloads(tmp_path):
+    torch.manual_seed(3)
+    model = nn.Sequential(nn.Linear(8, 8), nn.ReLU(), nn.Linear(8, 4))
+    loader = [torch.randn(2, 8) for _ in range(4)]
+    joint = collect_hessians(model, loader, "cpu", damp_frac=0.0)
+    streamed = collect_hessians_streamed(
+        model,
+        loader,
+        "cpu",
+        damp_frac=0.0,
+        layers_per_pass=1,
+        offload_dir=tmp_path,
+    )
+    assert isinstance(streamed.hessians, DiskHessianStore)
+    assert set(streamed.hessians) == set(joint.hessians)
+    for name, expected in joint.hessians.items():
+        assert torch.allclose(streamed.hessians[name], expected)
+    assert len(list(tmp_path.glob("*.pt"))) == 2
+
+
+def test_activation_mean_collection_matches_direct_average():
+    torch.manual_seed(4)
+    model = nn.Sequential(nn.Linear(6, 4, bias=False))
+    loader = [torch.randn(2, 3, 6) + 2.0 for _ in range(3)]
+    means = collect_activation_means(model, loader, "cpu")
+    expected = torch.cat(loader, dim=0).reshape(-1, 6).mean(dim=0)
+    assert torch.allclose(means["0"], expected)
 
 
 def test_nearest_e8_returns_valid_lattice_points():

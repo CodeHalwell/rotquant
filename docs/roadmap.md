@@ -235,6 +235,11 @@ Acceptance: no full-cache dequantization buffer, exact accounting of K scan and
 V row reads, long-context quality/recall gates, and a demonstrated
 context-length crossover rather than a short-context speed claim.
 
+Reference semantics completed on 2026-09-01: true fp16 sink/recent storage,
+8-bit double-quantized scale metadata, finite 2-bit/dimension E8P cache codes,
+and paired bootstrap intervals. The remaining work in this stage is
+kernelization and long-context promotion, not deciding what the format means.
+
 ## Stage 2 definition of done
 
 Stage 2 is complete when:

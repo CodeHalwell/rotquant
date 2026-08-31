@@ -15,6 +15,7 @@ import hashlib
 import json
 import os
 import sys
+from pathlib import Path
 from typing import Any
 
 import torch
@@ -40,6 +41,50 @@ INSTALL_HINTS = {
 }
 
 IMPLEMENTED_BACKENDS = ("gptq", "awq", "aqlm")
+
+
+def baseline_storage_metrics(model, artifact_path: str | os.PathLike | None = None
+                             ) -> dict[str, Any]:
+    """Measure retained tensors and, when available, the complete artifact.
+
+    This deliberately does not infer bpw from CLI flags. GPTQ/AWQ zero-points,
+    scales, padding, unquantized tensors, and container overhead are real bytes.
+    Shared tensor storage is counted once by storage pointer.
+    """
+
+    storages: dict[tuple[str, int], int] = {}
+    for tensor in model.state_dict().values():
+        if not torch.is_tensor(tensor):
+            continue
+        storage = tensor.untyped_storage()
+        key = (str(tensor.device), storage.data_ptr())
+        storages[key] = max(storages.get(key, 0), storage.nbytes())
+    tensor_bytes = sum(storages.values())
+    parameters = sum(parameter.numel() for parameter in model.parameters())
+    result: dict[str, Any] = {
+        "retained_tensor_bytes": tensor_bytes,
+        "parameter_elements": parameters,
+        "retained_bits_per_parameter": (
+            tensor_bytes * 8 / parameters if parameters else None),
+        "artifact_measured": False,
+        "artifact_bytes": None,
+        "artifact_files": None,
+    }
+    if artifact_path is not None:
+        root = Path(artifact_path)
+        if root.is_file():
+            files = [root]
+        elif root.is_dir():
+            files = sorted(path for path in root.rglob("*") if path.is_file())
+        else:
+            files = []
+        if files:
+            result.update(
+                artifact_measured=True,
+                artifact_bytes=sum(path.stat().st_size for path in files),
+                artifact_files=len(files),
+            )
+    return result
 
 
 def baseline_run_id(
@@ -97,6 +142,12 @@ def _calib_texts(n: int = 256, min_chars: int = 2048) -> list:
     return texts
 
 
+def _loaded_baseline(model, tokenizer, resolved_model: str):
+    model.__dict__["_rotquant_baseline_artifact_path"] = (
+        resolved_model if Path(resolved_model).exists() else None)
+    return model, tokenizer
+
+
 def load_baseline(backend: str, model_name: str, bits: int, device: str,
                   prequantized: bool = False, **kwargs):
     """Return (model, tokenizer) quantised by the requested external method.
@@ -110,7 +161,9 @@ def load_baseline(backend: str, model_name: str, bits: int, device: str,
     backend = backend.lower()
     revision = kwargs.get("revision")
     resolved_model = model_name
-    if revision is not None:
+    if revision is not None or (
+        prequantized and not Path(model_name).exists()
+    ):
         from huggingface_hub import snapshot_download
         resolved_model = snapshot_download(repo_id=model_name, revision=revision)
     if backend == "gptq":
@@ -129,7 +182,8 @@ def load_baseline(backend: str, model_name: str, bits: int, device: str,
                 n=int(kwargs.get("calib_n", 256)),
                 min_chars=int(kwargs.get("calib_min_chars", 2048)),
             ))
-        return getattr(model, "model", model), tok
+        return _loaded_baseline(
+            getattr(model, "model", model), tok, resolved_model)
     if backend == "awq":
         _require("awq", backend)
         from awq import AutoAWQForCausalLM
@@ -156,7 +210,8 @@ def load_baseline(backend: str, model_name: str, bits: int, device: str,
                 calib_data=calib_data,
                 max_calib_samples=calib_n,
             )
-        return getattr(model, "model", model), tok
+        return _loaded_baseline(
+            getattr(model, "model", model), tok, resolved_model)
     if backend == "aqlm":
         _require("aqlm", backend)
         if not prequantized:
@@ -166,7 +221,7 @@ def load_baseline(backend: str, model_name: str, bits: int, device: str,
         from transformers import AutoModelForCausalLM, AutoTokenizer
         tok = AutoTokenizer.from_pretrained(resolved_model, use_fast=True)
         model = AutoModelForCausalLM.from_pretrained(resolved_model).to(device)
-        return model, tok
+        return _loaded_baseline(model, tok, resolved_model)
     if backend in ("quip", "qtip", "higgs"):
         raise NotImplementedError(
             f"baseline '{backend}' is not integrated yet; installing its package "
@@ -211,7 +266,12 @@ def main() -> None:
 
     from rotquant.eval.perplexity import PPLConfig, perplexity
 
-    metrics: dict[str, Any] = {}
+    metrics: dict[str, Any] = {
+        "storage": baseline_storage_metrics(
+            model,
+            getattr(model, "_rotquant_baseline_artifact_path", None),
+        )
+    }
     ppl_config = PPLConfig(
         seq_len=args.ppl_seq_len,
         stride=args.ppl_stride,

@@ -59,6 +59,7 @@ def test_current_manifest_contract_is_valid() -> None:
 
 def test_legacy_v1_manifest_without_explicit_packing_is_valid() -> None:
     manifest = _manifest()
+    manifest["format_version"] = 1
     del manifest["packing"]
     del manifest["architecture"]
     validate_checkpoint_manifest(manifest)
@@ -67,7 +68,7 @@ def test_legacy_v1_manifest_without_explicit_packing_is_valid() -> None:
 @pytest.mark.parametrize(
     ("mutation", "message"),
     [
-        (lambda value: value.update(format_version=2), "unsupported version"),
+        (lambda value: value.update(format_version=3), "unsupported version"),
         (
             lambda value: value["packing"].update(bit_order="msb_first"),
             "packing contract",

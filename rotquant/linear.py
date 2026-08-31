@@ -22,7 +22,12 @@ import torch
 import torch.nn.functional as F
 from torch import nn
 
-from ._internal import expand_scales, generate_sketch_matrix, storage_scales
+from ._internal import (
+    encode_storage_scales,
+    expand_scales,
+    generate_sketch_matrix,
+    storage_scales,
+)
 from .codebooks import VectorCodebook
 from .pack import packed_bytes, unpack_indices
 from .quantize import QuantConfig, QuantizedWeight, Quantizer
@@ -36,18 +41,25 @@ _fallback_warning_emitted = False
 class QuantLinear(nn.Module):
     def __init__(self, qweight: QuantizedWeight, act_rotation: Rotation,
                  bias: torch.Tensor | None = None, fallback: bool = False,
-                 fallback_dtype: torch.dtype | None = None):
+                 fallback_dtype: torch.dtype | None = None,
+                 activation_bits: int | None = None):
         super().__init__()
         self.qweight = qweight
         self.act_rotation = act_rotation
         self.in_features = qweight.in_features
         self.out_features = qweight.out_features
         self.fallback = fallback
+        if activation_bits is not None and (
+            isinstance(activation_bits, bool)
+            or not isinstance(activation_bits, int)
+            or not 2 <= activation_bits <= 16
+        ):
+            raise ValueError("activation_bits must be None or an integer in [2, 16]")
+        self.activation_bits = activation_bits
         self._fallback_dtype = fallback_dtype
-        if bias is not None:
-            self.register_buffer("bias", bias.detach().clone())
-        else:
-            self.bias = None
+        self.register_buffer(
+            "bias", bias.detach().clone() if bias is not None else None
+        )
         self._fp_cache: torch.Tensor | None = None
         # Non-persistent caches for QJL sketch inference.  Populated lazily on the first
         # forward pass; invalidated automatically when device or dtype changes.
@@ -114,9 +126,15 @@ class QuantLinear(nn.Module):
         qw.packed.data = fn(qw.packed.data)
         if qw.scales is not None:
             qw.scales = fn(qw.scales)
+            if qw.scale_offsets is not None:
+                qw.scale_offsets = fn(qw.scale_offsets)
+                qw.scale_steps = fn(qw.scale_steps)
         if qw.residual_packed is not None:
             qw.residual_packed.data = fn(qw.residual_packed.data)
             qw.residual_scales = fn(qw.residual_scales)
+            if qw.residual_scale_offsets is not None:
+                qw.residual_scale_offsets = fn(qw.residual_scale_offsets)
+                qw.residual_scale_steps = fn(qw.residual_scale_steps)
         if qw.sketch is not None:
             qw.sketch.data = fn(qw.sketch.data)
             qw.sketch_row_norms = fn(qw.sketch_row_norms)
@@ -129,7 +147,11 @@ class QuantLinear(nn.Module):
             factor = self._log_scale_multiplier.exp().clamp(
                 self._scale_multiplier_min, self._scale_multiplier_max)
             scales = self._scale_training_base * factor
-            stored = storage_scales(scales, self.qweight.scale_bits_main)
+            stored = storage_scales(
+                scales,
+                self.qweight.scale_bits_main,
+                self.qweight.scale_quant_group_size,
+            )
             # Exact storage-rounded forward values with an identity STE.
             scales = scales + (stored.to(scales.dtype) - scales).detach()
             scale_group_size = (
@@ -163,7 +185,7 @@ class QuantLinear(nn.Module):
             self.out_features, self.in_features)
         centroids = qw.codebook.centroids.to(indices.device)
         self._scale_training_codes = centroids[indices].float()
-        self._scale_training_base = qw.scales.detach().float().clone()
+        self._scale_training_base = qw.main_scales().detach().float().clone()
         self._scale_multiplier_min = multiplier_min
         self._scale_multiplier_max = multiplier_max
         self._log_scale_multiplier = nn.Parameter(
@@ -183,8 +205,18 @@ class QuantLinear(nn.Module):
         if self._log_scale_multiplier is None:
             return
         scales = self._scale_training_base * self.scale_finetuning_multiplier()
-        self.qweight.scales = storage_scales(
-            scales, self.qweight.scale_bits_main).detach()
+        stored = storage_scales(
+            scales,
+            self.qweight.scale_bits_main,
+            self.qweight.scale_quant_group_size,
+        )
+        (self.qweight.scales,
+         self.qweight.scale_offsets,
+         self.qweight.scale_steps) = encode_storage_scales(
+            stored,
+            self.qweight.scale_bits_main,
+            self.qweight.scale_quant_group_size,
+        )
         self._log_scale_multiplier = None
         self._scale_training_base = None
         self._scale_training_codes = None
@@ -194,7 +226,8 @@ class QuantLinear(nn.Module):
                 self._fp_cache = self._fp_cache.to(self._fallback_dtype)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        xr = self.act_rotation.rotate_activation(x)
+        xr = self.act_rotation.cached_rotate_activation(x)
+        xr = self._quantize_activation(xr)
         base_out = F.linear(xr, self._weight().to(xr.dtype), self.bias)
         if self.lora_A is not None:
             adapter_hidden = F.linear(xr, self.lora_A.to(xr.dtype))
@@ -219,6 +252,54 @@ class QuantLinear(nn.Module):
             )
             return base_out + correction
         return base_out
+
+    def _quantize_activation(self, activation: torch.Tensor) -> torch.Tensor:
+        """Symmetric per-token activation quantization reference semantics.
+
+        A fused runtime can keep the signed integer values and scale through the
+        matrix multiply. This portable path immediately dequantizes them, which
+        is slower but makes W4A8 quality and integration independently testable.
+        During recovery training an identity STE preserves gradients.
+        """
+
+        if self.activation_bits is None:
+            return activation
+        qmax = (1 << (self.activation_bits - 1)) - 1
+        work = activation.float()
+        scale = work.detach().abs().amax(dim=-1, keepdim=True)
+        scale = (scale / qmax).clamp_min(torch.finfo(torch.float32).tiny)
+        quantized = torch.round(work / scale).clamp(-qmax, qmax)
+        dequantized = (quantized * scale).to(activation.dtype)
+        if torch.is_grad_enabled() and activation.requires_grad:
+            return activation + (dequantized - activation).detach()
+        return dequantized
+
+    @torch.no_grad()
+    def apply_mean_bias_correction(
+        self, source_weight: torch.Tensor, activation_mean: torch.Tensor
+    ) -> torch.Tensor:
+        """Fold calibration-mean quantization error into the output bias."""
+
+        source = source_weight.detach().to(
+            device=self.qweight.packed.data.device, dtype=torch.float32
+        )
+        mean = activation_mean.detach().reshape(1, self.in_features).to(
+            device=source.device, dtype=torch.float32
+        )
+        rotated_source = self.act_rotation.rotate_weight(source)
+        rotated_mean = self.act_rotation.rotate_activation(mean)
+        residual = rotated_source - self.qweight.dequantize().float()
+        correction = (rotated_mean @ residual.T).reshape(-1)
+        base = (
+            self.bias.detach().to(device=source.device, dtype=torch.float32)
+            if self.bias is not None
+            else torch.zeros(self.out_features, device=source.device)
+        )
+        corrected = (base + correction).to(
+            dtype=self._fallback_dtype or source_weight.dtype
+        )
+        self.bias = corrected
+        return correction
 
     def enable_lora(self, rank: int, alpha: float, *, init: str = "zero",
                     residual: torch.Tensor | None = None,
@@ -321,7 +402,8 @@ class QuantLinear(nn.Module):
                 self.out_features, self.in_features)
             centroids = self.qweight.codebook.centroids.to(indices.device)
             self._scale_training_codes = centroids[indices].float()
-            self._scale_training_base = self.qweight.scales.detach().float().clone()
+            self._scale_training_base = (
+                self.qweight.main_scales().detach().float().clone())
             self._log_scale_multiplier.zero_()
         self._fp_cache = None
         if self.fallback:
@@ -339,7 +421,8 @@ class QuantLinear(nn.Module):
                     H: torch.Tensor | None = None,
                     scales_override: torch.Tensor | None = None,
                     fallback: bool = False,
-                    fallback_dtype: torch.dtype | None = None) -> QuantLinear:
+                    fallback_dtype: torch.dtype | None = None,
+                    activation_bits: int | None = None) -> QuantLinear:
         """Quantise an ``nn.Linear``.
 
         ``weight_rotation`` rotates the weight before quantisation; ``act_rotation``
@@ -354,7 +437,8 @@ class QuantLinear(nn.Module):
         bias = linear.bias.data if linear.bias is not None else None
         module = cls(
             qw, act_rotation=act_rotation, bias=bias, fallback=fallback,
-            fallback_dtype=fallback_dtype or linear.weight.dtype)
+            fallback_dtype=fallback_dtype or linear.weight.dtype,
+            activation_bits=activation_bits)
         module._quant_config = config
         return module
 
@@ -369,9 +453,17 @@ class QuantLinear(nn.Module):
         b = packed_bytes(qw.packed)
         if qw.scales is not None:
             b += qw.scales.numel() * qw.scales.element_size()
+            if qw.scale_offsets is not None:
+                b += qw.scale_offsets.numel() * qw.scale_offsets.element_size()
+                b += qw.scale_steps.numel() * qw.scale_steps.element_size()
         if qw.residual_packed is not None:
             b += packed_bytes(qw.residual_packed)
             b += qw.residual_scales.numel() * qw.residual_scales.element_size()
+            if qw.residual_scale_offsets is not None:
+                b += (qw.residual_scale_offsets.numel()
+                      * qw.residual_scale_offsets.element_size())
+                b += (qw.residual_scale_steps.numel()
+                      * qw.residual_scale_steps.element_size())
         if qw.sketch is not None:
             b += packed_bytes(qw.sketch)
             b += qw.sketch_row_norms.numel() * qw.sketch_row_norms.element_size()

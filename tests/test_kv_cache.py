@@ -56,6 +56,35 @@ def test_packed_kv_round_trip_and_attention_metrics():
     assert 0 < metrics["key_self_dot_ratio"] < 2
 
 
+def test_tiered_kv_cache_stores_sink_and_recent_rows_in_fp16():
+    _, keys, _ = _triplet(41, length=12)
+    config = KVQuantConfig(
+        bits=3,
+        group_size=64,
+        seed=7,
+        sink_tokens=2,
+        recent_window=3,
+    )
+    rotation = build_kv_rotation(128, config)
+    packed = quantize_kv(keys, rotation, config)
+    reconstructed = packed.dequantize()
+    rotated = rotation.rotate_activation(keys.float()).half().float()
+    assert packed.full_precision_rows is not None
+    assert packed.full_precision_rows.dtype == torch.float16
+    assert torch.equal(reconstructed[..., :2, :], rotated[..., :2, :])
+    assert torch.equal(reconstructed[..., -3:, :], rotated[..., -3:, :])
+    assert packed.packed_state_bytes() < keys.numel() * 2
+
+
+def test_kv_cache_accepts_finite_rate_e8_vector_codes():
+    _, keys, _ = _triplet(43, length=6)
+    config = KVQuantConfig(bits=2, codebook="e8p", group_size=64, seed=1)
+    packed = quantize_kv(keys, build_kv_rotation(128, config), config)
+    assert packed.qweight.packed.bits == 16
+    assert packed.qweight.codebook.dim == 8
+    assert packed.dequantize().shape == keys.shape
+
+
 def test_kv_length_correction_targets_self_dot_at_same_rate():
     queries, keys, values = _triplet(9)
     plain = kv_fidelity_metrics(

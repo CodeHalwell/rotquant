@@ -25,6 +25,8 @@ from rotquant.kv_cache import (
 )
 from rotquant.utils import get_logger
 
+from .statistics import bootstrap_report
+
 logger = get_logger(__name__)
 
 
@@ -35,6 +37,7 @@ class KVCacheEvalConfig:
     value_bits: int | None = None
     group_size: int = 64
     scale_bits: float = 16.0
+    scale_quant_group_size: int = 256
     codebook: str = "gaussian"
     rotation_block: int = 128
     batches: int = 2
@@ -48,6 +51,10 @@ class KVCacheEvalConfig:
     frozen_recipe: list[dict[str, int]] | None = None
     codebook_dim: int | None = None
     bias_correction: str = "none"
+    sink_tokens: int = 0
+    recent_window: int = 0
+    bootstrap_draws: int = 2_000
+    bootstrap_seed: int = 17
 
     def __post_init__(self) -> None:
         if self.batches < 1:
@@ -58,6 +65,8 @@ class KVCacheEvalConfig:
             raise ValueError("KV-cache eval_offset_batches must be nonnegative")
         if self.skip < 0 or self.temperature <= 0:
             raise ValueError("KV-cache skip must be nonnegative and temperature positive")
+        if self.bootstrap_draws < 1 or self.bootstrap_seed < 0:
+            raise ValueError("bootstrap draws must be positive and seed nonnegative")
         if self.dynamic is not None and self.frozen_recipe is not None:
             raise ValueError("dynamic and frozen_recipe are mutually exclusive")
         if self.frozen_recipe is not None and not self.frozen_recipe:
@@ -70,11 +79,14 @@ class KVCacheEvalConfig:
             value_bits=self.value_bits,
             group_size=self.group_size,
             scale_bits=self.scale_bits,
+            scale_quant_group_size=self.scale_quant_group_size,
             codebook=self.codebook,
             rotation_block=self.rotation_block,
             seed=self.seed if seed is None else seed,
             codebook_dim=self.codebook_dim,
             bias_correction=self.bias_correction,
+            sink_tokens=self.sink_tokens,
+            recent_window=self.recent_window,
         )
 
 
@@ -174,6 +186,7 @@ def simulate_packed_kv_cache(
     key_signal_energy = 0.0
     value_signal_energy = 0.0
     packed_kv_bytes = 0
+    full_precision_kv_elements = 0
     rotations: dict[int, tuple[Any, Any]] = {}
     n_kv_layers = 0
 
@@ -216,6 +229,10 @@ def simulate_packed_kv_cache(
             values.numel() * layer_config.bits_for(value=True))
         packed_kv_bytes += packed_keys.packed_state_bytes()
         packed_kv_bytes += packed_values.packed_state_bytes()
+        if packed_keys.full_precision_rows is not None:
+            full_precision_kv_elements += packed_keys.full_precision_rows.numel()
+        if packed_values.full_precision_rows is not None:
+            full_precision_kv_elements += packed_values.full_precision_rows.numel()
         n_kv_layers += 1
 
     if not rotations:
@@ -248,6 +265,10 @@ def simulate_packed_kv_cache(
         "packed_kv_bytes": packed_kv_bytes,
         "kv_compression_ratio": source_kv_bytes / max(packed_kv_bytes, 1),
         "effective_kv_bpv": packed_kv_bytes * 8 / max(source_kv_elements, 1),
+        "full_precision_kv_fraction": (
+            full_precision_kv_elements / max(source_kv_elements, 1)),
+        "sink_tokens": config.sink_tokens,
+        "recent_window": config.recent_window,
         "prefill_key_nmse": key_squared_error / max(key_signal_energy, 1e-12),
         "prefill_value_nmse": (
             value_squared_error / max(value_signal_energy, 1e-12)),
@@ -281,7 +302,7 @@ def _evaluate_kv_cache(
     config: KVCacheEvalConfig,
     device,
     layer_configs: dict[int, KVQuantConfig] | None = None,
-) -> dict[str, float | int]:
+) -> dict[str, Any]:
     """Compare source and simulated packed-cache next-token distributions."""
     if len(batches) < config.batches:
         raise ValueError("not enough KV-cache evaluation batches")
@@ -357,15 +378,20 @@ def _evaluate_kv_cache(
                 candidate_logits / temperature, dim=-1)
             source_probs = source_log_probs.exp()
             kl = (source_probs * (
-                source_log_probs - candidate_log_probs)).sum(dim=-1).mean()
-            kls.append(float((kl * temperature**2).item()))
-            cosine.append(float(F.cosine_similarity(
-                source_logits, candidate_logits, dim=-1).mean().item()))
-            top1.append(float((
+                source_log_probs - candidate_log_probs)).sum(dim=-1)
+            kls.extend((kl * temperature**2).detach().cpu().tolist())
+            cosine.extend(F.cosine_similarity(
+                source_logits, candidate_logits, dim=-1).detach().cpu().tolist())
+            top1.extend((
                 source_logits.argmax(dim=-1)
-                == candidate_logits.argmax(dim=-1)).float().mean().item()))
-            source_nll.append(float(F.cross_entropy(source_logits, target).item()))
-            quant_nll.append(float(F.cross_entropy(candidate_logits, target).item()))
+                == candidate_logits.argmax(dim=-1)
+            ).float().detach().cpu().tolist())
+            source_nll.extend(F.cross_entropy(
+                source_logits, target, reduction="none"
+            ).detach().cpu().tolist())
+            quant_nll.extend(F.cross_entropy(
+                candidate_logits, target, reduction="none"
+            ).detach().cpu().tolist())
             evaluated_tokens += target.numel()
 
     averaged_sizes = {
@@ -373,7 +399,9 @@ def _evaluate_kv_cache(
         for key in size_metrics[0]
         if key != "kv_layers"
     }
-    return {
+    nll_deltas = [candidate - source
+                  for source, candidate in zip(source_nll, quant_nll)]
+    result: dict[str, Any] = {
         "batches": config.batches,
         "prompt_len": config.prompt_len,
         "continuation_len": config.continuation_len,
@@ -387,6 +415,17 @@ def _evaluate_kv_cache(
         "nll_delta": _mean(quant_nll) - _mean(source_nll),
         **averaged_sizes,
     }
+    result["paired_token_bootstrap"] = bootstrap_report(
+        {
+            "mean_teacher_kl": kls,
+            "mean_logit_cosine": cosine,
+            "top1_agreement": top1,
+            "nll_delta": nll_deltas,
+        },
+        draws=config.bootstrap_draws,
+        seed=config.bootstrap_seed,
+    )
+    return result
 
 
 def _score(metrics: dict[str, float | int], config: KVDynamicConfig) -> float:

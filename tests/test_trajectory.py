@@ -45,11 +45,12 @@ def test_trajectory_fidelity_detects_free_running_divergence():
     assert perfect["exact_trajectory_rate"] == 1.0
     assert perfect["mean_matching_prefix"] == 8.0
     assert len(perfect["prompt_metrics"]) == 2
-    assert perfect["prompt_metrics"][0]["mean_first_divergence"] == 8.0
+    assert "mean_first_divergence" not in perfect["prompt_metrics"][0]
+    assert perfect["paired_prompt_bootstrap"]["confidence"] == 0.95
 
     model.offset = 1
     divergent = evaluate_trajectories(
         model, TinyTokenizer(), references, "cpu", config)
     assert divergent["token_agreement"] == 0.0
     assert divergent["exact_trajectory_rate"] == 0.0
-    assert divergent["mean_first_divergence"] == 0.0
+    assert divergent["mean_matching_prefix"] == 0.0

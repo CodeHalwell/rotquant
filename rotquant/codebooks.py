@@ -234,11 +234,11 @@ def uniform_signed(levels: int, clip: float = 1.0) -> np.ndarray:
 
 
 def normal_float(levels: int, offset: float = 0.5) -> np.ndarray:
-    """NormalFloat (NF) grid: equal-mass normal quantiles, normalised to [-1, 1].
+    """Symmetric NF-style grid from equal-mass Gaussian quantiles.
 
-    Mirrors the bitsandbytes NF construction: split the probability mass into
-    ``levels`` quantiles (offset to avoid the infinite tails), map through the
-    Gaussian inverse-CDF, and rescale so the extreme code is +-1.
+    This is a useful scalar control, but it is not the asymmetric bitsandbytes
+    NF4 datatype (which includes an exact zero).  The historical ``nf`` config
+    alias is retained for compatibility.
     """
     from scipy.stats import norm
 
@@ -357,8 +357,15 @@ class VectorCodebook:
         centroids = self.centroids.to(flat.device)
         centroid_energy = centroids.square().sum(dim=1)
         indices = []
-        for start in range(0, flat.shape[0], self.chunk_size):
-            batch = flat[start:start + self.chunk_size]
+        # Bound the temporary distance matrix independently of codebook size.
+        # This is essential for 16-bit vector indices (65,536 centroids).
+        max_distance_values = 16_777_216
+        row_chunk = min(
+            self.chunk_size,
+            max(1, max_distance_values // self.levels),
+        )
+        for start in range(0, flat.shape[0], row_chunk):
+            batch = flat[start:start + row_chunk]
             distances = (
                 batch.square().sum(dim=1, keepdim=True)
                 + centroid_energy.unsqueeze(0)
@@ -377,6 +384,71 @@ class VectorCodebook:
     def to(self, device) -> VectorCodebook:
         return VectorCodebook(
             self.centroids.to(device), name=self.name, chunk_size=self.chunk_size
+        )
+
+
+class FiniteE8Codebook(VectorCodebook):
+    """Finite-rate, shaped E8 product codebook with a fixed packed index.
+
+    The retained points are the lowest-energy points from both E8 cosets and
+    are normalized to unit coordinate variance. Encoding first uses the exact
+    infinite-lattice nearest point. A sorted integer-key table maps in-support
+    lattice points to their fixed index; rare overload points outside the
+    shaping region fall back to exact nearest-neighbour search over the finite
+    retained set. This makes the usual path O(d log K), while preserving exact
+    finite-codebook semantics at the boundary.
+    """
+
+    def __init__(self, raw_points: torch.Tensor, *, normalization: float | None = None,
+                 name: str = "e8p", chunk_size: int = 65536):
+        raw = torch.as_tensor(raw_points, dtype=torch.float32)
+        if raw.ndim != 2 or raw.shape[1] != 8:
+            raise ValueError("finite E8 points must have shape [levels, 8]")
+        norm = float(normalization or raw.square().mean().sqrt().item())
+        if not math.isfinite(norm) or norm <= 0:
+            raise ValueError("finite E8 normalization must be positive")
+        self.normalization = norm
+        self.raw_points = raw.contiguous()
+        super().__init__(raw / norm, name=name, chunk_size=chunk_size)
+        keys = self._point_keys(raw)
+        self._sorted_keys, order = torch.sort(keys)
+        self._sorted_indices = order.to(torch.int64)
+
+    @staticmethod
+    def _point_keys(points: torch.Tensor) -> torch.Tensor:
+        doubled = torch.round(points * 2).to(torch.int64)
+        if (doubled.abs() > 31).any():
+            raise ValueError("finite E8 key codec supports doubled coordinates in [-31, 31]")
+        powers = torch.tensor(
+            [65 ** index for index in range(8)],
+            dtype=torch.int64,
+            device=points.device,
+        )
+        return ((doubled + 32) * powers).sum(dim=-1)
+
+    def encode(self, x: torch.Tensor) -> torch.Tensor:
+        if x.shape[-1] != 8:
+            raise ValueError("finite E8 vectors must have width 8")
+        flat = x.reshape(-1, 8).float()
+        nearest = nearest_e8(flat * self.normalization)
+        keys = self._point_keys(nearest)
+        sorted_keys = self._sorted_keys.to(keys.device)
+        sorted_indices = self._sorted_indices.to(keys.device)
+        positions = torch.searchsorted(sorted_keys, keys)
+        bounded = positions.clamp_max(sorted_keys.numel() - 1)
+        hit = (positions < sorted_keys.numel()) & (sorted_keys[bounded] == keys)
+        result = torch.empty_like(keys)
+        result[hit] = sorted_indices[bounded[hit]]
+        if (~hit).any():
+            result[~hit] = super().encode(flat[~hit])
+        return result.reshape(x.shape[:-1])
+
+    def to(self, device) -> FiniteE8Codebook:
+        return FiniteE8Codebook(
+            self.raw_points.to(device),
+            normalization=self.normalization,
+            name=self.name,
+            chunk_size=self.chunk_size,
         )
 
 
@@ -471,6 +543,26 @@ def build_gaussian_vector_codebook(
         seed=seed + 130363,
         iters=iters,
         name=f"gaussian_vq_d{dimension}_w{bits_per_weight}",
+    )
+
+
+@functools.cache
+def build_finite_e8_codebook(bits_per_weight: int = 2) -> FiniteE8Codebook:
+    """Build a deterministic 8D E8P-style codebook at an exact finite rate."""
+
+    if bits_per_weight not in (1, 2):
+        raise ValueError("finite E8 supports 1 or 2 bits per weight")
+    levels = 1 << (bits_per_weight * 8)
+    axis = torch.arange(-2, 3, dtype=torch.float32)
+    grid = torch.cartesian_prod(*([axis] * 8))
+    even = (grid.to(torch.int64).sum(dim=1) % 2) == 0
+    d8 = grid[even]
+    candidates = torch.cat([d8, d8 + 0.5], dim=0)
+    energy = candidates.square().sum(dim=1)
+    order = torch.argsort(energy, stable=True)[:levels]
+    points = candidates[order].contiguous()
+    return FiniteE8Codebook(
+        points, name=f"e8p_d8_w{bits_per_weight}"
     )
 
 

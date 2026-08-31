@@ -54,7 +54,7 @@ logger = get_logger(__name__)
 class RotationTrainConfig:
     steps: int = 100
     lr: float = 1e-3
-    objective: str = "weight"          # weight | activation
+    objective: str = "weight"          # weight | activation | hessian
     max_tokens: int = 64
     selection_tokens: int = 0
     # MSE scale search evaluates dozens of candidates per optimiser step. Using
@@ -66,14 +66,19 @@ class RotationTrainConfig:
     # After fast proxy-objective training, require this relative improvement
     # under the experiment's actual final quantizer or restore exact FWHT.
     selection_min_improvement: float = 0.0
+    learn_signs: bool = False
+    sign_temperature: float = 1.0
 
     def __post_init__(self) -> None:
         if self.steps < 1:
             raise ValueError("rotation training steps must be >= 1")
         if self.lr <= 0:
             raise ValueError("rotation training lr must be > 0")
-        if self.objective not in {"weight", "activation"}:
-            raise ValueError("rotation training objective must be 'weight' or 'activation'")
+        if self.objective not in {"weight", "activation", "hessian"}:
+            raise ValueError(
+                "rotation training objective must be 'weight', 'activation', "
+                "or 'hessian'"
+            )
         if self.max_tokens < 1:
             raise ValueError("rotation training max_tokens must be >= 1")
         if self.selection_tokens < 0:
@@ -82,6 +87,10 @@ class RotationTrainConfig:
             raise ValueError("max_grad_norm must be >= 0")
         if not 0 <= self.selection_min_improvement < 1:
             raise ValueError("selection_min_improvement must be in [0, 1)")
+        if not isinstance(self.learn_signs, bool):
+            raise TypeError("learn_signs must be boolean")
+        if self.sign_temperature <= 0:
+            raise ValueError("sign_temperature must be positive")
 
 
 @torch.no_grad()
@@ -125,6 +134,7 @@ def select_butterfly_checkpoint(rotation: ButterflyRotation,
     accepted = candidate_error <= reference_error * (1.0 - min_improvement)
     if not accepted:
         rotation.theta.copy_(reference.theta)
+        rotation.signs.copy_(reference.signs)
     return {
         "selection_reference_mse": reference_error,
         "selection_candidate_mse": candidate_error,
@@ -135,7 +145,8 @@ def select_butterfly_checkpoint(rotation: ButterflyRotation,
 def train_layer_rotation(rotation: Rotation, weight: torch.Tensor,
                          quant_cfg: QuantConfig,
                          config: RotationTrainConfig | None = None,
-                         activations: torch.Tensor | None = None) -> dict[str, Any]:
+                         activations: torch.Tensor | None = None,
+                         hessian: torch.Tensor | None = None) -> dict[str, Any]:
     """Optimise a trainable rotation in place for one layer's frozen weight.
 
     Returns ``{"initial_mse", "final_mse", "steps"}`` (rotated-domain
@@ -147,6 +158,8 @@ def train_layer_rotation(rotation: Rotation, weight: torch.Tensor,
         raise TypeError("rotation training requires a trainable rotation")
     if cfg.objective == "activation" and activations is None:
         raise ValueError("activation-aware rotation training requires activations")
+    if cfg.objective == "hessian" and hessian is None:
+        raise ValueError("Hessian-aware rotation training requires a Hessian")
 
     train_quant_cfg = replace(
         quant_cfg,
@@ -155,6 +168,12 @@ def train_layer_rotation(rotation: Rotation, weight: torch.Tensor,
     )
     quantizer = Quantizer(train_quant_cfg)
     w = weight.detach().to(torch.float32)
+    initial_signs = None
+    if cfg.learn_signs:
+        if not isinstance(rotation, ButterflyRotation):
+            raise TypeError("learned signs require a ButterflyRotation")
+        initial_signs = rotation.signs.detach().clone()
+        rotation.enable_sign_training(cfg.sign_temperature)
 
     x = target = target_power = None
     if cfg.objective == "activation":
@@ -162,6 +181,12 @@ def train_layer_rotation(rotation: Rotation, weight: torch.Tensor,
         x = x.to(device=w.device, dtype=torch.float32)
         target = x @ w.T
         target_power = target.pow(2).mean().clamp_min(1e-12)
+    H = None
+    if cfg.objective == "hessian":
+        H = hessian.detach().to(device=w.device, dtype=torch.float32)
+        if H.shape != (w.shape[1], w.shape[1]):
+            raise ValueError("rotation Hessian shape does not match weight input")
+        target_power = (w @ H * w).sum().clamp_min(1e-12)
 
     def quantize_current(v: torch.Tensor) -> torch.Tensor:
         scales = quantizer.select_scales(v)
@@ -176,6 +201,10 @@ def train_layer_rotation(rotation: Rotation, weight: torch.Tensor,
         if cfg.objective == "activation":
             pred = rotation.rotate_activation(x) @ q.T
             return ((pred - target).pow(2).mean() / target_power).item()
+        if cfg.objective == "hessian":
+            effective_error = rotation.inverse_activation(v - q)
+            return ((effective_error @ H * effective_error).sum()
+                    / target_power).item()
         return (v - q).pow(2).mean().item()
 
     initial = current_mse()
@@ -192,6 +221,10 @@ def train_layer_rotation(rotation: Rotation, weight: torch.Tensor,
         if cfg.objective == "activation":
             pred = rotation.rotate_activation(x) @ q.T
             loss = (pred - target).pow(2).mean() / target_power
+        elif cfg.objective == "hessian":
+            effective_error = rotation.inverse_activation(v - q)
+            loss = ((effective_error @ H * effective_error).sum()
+                    / target_power)
         else:
             loss = (v - q).pow(2).mean()
         loss_value = loss.detach().item()
@@ -215,6 +248,15 @@ def train_layer_rotation(rotation: Rotation, weight: torch.Tensor,
             for parameter, best in zip(rotation.parameters(), best_params):
                 parameter.copy_(best)
 
+    sign_flip_rate = 0.0
+    if isinstance(rotation, ButterflyRotation) and rotation.sign_logits is not None:
+        final_signs = torch.where(
+            rotation.sign_logits.detach() >= 0,
+            torch.ones_like(rotation.signs),
+            -torch.ones_like(rotation.signs),
+        )
+        sign_flip_rate = float((final_signs != initial_signs).float().mean().item())
+        rotation.commit_signs()
     rotation.eval()
     rotation.requires_grad_(False)
     if isinstance(rotation, LearnedRotation):
@@ -225,4 +267,5 @@ def train_layer_rotation(rotation: Rotation, weight: torch.Tensor,
     return {"initial_mse": initial, "final_mse": final,
             "steps": int(cfg.steps), "objective": cfg.objective,
             "tokens": int(x.shape[0]) if x is not None else 0,
-            "best_step": int(best_step)}
+            "best_step": int(best_step),
+            "sign_flip_rate": sign_flip_rate}

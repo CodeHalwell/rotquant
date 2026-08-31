@@ -144,13 +144,21 @@ def _quantized_weight_spec(
     index: int,
     qweight: QuantizedWeight,
     tensors: dict[str, torch.Tensor],
+    codebook_keys: dict[int, str] | None = None,
 ) -> dict[str, Any]:
-    if isinstance(qweight.codebook, VectorCodebook):
-        raise TypeError(
-            "finite-rate vector codebooks are research-only and do not yet "
-            "have a stable packed-checkpoint contract"
-        )
     prefix = f"layer_{index:05d}"
+    primary_codebook_key = None
+    if codebook_keys is not None:
+        primary_codebook_key = codebook_keys.get(id(qweight.codebook))
+    if primary_codebook_key is None:
+        primary_codebook_key = _tensor_spec(
+            tensors,
+            f"{prefix}.codebook",
+            qweight.codebook.centroids,
+            clone=True,
+        )
+        if codebook_keys is not None:
+            codebook_keys[id(qweight.codebook)] = primary_codebook_key
     residual_codebook = None
     if qweight.residual_codebook is not None:
         residual_codebook = {
@@ -165,13 +173,21 @@ def _quantized_weight_spec(
     return {
         "packed": _packed_spec(tensors, f"{prefix}.packed", qweight.packed),
         "scales": _tensor_spec(tensors, f"{prefix}.scales", qweight.scales),
+        "scale_offsets": _tensor_spec(
+            tensors, f"{prefix}.scale_offsets", qweight.scale_offsets),
+        "scale_steps": _tensor_spec(
+            tensors, f"{prefix}.scale_steps", qweight.scale_steps),
         "codebook": {
+            "kind": (
+                "vector" if isinstance(qweight.codebook, VectorCodebook)
+                else "scalar"
+            ),
             "name": qweight.codebook.name,
-            "centroids": _tensor_spec(
-                tensors,
-                f"{prefix}.codebook",
-                qweight.codebook.centroids,
-                clone=True,
+            "centroids": primary_codebook_key,
+            "dimension": (
+                qweight.codebook.dim
+                if isinstance(qweight.codebook, VectorCodebook)
+                else 1
             ),
         },
         "group_size": qweight.group_size,
@@ -183,6 +199,16 @@ def _quantized_weight_spec(
         "residual_scales": _tensor_spec(
             tensors, f"{prefix}.residual_scales", qweight.residual_scales
         ),
+        "residual_scale_offsets": _tensor_spec(
+            tensors,
+            f"{prefix}.residual_scale_offsets",
+            qweight.residual_scale_offsets,
+        ),
+        "residual_scale_steps": _tensor_spec(
+            tensors,
+            f"{prefix}.residual_scale_steps",
+            qweight.residual_scale_steps,
+        ),
         "residual_codebook": residual_codebook,
         "sketch": _packed_spec(tensors, f"{prefix}.sketch", qweight.sketch),
         "sketch_row_norms": _tensor_spec(
@@ -193,6 +219,7 @@ def _quantized_weight_spec(
         "scale_group_size": qweight.scale_group_size,
         "scale_bits_main": qweight.scale_bits_main,
         "scale_bits_residual": qweight.scale_bits_residual,
+        "scale_quant_group_size": qweight.scale_quant_group_size,
     }
 
 
@@ -212,18 +239,32 @@ def _read_tensor(handle, key: str | None) -> torch.Tensor | None:
 
 
 def _read_codebook(
-    handle, spec: dict[str, Any] | None
-) -> ScalarCodebook | None:
+    handle, spec: dict[str, Any] | None,
+    cache: dict[tuple[str, str], ScalarCodebook | VectorCodebook] | None = None,
+) -> ScalarCodebook | VectorCodebook | None:
     if spec is None:
         return None
-    return ScalarCodebook(
-        handle.get_tensor(spec["centroids"]), name=spec.get("name", "scalar")
-    )
+    cache_key = (spec.get("kind", "scalar"), spec["centroids"])
+    if cache is not None and cache_key in cache:
+        return cache[cache_key]
+    centroids = handle.get_tensor(spec["centroids"])
+    if spec.get("kind", "scalar") == "vector":
+        codebook = VectorCodebook(
+            centroids, name=spec.get("name", "vector"))
+    else:
+        codebook = ScalarCodebook(centroids, name=spec.get("name", "scalar"))
+    if cache is not None:
+        cache[cache_key] = codebook
+    return codebook
 
 
-def _read_quantized_weight(handle, spec: dict[str, Any]) -> QuantizedWeight:
+def _read_quantized_weight(
+    handle,
+    spec: dict[str, Any],
+    codebook_cache: dict[tuple[str, str], ScalarCodebook | VectorCodebook] | None = None,
+) -> QuantizedWeight:
     packed = _read_packed(handle, spec["packed"])
-    codebook = _read_codebook(handle, spec["codebook"])
+    codebook = _read_codebook(handle, spec["codebook"], codebook_cache)
     if packed is None or codebook is None:
         raise ValueError("primary packed tensor and codebook are required")
     return QuantizedWeight(
@@ -235,7 +276,14 @@ def _read_quantized_weight(handle, spec: dict[str, Any]) -> QuantizedWeight:
         in_features=int(spec["in_features"]),
         residual_packed=_read_packed(handle, spec.get("residual_packed")),
         residual_scales=_read_tensor(handle, spec.get("residual_scales")),
-        residual_codebook=_read_codebook(handle, spec.get("residual_codebook")),
+        scale_offsets=_read_tensor(handle, spec.get("scale_offsets")),
+        scale_steps=_read_tensor(handle, spec.get("scale_steps")),
+        residual_scale_offsets=_read_tensor(
+            handle, spec.get("residual_scale_offsets")),
+        residual_scale_steps=_read_tensor(
+            handle, spec.get("residual_scale_steps")),
+        residual_codebook=_read_codebook(
+            handle, spec.get("residual_codebook"), codebook_cache),
         sketch=_read_packed(handle, spec.get("sketch")),
         sketch_row_norms=_read_tensor(handle, spec.get("sketch_row_norms")),
         sketch_k=int(spec.get("sketch_k", 0)),
@@ -243,6 +291,7 @@ def _read_quantized_weight(handle, spec: dict[str, Any]) -> QuantizedWeight:
         scale_group_size=spec.get("scale_group_size"),
         scale_bits_main=float(spec.get("scale_bits_main", 16.0)),
         scale_bits_residual=float(spec.get("scale_bits_residual", 16.0)),
+        scale_quant_group_size=int(spec.get("scale_quant_group_size", 256)),
     )
 
 
@@ -291,11 +340,15 @@ def save_packed_checkpoint(
 
     modules = []
     packed_tensors: dict[str, torch.Tensor] = {}
+    rotation_ids: dict[int, str] = {}
+    codebook_keys: dict[int, str] = {}
     for index, (name, module) in enumerate(
         item for item in model.named_modules() if isinstance(item[1], QuantLinear)
     ):
         if module._log_scale_multiplier is not None:
             raise ValueError(f"cannot export uncommitted scale training state: {name}")
+        rotation_id = rotation_ids.setdefault(
+            id(module.act_rotation), f"rotation_{len(rotation_ids):05d}")
         modules.append(
             {
                 "name": name,
@@ -303,8 +356,9 @@ def save_packed_checkpoint(
                 "out_features": module.out_features,
                 "has_bias": module.bias is not None,
                 "rotation": _rotation_spec(module.act_rotation),
+                "rotation_id": rotation_id,
                 "qweight": _quantized_weight_spec(
-                    index, module.qweight, packed_tensors
+                    index, module.qweight, packed_tensors, codebook_keys
                 ),
                 "lora_rank": module.lora_rank,
                 "lora_alpha": module.lora_alpha,
@@ -313,6 +367,7 @@ def save_packed_checkpoint(
                     if module.lora_A is not None
                     else None
                 ),
+                "activation_bits": module.activation_bits,
             }
         )
     if not modules:
@@ -462,6 +517,8 @@ def load_packed_model(
 
     packed_path = checkpoint / manifest["packed_state"]
     with safe_open(packed_path, framework="pt", device="cpu") as packed_handle:
+        rotations: dict[str, Rotation] = {}
+        codebooks: dict[tuple[str, str], ScalarCodebook | VectorCodebook] = {}
         for module_spec in manifest["quantized_modules"]:
             name = module_spec["name"]
             parent, attr = get_parent(model, name)
@@ -479,9 +536,15 @@ def load_packed_model(
             ):
                 raise ValueError(f"linear shape mismatch while restoring {name}")
             qweight = _read_quantized_weight(
-                packed_handle, module_spec["qweight"]
+                packed_handle, module_spec["qweight"], codebooks
             )
-            rotation = _build_rotation(module_spec["rotation"])
+            rotation_id = module_spec.get("rotation_id")
+            if rotation_id is not None and rotation_id in rotations:
+                rotation = rotations[rotation_id]
+            else:
+                rotation = _build_rotation(module_spec["rotation"])
+                if rotation_id is not None:
+                    rotations[rotation_id] = rotation
             bias = (
                 torch.empty(linear.out_features, dtype=resolved_dtype)
                 if module_spec["has_bias"]
@@ -493,6 +556,7 @@ def load_packed_model(
                 bias=bias,
                 fallback=fallback,
                 fallback_dtype=resolved_dtype,
+                activation_bits=module_spec.get("activation_bits"),
             )
             rank = int(module_spec.get("lora_rank", 0))
             if rank:

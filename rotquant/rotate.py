@@ -118,6 +118,37 @@ class Rotation(nn.Module):
     def __init__(self, dim: int):
         super().__init__()
         self.dim = dim
+        self._activation_cache_enabled = False
+        self._cached_activation_input: torch.Tensor | None = None
+        self._cached_activation_output: torch.Tensor | None = None
+        self._cached_activation_version: int | None = None
+
+    def enable_activation_cache(self, enabled: bool = True) -> None:
+        """Reuse one no-grad activation transform across shared projections."""
+
+        self._activation_cache_enabled = bool(enabled)
+        if not enabled:
+            self.clear_activation_cache()
+
+    def clear_activation_cache(self) -> None:
+        self._cached_activation_input = None
+        self._cached_activation_output = None
+        self._cached_activation_version = None
+
+    def cached_rotate_activation(self, x: torch.Tensor) -> torch.Tensor:
+        """Rotate, caching only safe no-grad inference calls by object identity."""
+
+        if not self._activation_cache_enabled or torch.is_grad_enabled():
+            return self.rotate_activation(x)
+        if (self._cached_activation_input is x
+                and self._cached_activation_output is not None
+                and self._cached_activation_version == x._version):
+            return self._cached_activation_output
+        output = self.rotate_activation(x)
+        self._cached_activation_input = x
+        self._cached_activation_output = output
+        self._cached_activation_version = x._version
+        return output
 
     def rotate_activation(self, x: torch.Tensor) -> torch.Tensor:
         """Return ``x @ R^T`` along the last dim."""
@@ -173,7 +204,9 @@ class RandomizedHadamard(Rotation):
         if seed is not None:
             gen.manual_seed(seed)
         signs = torch.randint(0, 2, (dim,), generator=gen, dtype=torch.float32) * 2 - 1
-        self.register_buffer("signs", signs.to(device=device, dtype=dtype))
+        # Retain the discrete diagonal as int8 rather than spending fp32 on one
+        # bit of information. It is cast to the operand dtype only at use time.
+        self.register_buffer("signs", signs.to(device=device, dtype=torch.int8))
 
     @staticmethod
     def _largest_pow2_divisor(n: int) -> int:
@@ -238,10 +271,12 @@ class ButterflyRotation(Rotation):
             gen.manual_seed(seed)
         signs = torch.randint(0, 2, (dim,), generator=gen,
                               dtype=torch.float32) * 2 - 1
-        self.register_buffer("signs", signs.to(device=device, dtype=dtype))
+        self.register_buffer("signs", signs.to(device=device, dtype=torch.int8))
         angles = torch.full((self.n_blocks, self.n_stages, block // 2),
                             math.pi / 4, dtype=torch.float32, device=device)
         self.theta = nn.Parameter(angles)
+        self.register_parameter("sign_logits", None)
+        self._sign_temperature = 1.0
         self.register_buffer("_cached_cos", None, persistent=False)
         self.register_buffer("_cached_sin", None, persistent=False)
         self._cached_theta_version: int | None = None
@@ -298,8 +333,46 @@ class ButterflyRotation(Rotation):
             h = h.reshape(-1, self.n_blocks, self.block)
         return h.reshape(original_shape)
 
+    def enable_sign_training(self, temperature: float = 1.0) -> nn.Parameter:
+        """Make the input signs trainable through a hard-sign STE.
+
+        The forward transform remains exactly orthogonal because it always uses
+        values in ``{-1, +1}``.  ``tanh(logit / temperature)`` supplies the
+        surrogate derivative; :meth:`commit_signs` folds the selected signs
+        back into the ordinary one-bit sign buffer for inference/checkpointing.
+        """
+
+        if temperature <= 0:
+            raise ValueError("sign temperature must be positive")
+        self._sign_temperature = float(temperature)
+        if self.sign_logits is None:
+            self.sign_logits = nn.Parameter(self.signs.detach().float().clone())
+        return self.sign_logits
+
     def _signs(self, ref: torch.Tensor) -> torch.Tensor:
-        return self.signs.to(device=ref.device, dtype=ref.dtype)
+        if self.sign_logits is None:
+            values = self.signs
+        else:
+            soft = torch.tanh(self.sign_logits / self._sign_temperature)
+            hard = torch.where(
+                self.sign_logits >= 0, torch.ones_like(soft), -torch.ones_like(soft)
+            )
+            # Exact hard signs in the forward pass, smooth surrogate backwards.
+            values = soft + (hard - soft).detach()
+        return values.to(device=ref.device, dtype=ref.dtype)
+
+    @torch.no_grad()
+    def commit_signs(self) -> None:
+        """Commit learned hard signs and remove all training-only metadata."""
+
+        if self.sign_logits is None:
+            return
+        self.signs.copy_(torch.where(
+            self.sign_logits >= 0,
+            torch.ones_like(self.signs),
+            -torch.ones_like(self.signs),
+        ))
+        self.sign_logits = None
 
     def rotate_activation(self, x: torch.Tensor) -> torch.Tensor:
         # R^T = D_s B_0 ... B_k; at initialisation this is D_s H.

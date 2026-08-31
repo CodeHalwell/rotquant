@@ -29,6 +29,7 @@ import json
 import os
 import re
 import sys
+import tempfile
 from collections import OrderedDict
 from dataclasses import dataclass
 from typing import Any
@@ -252,8 +253,10 @@ def load_hf_model(model_name: str, dtype: torch.dtype, device,
 
 
 def build_calib_loader(tokenizer, n_seq: int, seq_len: int, device,
-                       skip: int = 0, revision: str | None = None):
-    """Tokenised C4/WikiText-train calibration sequences (128-512 typical)."""
+                       skip: int = 0, revision: str | None = None,
+                       exclude_source_rows: set[int] | frozenset[int] | None = None):
+    """Tokenised C4 calibration sequences with exact source-row exclusion."""
+    excluded = frozenset(int(row) for row in (exclude_source_rows or ()))
     tokenizer_identity = {
         "class": type(tokenizer).__name__,
         "name_or_path": getattr(tokenizer, "name_or_path", None),
@@ -272,6 +275,7 @@ def build_calib_loader(tokenizer, n_seq: int, seq_len: int, device,
         "n_seq": n_seq,
         "seq_len": seq_len,
         "skip": skip,
+        "exclude_source_rows": sorted(excluded),
     }, sort_keys=True, default=str).encode()).hexdigest()
     cached = _CALIB_CACHE.get(key)
     if cached is not None:
@@ -288,6 +292,8 @@ def build_calib_loader(tokenizer, n_seq: int, seq_len: int, device,
     )
     batches, count, eligible = [], 0, 0
     for source_row, row in enumerate(ds):
+        if source_row in excluded:
+            continue
         ids = tokenizer(row["text"], return_tensors="pt").input_ids
         if ids.shape[1] < seq_len:
             continue
@@ -330,6 +336,77 @@ def token_batch_manifest(batches, *, dataset: str, split: str,
         "token_hashes": hashes,
         "digest": hashlib.sha256("".join(hashes).encode()).hexdigest(),
     }
+
+
+_CALIBRATION_MANIFEST_STAGES = frozenset({
+    "hessian_calibration",
+    "activation_calibration",
+    "activation_selection",
+    "allocation_teacher",
+    "block_calibration",
+    "bias_calibration",
+})
+_EVALUATION_MANIFEST_STAGES = frozenset({
+    "layer_drift",
+    "trajectory",
+    "logit_fidelity",
+    "kv_cache",
+})
+
+
+def calibration_source_rows(manifests: dict[str, Any]) -> set[int]:
+    """Return exact source rows consumed by any internal calibration stage."""
+
+    rows: set[int] = set()
+    for stage in _CALIBRATION_MANIFEST_STAGES:
+        manifest = manifests.get(stage)
+        if not isinstance(manifest, dict):
+            continue
+        rows.update(
+            int(row) for row in manifest.get("source_rows", ()) if row is not None
+        )
+    return rows
+
+
+def validate_internal_data_disjointness(manifests: dict[str, Any]) -> None:
+    """Fail when C4 calibration and evaluation stages reuse a source row."""
+
+    for calibration_stage in sorted(_CALIBRATION_MANIFEST_STAGES):
+        calibration = manifests.get(calibration_stage)
+        if not isinstance(calibration, dict):
+            continue
+        calibration_rows = {
+            int(row) for row in calibration.get("source_rows", ()) if row is not None
+        }
+        if not calibration_rows:
+            continue
+        calibration_identity = (
+            calibration.get("dataset"),
+            calibration.get("split"),
+            calibration.get("revision"),
+        )
+        for evaluation_stage in sorted(_EVALUATION_MANIFEST_STAGES):
+            evaluation = manifests.get(evaluation_stage)
+            if not isinstance(evaluation, dict):
+                continue
+            evaluation_identity = (
+                evaluation.get("dataset"),
+                evaluation.get("split"),
+                evaluation.get("revision"),
+            )
+            if evaluation_identity != calibration_identity:
+                continue
+            overlap = calibration_rows.intersection(
+                int(row) for row in evaluation.get("source_rows", ())
+                if row is not None
+            )
+            if overlap:
+                preview = sorted(overlap)[:8]
+                raise ValueError(
+                    "internal calibration/evaluation source rows are not "
+                    f"disjoint: {calibration_stage} vs {evaluation_stage}: "
+                    f"{preview}"
+                )
 
 
 def _reference_cache_key(kind: str, model_name: str,
@@ -435,9 +512,13 @@ def footprint_metrics(model: torch.nn.Module, cfg_model: dict[str, Any]) -> dict
 class _CalibrationArtifacts:
     """Calibration inputs produced by :func:`_prepare_calibration`."""
 
-    hessians: dict[str, torch.Tensor] | None = None
+    hessians: Any = None
+    hessian_tempdir: Any = None
     activations: dict[str, torch.Tensor] | None = None
+    dynamic_activations: dict[str, torch.Tensor] | None = None
+    activation_means: dict[str, torch.Tensor] | None = None
     block_calls: Any = None
+    block_loader: Any = None
     distill_calls: Any = None
     dynamic_calls: Any = None
     needs_dynamic: bool = False
@@ -475,7 +556,11 @@ def _prepare_calibration(cfg: dict[str, Any], model, tokenizer, device: str,
     art.needs_block_calls = (pcfg.enabled
                              and rotation_train_cfg.get("objective") == "block")
     needs_hessians = pcfg.enabled and (
-        qcfg.error_comp == "gptq" or cfg.get("calibrate", False))
+        qcfg.error_comp == "gptq"
+        or cfg.get("calibrate", False)
+        or rotation_train_cfg.get("objective") == "hessian"
+    )
+    needs_means = pcfg.enabled and qcfg.bias_correction in {"mean", "length_mean"}
     needs_activations = (pcfg.enabled and (
         rotation_train_cfg.get("objective") == "activation"
         or art.needs_dynamic))
@@ -492,7 +577,7 @@ def _prepare_calibration(cfg: dict[str, Any], model, tokenizer, device: str,
         return calib_loader
 
     if needs_hessians:
-        from rotquant.calibrate import collect_hessians
+        from rotquant.calibrate import collect_hessians, collect_hessians_streamed
         build_shared_loader(int(cfg.get("n_calib", 128)),
                             int(cfg.get("calib_seq_len", 2048)))
         metrics["data_manifest"]["hessian_calibration"] = token_batch_manifest(
@@ -503,28 +588,96 @@ def _prepare_calibration(cfg: dict[str, Any], model, tokenizer, device: str,
         with Timer() as t:
             # damp_frac=0: the GPTQ solver applies (auto-increasing) percdamp
             # itself; damping here as well would double it.
-            calib = collect_hessians(model, calib_loader, device,
-                                     include=pcfg.include,
-                                     exclude=pcfg.exclude,
-                                     damp_frac=0.0)
+            hessian_mode = str(cfg.get(
+                "hessian_collection",
+                "streamed" if qcfg.error_comp == "gptq" else "joint",
+            ))
+            if hessian_mode == "streamed":
+                art.hessian_tempdir = tempfile.TemporaryDirectory(
+                    prefix="rotquant-hessians-"
+                )
+                calib = collect_hessians_streamed(
+                    model,
+                    calib_loader,
+                    device,
+                    include=pcfg.include,
+                    exclude=pcfg.exclude,
+                    damp_frac=0.0,
+                    layers_per_pass=int(cfg.get("hessian_layers_per_pass", 1)),
+                    offload_dir=art.hessian_tempdir.name,
+                )
+            elif hessian_mode == "joint":
+                calib = collect_hessians(
+                    model,
+                    calib_loader,
+                    device,
+                    include=pcfg.include,
+                    exclude=pcfg.exclude,
+                    damp_frac=0.0,
+                )
+            else:
+                raise ValueError(
+                    "hessian_collection must be 'streamed' or 'joint'"
+                )
         art.hessians = calib.hessians
+        art.activation_means = calib.means
+        metrics["hessian_collection"] = {
+            "mode": hessian_mode,
+            "layers_per_pass": (
+                int(cfg.get("hessian_layers_per_pass", 1))
+                if hessian_mode == "streamed" else len(calib.hessians)
+            ),
+            "layers": len(calib.hessians),
+            "disk_offloaded": hessian_mode == "streamed",
+        }
         metrics["calib_seconds"] = t.elapsed
+
+    if needs_means and art.activation_means is None:
+        from rotquant.calibrate import collect_activation_means
+        if calib_loader is None:
+            build_shared_loader(
+                int(cfg.get("bias_n_calib", cfg.get("n_calib", 128))),
+                int(cfg.get("calib_seq_len", 2048)),
+            )
+        metrics["data_manifest"]["bias_calibration"] = token_batch_manifest(
+            calib_loader,
+            dataset="allenai/c4",
+            split="train",
+            revision=calibration_revision,
+            skip=0,
+            seq_len=calib_loader_seq_len,
+        )
+        with Timer() as t:
+            art.activation_means = collect_activation_means(
+                model,
+                calib_loader,
+                device,
+                include=pcfg.include,
+                exclude=pcfg.exclude,
+            )
+        metrics["bias_calib_seconds"] = t.elapsed
 
     if needs_activations:
         from rotquant.calibrate import collect_activations
-        rotation_tokens = 0
+        rotation_train_tokens = 0
+        selection_tokens = 0
         if rotation_train_cfg.get("objective") == "activation":
-            train_tokens = int(rotation_train_cfg.get("max_tokens", 64))
+            rotation_train_tokens = int(rotation_train_cfg.get("max_tokens", 64))
             selection_tokens = int(
                 rotation_train_cfg.get("selection_tokens", 0))
-            rotation_tokens = train_tokens + selection_tokens
         dynamic_tokens = int(dynamic_cfg.get("max_tokens", 32)) \
             if art.needs_dynamic else 0
-        max_tokens = max(rotation_tokens, dynamic_tokens)
+        training_capture_tokens = max(rotation_train_tokens, dynamic_tokens)
         if calib_loader is None:
             calib_seq_len = int(cfg.get("calib_seq_len", 2048))
-            minimum_batches = max(1, (max_tokens + calib_seq_len - 1) // calib_seq_len)
-            n_batches = int(cfg.get("rotation_n_calib", minimum_batches))
+            minimum_batches = max(
+                int(cfg.get("activation_min_documents", 8)),
+                (training_capture_tokens + calib_seq_len - 1) // calib_seq_len,
+            )
+            n_batches = max(
+                int(cfg.get("rotation_n_calib", minimum_batches)),
+                minimum_batches,
+            )
             build_shared_loader(n_batches, calib_seq_len)
         metrics["data_manifest"]["activation_calibration"] = token_batch_manifest(
             calib_loader, dataset="allenai/c4", split="train",
@@ -532,11 +685,65 @@ def _prepare_calibration(cfg: dict[str, Any], model, tokenizer, device: str,
             seq_len=calib_loader_seq_len,
         )
         with Timer() as t:
-            activation_calib = collect_activations(
+            training_capture = collect_activations(
                 model, calib_loader, device,
                 include=pcfg.include, exclude=pcfg.exclude,
-                max_tokens=max_tokens)
-        art.activations = activation_calib.activations
+                max_tokens=training_capture_tokens, seed=pcfg.seed)
+        art.dynamic_activations = training_capture.activations
+        art.activations = {
+            name: values[:rotation_train_tokens]
+            for name, values in training_capture.activations.items()
+        } if rotation_train_tokens else training_capture.activations
+
+        if selection_tokens:
+            selection_documents = max(
+                int(cfg.get("activation_selection_documents", 4)),
+                (selection_tokens + int(calib_loader_seq_len) - 1)
+                // int(calib_loader_seq_len),
+            )
+            training_rows = {
+                int(batch.source_row) for batch in calib_loader
+                if getattr(batch, "source_row", None) is not None
+            }
+            selection_loader = build_calib_loader(
+                tokenizer,
+                selection_documents,
+                int(calib_loader_seq_len),
+                device,
+                skip=int(cfg.get("activation_selection_skip", 0)),
+                revision=calibration_revision,
+                exclude_source_rows=training_rows,
+            )
+            metrics["data_manifest"]["activation_selection"] = (
+                token_batch_manifest(
+                    selection_loader,
+                    dataset="allenai/c4",
+                    split="train",
+                    revision=calibration_revision,
+                    skip=int(cfg.get("activation_selection_skip", 0)),
+                    seq_len=int(calib_loader_seq_len),
+                )
+            )
+            selection_capture = collect_activations(
+                model,
+                selection_loader,
+                device,
+                include=pcfg.include,
+                exclude=pcfg.exclude,
+                max_tokens=selection_tokens,
+                seed=pcfg.seed + 1,
+            )
+            merged: dict[str, torch.Tensor] = {}
+            for name, train_values in (art.activations or {}).items():
+                selected_values = selection_capture.activations.get(name)
+                if selected_values is None or selected_values.shape[0] < selection_tokens:
+                    raise ValueError(
+                        f"layer {name} has insufficient disjoint selection activations"
+                    )
+                merged[name] = torch.cat(
+                    (train_values, selected_values[:selection_tokens]), dim=0
+                )
+            art.activations = merged
         metrics["activation_calib_seconds"] = t.elapsed
 
     dynamic_global_batches = int(dynamic_cfg.get("global_kl_batches", 0)) \
@@ -588,14 +795,21 @@ def _prepare_calibration(cfg: dict[str, Any], model, tokenizer, device: str,
             seq_len=calib_loader_seq_len,
         )
         with Timer() as t:
-            art.block_calls = collect_block_calls(
-                model, calib_loader[:n_block_batches], device,
-                blocks=find_transformer_blocks(model),
-                max_batches=n_block_batches)
+            if bool(rotation_train_cfg.get("stream_blocks", False)):
+                art.block_loader = calib_loader[:n_block_batches]
+            else:
+                art.block_calls = collect_block_calls(
+                    model, calib_loader[:n_block_batches], device,
+                    blocks=find_transformer_blocks(model),
+                    max_batches=n_block_batches)
             if n_distill_batches:
                 art.distill_calls = collect_teacher_calls(
                     model, calib_loader[n_block_batches:total_block_batches],
-                    device, max_batches=n_distill_batches)
+                    device,
+                    max_batches=n_distill_batches,
+                    topk=int(rotation_train_cfg.get(
+                        "distill_teacher_topk", 0
+                    )))
         metrics["block_calib_seconds"] = t.elapsed
 
     return art
@@ -613,6 +827,7 @@ def _capture_references(cfg: dict[str, Any], eval_cfg: dict[str, Any],
     """
     calibration_revision = cfg.get("calib_dataset_revision")
     refs = _ReferenceCaptures()
+    excluded_rows = calibration_source_rows(metrics["data_manifest"])
 
     if eval_cfg.get("layer_mse", False):
         from rotquant.eval.layer_mse import capture_outputs
@@ -621,7 +836,8 @@ def _capture_references(cfg: dict[str, Any], eval_cfg: dict[str, Any],
         refs.drift_batch = build_calib_loader(
             tokenizer, 1, layer_mse_seq_len, device,
             skip=layer_mse_skip,
-            revision=calibration_revision)[0]
+            revision=calibration_revision,
+            exclude_source_rows=excluded_rows)[0]
         metrics["data_manifest"]["layer_drift"] = token_batch_manifest(
             [refs.drift_batch], dataset="allenai/c4", split="train",
             revision=calibration_revision, skip=layer_mse_skip,
@@ -639,7 +855,8 @@ def _capture_references(cfg: dict[str, Any], eval_cfg: dict[str, Any],
             tokenizer, refs.trajectory_config.batches,
             refs.trajectory_config.prompt_len, device,
             skip=refs.trajectory_config.skip,
-            revision=calibration_revision)
+            revision=calibration_revision,
+            exclude_source_rows=excluded_rows)
         metrics["data_manifest"]["trajectory"] = token_batch_manifest(
             trajectory_batches, dataset="allenai/c4", split="train",
             revision=calibration_revision, skip=refs.trajectory_config.skip,
@@ -683,6 +900,7 @@ def _capture_references(cfg: dict[str, Any], eval_cfg: dict[str, Any],
             refs.logit_fidelity_config.prompt_len, device,
             skip=refs.logit_fidelity_config.skip,
             revision=calibration_revision,
+            exclude_source_rows=excluded_rows,
         )
         metrics["data_manifest"]["logit_fidelity"] = token_batch_manifest(
             logit_batches, dataset="allenai/c4", split="train",
@@ -719,7 +937,8 @@ def _apply_quantization(cfg: dict[str, Any], model, pcfg: PatchConfig,
         from rotquant.dynamic import select_dynamic_quantization
         with Timer() as t:
             pcfg.layer_quant, dynamic_stats = select_dynamic_quantization(
-                model, pcfg, activations=art.activations,
+                model, pcfg,
+                activations=art.dynamic_activations or art.activations,
                 teacher_calls=art.dynamic_calls)
         dynamic_stats["seconds"] = t.elapsed
         patch_stats["dynamic_quantization"] = dynamic_stats
@@ -727,13 +946,28 @@ def _apply_quantization(cfg: dict[str, Any], model, pcfg: PatchConfig,
     reset_peak_vram()
     with Timer() as t:
         if art.needs_block_calls:
-            from rotquant.block_train import train_and_patch_blocks
-            train_and_patch_blocks(model, pcfg, art.block_calls,
-                                   distill_calls=art.distill_calls,
-                                   stats_out=patch_stats)
+            from rotquant.block_train import (
+                train_and_patch_blocks,
+                train_and_patch_blocks_streamed,
+            )
+            if art.block_loader is not None:
+                train_and_patch_blocks_streamed(
+                    model,
+                    pcfg,
+                    art.block_loader,
+                    distill_calls=art.distill_calls,
+                    activation_means=art.activation_means,
+                    stats_out=patch_stats,
+                )
+            else:
+                train_and_patch_blocks(model, pcfg, art.block_calls,
+                                       distill_calls=art.distill_calls,
+                                       activation_means=art.activation_means,
+                                       stats_out=patch_stats)
         else:
             patch_model(model, pcfg, hessians=art.hessians,
                         activations=art.activations,
+                        activation_means=art.activation_means,
                         stats_out=patch_stats)
     metrics["patch_seconds"] = t.elapsed
     metrics["peak_vram_bytes_patch"] = peak_vram_bytes()
@@ -786,6 +1020,7 @@ def _run_evaluations(cfg: dict[str, Any], eval_cfg: dict[str, Any],
                 **kv_cache_config.dynamic).selection_batches
         kv_eval_offset = max(
             kv_selection_batches, kv_cache_config.eval_offset_batches)
+        excluded_rows = calibration_source_rows(metrics["data_manifest"])
         kv_cache_batches = build_calib_loader(
             tokenizer,
             kv_cache_config.batches + kv_eval_offset,
@@ -794,7 +1029,18 @@ def _run_evaluations(cfg: dict[str, Any], eval_cfg: dict[str, Any],
             device,
             skip=kv_cache_config.skip,
             revision=calibration_revision,
+            exclude_source_rows=excluded_rows,
         )
+        metrics["data_manifest"]["kv_cache"] = token_batch_manifest(
+            kv_cache_batches[kv_eval_offset:],
+            dataset="allenai/c4",
+            split="train",
+            revision=calibration_revision,
+            skip=kv_cache_config.skip,
+            seq_len=(kv_cache_config.prompt_len
+                     + kv_cache_config.continuation_len + 1),
+        )
+        validate_internal_data_disjointness(metrics["data_manifest"])
         with Timer() as t:
             metrics["kv_cache"] = evaluate_kv_cache(
                 model, kv_cache_batches, kv_cache_config, device)
@@ -947,6 +1193,7 @@ def run(config_path: str, output_dir: str = "results",
     art = _prepare_calibration(cfg, model, tokenizer, device, qcfg, pcfg, metrics)
     refs = _capture_references(cfg, eval_cfg, model, tokenizer, device,
                                model_name, metrics)
+    validate_internal_data_disjointness(metrics["data_manifest"])
     _apply_quantization(cfg, model, pcfg, art, metrics)
     _run_evaluations(cfg, eval_cfg, model, tokenizer, device, seed, refs, metrics)
     if export_dir:

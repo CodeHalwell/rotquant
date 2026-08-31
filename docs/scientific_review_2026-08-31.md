@@ -11,6 +11,18 @@ impact, and directions worth exploring.
 This is a review document, not a change set: nothing in library code was
 modified.
 
+> **Implementation follow-up (2026-09-01).** The actionable findings were
+> implemented on `codex/scientific-review-implementation`: bounded-memory
+> randomized sampling and disjoint calibration/evaluation rows; streamed GPTQ
+> Hessians with actorder and scale refits; million-token recovery profiles with
+> sparse teacher calls and resumable checkpoints; calibrated mean-bias
+> correction; shared/joint projection rotations; a trace-exact Hessian rotation
+> objective; blockwise uint8 scale metadata; fp16 sink/recent KV storage;
+> finite-rate E8P weight/KV codebooks; per-token W4A8 semantics; learned hard
+> sign vectors; and paired bootstrap intervals. The analysis below is retained
+> as the dated rationale, so statements such as “currently absent” describe the
+> reviewed 2026-08-31 tree rather than the follow-up implementation.
+
 ---
 
 ## 1. What was checked and holds up
@@ -481,9 +493,10 @@ negative-result logging, byte-verified export) is well above the norm and the
 core math is implemented correctly almost everywhere it matters. The dominant
 scientific risks are concentrated in four places: a sketch correction whose
 variance analysis was never done (2.1), rotation training against a
-frozen-weight surrogate whose dominant gradient component cancels at
-deployment (2.3), recovery experiments whose budgets guarantee null results (2.4),
-and the strongest known PTQ tool sitting unused in release recipes (2.5).
+frozen-assignment surrogate that cannot anticipate assignment jumps (2.3),
+historical recovery experiments whose budgets were far below serious QAT scale
+(2.4), and the strongest known PTQ tool sitting unused in the reviewed release
+recipes (2.5).
 Addressing 2.4 + 2.5 alone plausibly moves the headline result from
 "W4 at +4.7% PPL" toward "W4 near-lossless / W3 at similar loss", which is the
 project's stated objective.

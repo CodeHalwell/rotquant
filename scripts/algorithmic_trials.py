@@ -30,6 +30,7 @@ def _weight_profile(
     scale: str = "mse_search",
     bias_correction: str = "none",
     vector_dim: int = 2,
+    scale_bits: float = 16.0,
     research_only: bool = False,
 ) -> AlgorithmicTrial:
     return AlgorithmicTrial(
@@ -46,6 +47,7 @@ def _weight_profile(
             ("quant.error_comp", "none"),
             ("quant.bias_correction", bias_correction),
             ("quant.vector_dim", vector_dim),
+            ("quant.scale_bits", scale_bits),
             # Nine scale candidates keep vector screening bounded. Scalar arms
             # use the same grid when budget-matched against a vector arm.
             ("quant.mse_search_grid", 9 if codebook == "vector" else 41),
@@ -128,6 +130,15 @@ def algorithmic_trial_matrix() -> tuple[AlgorithmicTrial, ...]:
                 research_only=True,
             ),
         ])
+    profiles.append(_weight_profile(
+        "e8p_d8_w2_rms",
+        "low_bit_vector",
+        bits=2,
+        codebook="e8p",
+        scale="rms",
+        vector_dim=8,
+        research_only=True,
+    ))
     for bits in (3, 4):
         profiles.extend([
             _weight_profile(
@@ -156,6 +167,20 @@ def algorithmic_trial_matrix() -> tuple[AlgorithmicTrial, ...]:
             ),
         ])
     profiles.extend([
+        _weight_profile(
+            "gaussian_w3_mse_scale8",
+            "codebook_scale",
+            bits=3,
+            scale_bits=8.0,
+            research_only=True,
+        ),
+        _weight_profile(
+            "mean_w4_mse",
+            "codebook_scale",
+            bits=4,
+            bias_correction="mean",
+            research_only=True,
+        ),
         _dynamic_profile(
             "dynamic_random_3p625",
             target_bpw=3.625,

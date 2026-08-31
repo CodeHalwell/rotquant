@@ -66,9 +66,10 @@ into immutable calibration/held-out manifests, leakage checks, engine-neutral
 observations, and paired domain/bootstrap reports without redistributing gated
 source tokens.
 
-The [packed checkpoint v1 specification](docs/packed_format_v1.md) fixes the
-word layout, bit order, compatibility rules, and native-runtime conformance
-boundary for all 1–8-bit production profiles.
+The [packed checkpoint v2 specification](docs/packed_format_v2.md) retains the
+v1 word layout while adding finite vector codebooks, true uint8 scale metadata,
+shared rotations, and activation-quantization metadata with fail-closed
+compatibility rules.
 
 The [native runtime v2 contract](docs/native_runtime_v2.md) generalises native
 weight blocks and fail-closed kernel dispatch across 1–8 bits while preserving

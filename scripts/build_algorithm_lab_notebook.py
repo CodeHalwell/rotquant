@@ -155,6 +155,9 @@ def build_notebook():
                 f"vector_d2_w{bits}_rms": f"scalar_w{bits}_rms"
                 for bits in (1, 2, 3)
             },
+            "e8p_d8_w2_rms": "scalar_w2_rms",
+            "gaussian_w3_mse_scale8": "gaussian_w3_mse",
+            "mean_w4_mse": "gaussian_w4_mse",
             "dynamic_local_3p625": "dynamic_random_3p625",
             "dynamic_teacher_3p625": "dynamic_random_3p625",
             "dynamic_guarded_teacher_3p625": "dynamic_random_3p625",

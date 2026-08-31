@@ -14,8 +14,8 @@ from pathlib import PurePath
 from typing import Any, NoReturn
 
 FORMAT_NAME = "rotquant-packed"
-FORMAT_VERSION = 1
-SUPPORTED_FORMAT_VERSIONS = (1,)
+FORMAT_VERSION = 2
+SUPPORTED_FORMAT_VERSIONS = (1, 2)
 
 PACKED_WORD_BITS = 32
 PACKED_WORD_DTYPE = "int32"
@@ -143,7 +143,7 @@ def _optional_packed_spec(value: Any, path: str) -> None:
         _packed_spec(value, path)
 
 
-def _validate_module(value: Any, index: int) -> str:
+def _validate_module(value: Any, index: int, version: int) -> str:
     path = f"quantized_modules[{index}]"
     module = _mapping(value, path)
     name = module.get("name")
@@ -194,26 +194,63 @@ def _validate_module(value: Any, index: int) -> str:
         or group_size < 1
     ):
         _fail(f"{path}.qweight.group_size", "must be a positive integer")
+    scale_bits = qweight.get("scale_bits_main", 16.0)
+    if scale_bits not in {8.0, 16.0, 32.0}:
+        _fail(f"{path}.qweight.scale_bits_main", "must be 8, 16, or 32")
+    if version == 1 and float(scale_bits) == 8.0:
+        _fail(f"{path}.qweight.scale_bits_main", "8-bit scales require format v2")
+    if qweight.get("scales") is not None and not isinstance(
+        qweight.get("scales"), str
+    ):
+        _fail(f"{path}.qweight.scales", "must be a tensor key or null")
+    if float(scale_bits) == 8.0 and qweight.get("scales") is not None:
+        for field in ("scale_offsets", "scale_steps"):
+            if not isinstance(qweight.get(field), str):
+                _fail(
+                    f"{path}.qweight.{field}",
+                    "must be a tensor key for 8-bit scales",
+                )
+        scale_group = qweight.get("scale_quant_group_size", 256)
+        if (isinstance(scale_group, bool) or not isinstance(scale_group, int)
+                or scale_group < 2):
+            _fail(
+                f"{path}.qweight.scale_quant_group_size",
+                "must be an integer >= 2",
+            )
     _packed_spec(qweight.get("packed"), f"{path}.qweight.packed")
     packed_numel = qweight["packed"]["numel"]
-    expected_numel = module["in_features"] * module["out_features"]
+    codebook = _mapping(qweight.get("codebook"), f"{path}.qweight.codebook")
+    codebook_kind = codebook.get("kind", "scalar")
+    if codebook_kind not in {"scalar", "vector"}:
+        _fail(f"{path}.qweight.codebook.kind", "must be 'scalar' or 'vector'")
+    if version == 1 and codebook_kind == "vector":
+        _fail(f"{path}.qweight.codebook.kind", "vector codebooks require format v2")
+    dimension = codebook.get("dimension", 1)
+    if (isinstance(dimension, bool) or not isinstance(dimension, int)
+            or dimension < 1):
+        _fail(f"{path}.qweight.codebook.dimension", "must be a positive integer")
+    if codebook_kind == "scalar" and dimension != 1:
+        _fail(f"{path}.qweight.codebook.dimension", "must be 1 for scalar codebooks")
+    if module["in_features"] % dimension:
+        _fail(f"{path}.qweight.codebook.dimension", "must divide in_features")
+    expected_numel = (
+        module["in_features"] * module["out_features"] // dimension)
     if packed_numel != expected_numel:
         _fail(
             f"{path}.qweight.packed.numel",
-            f"must equal in_features * out_features ({expected_numel})",
+            f"must equal out_features * in_features / dimension ({expected_numel})",
         )
     _optional_packed_spec(
         qweight.get("residual_packed"), f"{path}.qweight.residual_packed"
     )
     _optional_packed_spec(qweight.get("sketch"), f"{path}.qweight.sketch")
-    codebook = _mapping(qweight.get("codebook"), f"{path}.qweight.codebook")
     if not isinstance(codebook.get("centroids"), str):
         _fail(f"{path}.qweight.codebook.centroids", "must be a tensor key")
     return name
 
 
 def validate_checkpoint_manifest(manifest: Any) -> None:
-    """Fail closed if a checkpoint manifest violates the supported v1 schema.
+    """Fail closed if a checkpoint manifest violates a supported schema.
 
     Unknown fields are allowed so producers can add optional metadata without a
     format bump.  Fields that affect binary interpretation are validated
@@ -252,7 +289,10 @@ def validate_checkpoint_manifest(manifest: Any) -> None:
     modules = root.get("quantized_modules")
     if not isinstance(modules, list) or not modules:
         _fail("quantized_modules", "must be a non-empty array")
-    names = [_validate_module(module, index) for index, module in enumerate(modules)]
+    names = [
+        _validate_module(module, index, version)
+        for index, module in enumerate(modules)
+    ]
     if len(names) != len(set(names)):
         _fail("quantized_modules", "module names must be unique")
 

@@ -9,6 +9,8 @@ from typing import Any
 import torch
 import torch.nn.functional as F
 
+from .statistics import bootstrap_report
+
 
 @dataclass(frozen=True)
 class LogitFidelityConfig:
@@ -16,6 +18,8 @@ class LogitFidelityConfig:
     prompt_len: int = 64
     skip: int = 8192
     temperature: float = 1.0
+    bootstrap_draws: int = 2_000
+    bootstrap_seed: int = 17
 
     def __post_init__(self) -> None:
         if self.batches < 1 or self.prompt_len < 2:
@@ -24,6 +28,8 @@ class LogitFidelityConfig:
             raise ValueError("logit fidelity skip must be >= 0")
         if self.temperature <= 0:
             raise ValueError("logit fidelity temperature must be > 0")
+        if self.bootstrap_draws < 1 or self.bootstrap_seed < 0:
+            raise ValueError("bootstrap draws must be positive and seed nonnegative")
 
 
 @dataclass
@@ -93,6 +99,9 @@ def evaluate_logit_fidelity(
     source_nll_sum = candidate_nll_sum = 0.0
     tokens = 0
     token_kl_values: list[torch.Tensor] = []
+    token_cosine_values: list[torch.Tensor] = []
+    token_match_values: list[torch.Tensor] = []
+    token_nll_delta_values: list[torch.Tensor] = []
     prompt_metrics: list[dict[str, Any]] = []
     scale = float(config.temperature)
     for reference in references:
@@ -114,14 +123,16 @@ def evaluate_logit_fidelity(
         ).sum(dim=-1) * scale**2
         token_cosine = F.cosine_similarity(teacher, candidate, dim=-1)
         token_matches = teacher.argmax(dim=-1).eq(candidate.argmax(dim=-1))
-        source_nll = F.cross_entropy(
+        source_token_nll = F.cross_entropy(
             teacher.reshape(-1, teacher.shape[-1]), targets.reshape(-1),
-            reduction="sum",
-        )
-        candidate_nll = F.cross_entropy(
+            reduction="none",
+        ).reshape_as(targets)
+        candidate_token_nll = F.cross_entropy(
             candidate.reshape(-1, candidate.shape[-1]), targets.reshape(-1),
-            reduction="sum",
-        )
+            reduction="none",
+        ).reshape_as(targets)
+        source_nll = source_token_nll.sum()
+        candidate_nll = candidate_token_nll.sum()
         prompt_tokens = targets.numel()
         prompt_kl_sum = float(token_kl.sum().item())
         prompt_cosine_sum = float(token_cosine.sum().item())
@@ -135,6 +146,11 @@ def evaluate_logit_fidelity(
         candidate_nll_sum += prompt_candidate_nll
         tokens += prompt_tokens
         token_kl_values.append(token_kl.detach().cpu().reshape(-1))
+        token_cosine_values.append(token_cosine.detach().cpu().reshape(-1))
+        token_match_values.append(token_matches.detach().cpu().float().reshape(-1))
+        token_nll_delta_values.append(
+            (candidate_token_nll - source_token_nll).detach().cpu().reshape(-1)
+        )
         prompt_metrics.append({
             "input_hash": reference.input_hash,
             "tokens": prompt_tokens,
@@ -150,6 +166,16 @@ def evaluate_logit_fidelity(
     if tokens <= 0:
         raise ValueError("logit fidelity references contain no scored tokens")
     token_kl = torch.cat(token_kl_values).float()
+    bootstrap = bootstrap_report(
+        {
+            "mean_teacher_kl": token_kl,
+            "mean_logit_cosine": torch.cat(token_cosine_values),
+            "top1_agreement": torch.cat(token_match_values),
+            "nll_delta": torch.cat(token_nll_delta_values),
+        },
+        draws=config.bootstrap_draws,
+        seed=config.bootstrap_seed,
+    )
     return {
         "prompts": len(references),
         "tokens": tokens,
@@ -164,6 +190,7 @@ def evaluate_logit_fidelity(
         "nll_delta": (candidate_nll_sum - source_nll_sum) / tokens,
         "input_hashes": [reference.input_hash for reference in references],
         "prompt_metrics": prompt_metrics,
+        "paired_token_bootstrap": bootstrap,
     }
 
 

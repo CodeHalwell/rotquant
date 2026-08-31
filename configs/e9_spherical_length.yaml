@@ -7,7 +7,8 @@ quant:
   bits: 3
   codebook: spherical
   codebook_dim: 128
-  scale: mse_search
+  # The finite-dimensional spherical marginal is derived for unit-RMS vectors.
+  scale: rms
   group_size: 128
   error_comp: none
   bias_correction: length

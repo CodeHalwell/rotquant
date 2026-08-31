@@ -29,11 +29,20 @@ class KVQuantConfig:
     value_bits: int | None = None
     group_size: int = 64
     scale_bits: float = 16.0
+    scale_quant_group_size: int = 256
     codebook: str = "gaussian"
     rotation_block: int = 128
     seed: int = 0
     codebook_dim: int | None = None
     bias_correction: str = "none"
+    # Keep attention sinks and the newest decode window in fp16 while packing
+    # the cache middle. These are storage tiers, not just retrieval hints.
+    sink_tokens: int = 0
+    recent_window: int = 0
+
+    def __post_init__(self) -> None:
+        if self.sink_tokens < 0 or self.recent_window < 0:
+            raise ValueError("sink_tokens and recent_window must be nonnegative")
 
     def bits_for(self, *, value: bool = False) -> int:
         selected = self.value_bits if value else self.key_bits
@@ -46,6 +55,7 @@ class KVQuantConfig:
             bits=self.bits_for(value=value),
             group_size=self.group_size,
             scale_bits=self.scale_bits,
+            scale_quant_group_size=self.scale_quant_group_size,
             codebook=self.codebook,
             codebook_dim=(
                 self.codebook_dim or self.group_size
@@ -59,18 +69,57 @@ class KVQuantConfig:
 
 @dataclass
 class QuantizedKV:
-    qweight: QuantizedWeight
+    qweight: QuantizedWeight | None
     shape: tuple[int, ...]
     rotation: Rotation
+    full_precision_rows: torch.Tensor | None = None
+    sink_tokens: int = 0
+    recent_window: int = 0
+
+    def _full_precision_mask(self, device) -> torch.Tensor:
+        sequence = self.shape[-2]
+        positions = torch.zeros(sequence, dtype=torch.bool, device=device)
+        positions[:min(self.sink_tokens, sequence)] = True
+        if self.recent_window:
+            positions[max(0, sequence - self.recent_window):] = True
+        leading_rows = math.prod(self.shape[:-2])
+        return positions.repeat(leading_rows)
 
     def dequantize(self, *, original_basis: bool = False) -> torch.Tensor:
-        tensor = self.qweight.dequantize().reshape(self.shape)
+        if self.qweight is not None:
+            device = self.qweight.packed.data.device
+        elif self.full_precision_rows is not None:
+            device = self.full_precision_rows.device
+        else:  # Construction prevents this; retain a defensive error.
+            raise RuntimeError("quantized KV cache has no stored rows")
+        mask = self._full_precision_mask(device)
+        if not mask.any():
+            tensor = self.qweight.dequantize().reshape(self.shape)
+        else:
+            rows = torch.empty(
+                mask.numel(), self.shape[-1], device=device, dtype=torch.float32)
+            if self.qweight is not None:
+                rows[~mask] = self.qweight.dequantize()
+            rows[mask] = self.full_precision_rows.to(
+                device=device, dtype=torch.float32)
+            tensor = rows.reshape(self.shape)
         return self.rotation.inverse_activation(tensor) if original_basis else tensor
 
     def packed_state_bytes(self) -> int:
-        size = packed_bytes(self.qweight.packed)
-        if self.qweight.scales is not None:
-            size += self.qweight.scales.numel() * self.qweight.scales.element_size()
+        size = 0
+        if self.qweight is not None:
+            size = packed_bytes(self.qweight.packed)
+            if self.qweight.scales is not None:
+                size += (self.qweight.scales.numel()
+                         * self.qweight.scales.element_size())
+                if self.qweight.scale_offsets is not None:
+                    size += (self.qweight.scale_offsets.numel()
+                             * self.qweight.scale_offsets.element_size())
+                    size += (self.qweight.scale_steps.numel()
+                             * self.qweight.scale_steps.element_size())
+        if self.full_precision_rows is not None:
+            size += (self.full_precision_rows.numel()
+                     * self.full_precision_rows.element_size())
         return size
 
 
@@ -84,15 +133,39 @@ def build_kv_rotation(dim: int, config: KVQuantConfig, *, value: bool = False,
 
 @torch.no_grad()
 def quantize_kv(tensor: torch.Tensor, rotation: Rotation,
-                config: KVQuantConfig, *, value: bool = False) -> QuantizedKV:
+                config: KVQuantConfig, *, value: bool = False,
+                sink_tokens: int | None = None,
+                recent_window: int | None = None) -> QuantizedKV:
     if tensor.ndim < 2:
         raise ValueError("KV tensors require at least two dimensions")
     if tensor.shape[-1] != rotation.dim:
         raise ValueError("KV head dimension and rotation dimension differ")
     rotated = rotation.rotate_activation(tensor.float())
     rows = rotated.reshape(-1, rotated.shape[-1])
-    qweight = Quantizer(config.quant_config(value=value)).quantize_weight(rows)
-    return QuantizedKV(qweight=qweight, shape=tuple(tensor.shape), rotation=rotation)
+    sinks = config.sink_tokens if sink_tokens is None else sink_tokens
+    recent = config.recent_window if recent_window is None else recent_window
+    if sinks < 0 or recent < 0:
+        raise ValueError("sink_tokens and recent_window must be nonnegative")
+    sequence = tensor.shape[-2]
+    positions = torch.zeros(sequence, dtype=torch.bool, device=rows.device)
+    positions[:min(sinks, sequence)] = True
+    if recent:
+        positions[max(0, sequence - recent):] = True
+    mask = positions.repeat(math.prod(tensor.shape[:-2]))
+    qweight = None
+    if (~mask).any():
+        qweight = Quantizer(config.quant_config(value=value)).quantize_weight(
+            rows[~mask])
+    full_precision_rows = (
+        rows[mask].to(torch.float16).contiguous() if mask.any() else None)
+    return QuantizedKV(
+        qweight=qweight,
+        shape=tuple(tensor.shape),
+        rotation=rotation,
+        full_precision_rows=full_precision_rows,
+        sink_tokens=sinks,
+        recent_window=recent,
+    )
 
 
 def _attention_weights(queries: torch.Tensor, keys: torch.Tensor,
@@ -140,8 +213,8 @@ def retrieval_rotquant_decode(
     config: KVQuantConfig,
     *,
     retrieval_k: int,
-    recent_window: int = 0,
-    sink_tokens: int = 0,
+    recent_window: int | None = None,
+    sink_tokens: int | None = None,
 ) -> tuple[torch.Tensor, torch.Tensor, QuantizedKV, QuantizedKV]:
     """Decode attention by scanning packed keys and gathering selected values.
 
@@ -161,13 +234,20 @@ def retrieval_rotquant_decode(
     if keys.shape[-2] != values.shape[-2] or keys.shape[-1] != values.shape[-1]:
         raise ValueError("keys and values must have matching sequence/head dimensions")
     sequence_length = keys.shape[-2]
+    recent_window = (
+        config.recent_window if recent_window is None else recent_window)
+    sink_tokens = config.sink_tokens if sink_tokens is None else sink_tokens
     if not 1 <= retrieval_k <= sequence_length:
         raise ValueError("retrieval_k must be in [1, cache sequence length]")
     if recent_window < 0 or sink_tokens < 0:
         raise ValueError("recent_window and sink_tokens must be nonnegative")
 
-    packed_keys = quantize_kv(keys, key_rotation, config)
-    packed_values = quantize_kv(values, value_rotation, config, value=True)
+    packed_keys = quantize_kv(
+        keys, key_rotation, config,
+        sink_tokens=sink_tokens, recent_window=recent_window)
+    packed_values = quantize_kv(
+        values, value_rotation, config, value=True,
+        sink_tokens=sink_tokens, recent_window=recent_window)
     rotated_queries = key_rotation.rotate_activation(queries.float())
     reconstructed_keys = packed_keys.dequantize()
     scores = torch.matmul(
@@ -217,8 +297,8 @@ def kv_retrieval_metrics(
     config: KVQuantConfig,
     *,
     retrieval_k: int,
-    recent_window: int = 0,
-    sink_tokens: int = 0,
+    recent_window: int | None = None,
+    sink_tokens: int | None = None,
 ) -> dict[str, float | int]:
     """Evaluate selective KV retrieval against full-precision dense attention."""
     key_rotation = build_kv_rotation(keys.shape[-1], config, device=keys.device)
@@ -236,6 +316,9 @@ def kv_retrieval_metrics(
         recent_window=recent_window,
         sink_tokens=sink_tokens,
     )
+    recent_window = (
+        config.recent_window if recent_window is None else recent_window)
+    sink_tokens = config.sink_tokens if sink_tokens is None else sink_tokens
     dense_weights = _attention_weights(queries, keys, causal=True)
     selected_mass = torch.gather(dense_weights, -1, selected).sum(dim=-1)
     denominator = reference.square().mean().clamp_min(1e-12)

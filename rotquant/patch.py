@@ -15,7 +15,7 @@ patch modes are exposed for E7:
 """
 from __future__ import annotations
 
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 
 import torch
@@ -63,6 +63,10 @@ class PatchConfig:
     exclude: Sequence[str] = ("lm_head", "embed_out")
     fallback: bool = False
     seed: int = 0
+    share_rotations: bool = False
+    # Optional signed, symmetric, per-token activation quantization. This is a
+    # correctness path today; fused W4A8 kernels can consume the same semantics.
+    activation_bits: int | None = None
     # Optional Unsloth-Dynamic-style, model-specific mixed-precision search.
     # ``dynamic`` contains serializable search settings. ``layer_quant`` is
     # populated by the runner with the resulting per-projection recipe and is
@@ -76,6 +80,21 @@ def quant_config_for(cfg: PatchConfig, name: str) -> QuantConfig:
     """Resolve a projection's selected quantizer configuration."""
 
     return cfg.layer_quant.get(name, cfg.quant)
+
+
+def shared_rotation_key(name: str) -> str | None:
+    """Return the known same-input projection site containing ``name``."""
+
+    sibling_groups = (
+        ("q_proj", "k_proj", "v_proj"),
+        ("gate_proj", "up_proj"),
+    )
+    for siblings in sibling_groups:
+        for suffix in siblings:
+            marker = f".{suffix}"
+            if name.endswith(marker):
+                return f"{name[:-len(marker)]}.{'_'.join(siblings)}"
+    return None
 
 
 def make_rotations(in_features: int, cfg: PatchConfig, layer_seed: int,
@@ -99,8 +118,9 @@ def make_rotations(in_features: int, cfg: PatchConfig, layer_seed: int,
 
 
 def patch_model(model: nn.Module, cfg: PatchConfig,
-                hessians: dict[str, torch.Tensor] | None = None,
+                hessians: Mapping[str, torch.Tensor] | None = None,
                 activations: dict[str, torch.Tensor] | None = None,
+                activation_means: Mapping[str, torch.Tensor] | None = None,
                 stats_out: dict | None = None) -> nn.Module:
     """Replace targeted ``nn.Linear`` layers with ``QuantLinear`` in-place.
 
@@ -120,6 +140,14 @@ def patch_model(model: nn.Module, cfg: PatchConfig,
     if cfg.train_rotation is not None and not (learned_kind or butterfly_kind):
         raise ValueError(
             "patch.train_rotation requires rotation='learned' or 'butterfly'")
+    if not isinstance(cfg.share_rotations, bool):
+        raise TypeError("share_rotations must be boolean")
+    if cfg.activation_bits is not None and (
+        isinstance(cfg.activation_bits, bool)
+        or not isinstance(cfg.activation_bits, int)
+        or not 2 <= cfg.activation_bits <= 16
+    ):
+        raise ValueError("activation_bits must be None or an integer in [2, 16]")
     if learned_kind and cfg.train_rotation is None:
         logger.warning(
             "rotation='learned' starts at ~identity (theta init 1e-3): without "
@@ -132,6 +160,7 @@ def patch_model(model: nn.Module, cfg: PatchConfig,
         )
     hessians = hessians or {}
     activations = activations or {}
+    activation_means = activation_means or {}
 
     include_terms = tuple(cfg.include) if cfg.include is not None else None
     exclude_terms = tuple(cfg.exclude or ())
@@ -158,6 +187,8 @@ def patch_model(model: nn.Module, cfg: PatchConfig,
     model.__dict__["_rotquant_adapter_name"] = adapter.name
 
     train_stats: list = []
+    shared_rotations: dict[str, tuple[Rotation, Rotation]] = {}
+    trained_shared_sites: set[str] = set()
     for i, (name, source_module) in enumerate(targets):
         linear = adapter.to_linear(source_module)
         if not isinstance(linear, nn.Linear):
@@ -170,6 +201,7 @@ def patch_model(model: nn.Module, cfg: PatchConfig,
         source_dtype = linear.weight.dtype
         stage_on_cpu = source_device.type == "mps" and cfg.fallback
         work_linear = cpu_staging_linear(linear) if stage_on_cpu else linear
+        source_hessian = hessians.get(name)
 
         # MPS scale-search/packing is staged on CPU, but the structured trainer
         # consists of supported dense/elementwise ops and benefits substantially
@@ -181,11 +213,31 @@ def patch_model(model: nn.Module, cfg: PatchConfig,
         rotation_device = source_device if train_on_source \
             else work_linear.weight.device
 
-        weight_rot, act_rot = make_rotations(work_linear.in_features, cfg,
-                                               layer_seed=cfg.seed + i,
-                                               device=rotation_device)
-        if isinstance(weight_rot, (LearnedRotation, ButterflyRotation)) \
-                and cfg.train_rotation is not None:
+        share_key = shared_rotation_key(name) if cfg.share_rotations else None
+        cached_pair = (
+            shared_rotations.get(share_key) if share_key is not None else None
+        )
+        reused_shared_rotation = cached_pair is not None
+        if cached_pair is not None:
+            weight_rot, act_rot = cached_pair
+            if weight_rot.dim != work_linear.in_features:
+                raise ValueError(f"shared rotation dimension mismatch at {name}")
+        else:
+            weight_rot, act_rot = make_rotations(
+                work_linear.in_features,
+                cfg,
+                layer_seed=cfg.seed + i,
+                device=rotation_device,
+            )
+            if share_key is not None:
+                act_rot.enable_activation_cache(True)
+                shared_rotations[share_key] = (weight_rot, act_rot)
+        should_train_rotation = (
+            isinstance(weight_rot, (LearnedRotation, ButterflyRotation))
+            and cfg.train_rotation is not None
+            and (share_key is None or share_key not in trained_shared_sites)
+        )
+        if should_train_rotation:
             from .train_rotation import (
                 RotationTrainConfig,
                 select_butterfly_checkpoint,
@@ -199,11 +251,44 @@ def patch_model(model: nn.Module, cfg: PatchConfig,
                     f"activation-aware rotation training requires captured "
                     f"activations for {name}"
                 )
+            selection_weight = train_weight
+            site_members = [name]
+            if share_key is not None:
+                members = [
+                    (member_index, member_name, member_source)
+                    for member_index, (member_name, member_source) in enumerate(targets)
+                    if shared_rotation_key(member_name) == share_key
+                ]
+                member_configs = [
+                    quant_config_for(cfg, member_name)
+                    for _, member_name, _ in members
+                ]
+                if any(member_cfg != layer_quant for member_cfg in member_configs):
+                    raise ValueError(
+                        f"joint learned rotation at {share_key} requires one "
+                        "quantization config across sibling projections"
+                    )
+                member_weights = []
+                for _, member_name, member_source in members:
+                    member_linear = adapter.to_linear(member_source)
+                    if member_linear.in_features != weight_rot.dim:
+                        raise ValueError(
+                            f"shared rotation dimension mismatch at {member_name}")
+                    member_weights.append(member_linear.weight.detach().to(
+                        device=train_weight.device, dtype=train_weight.dtype))
+                selection_weight = torch.cat(member_weights, dim=0)
+                train_weight = selection_weight
+                site_members = [member_name for _, member_name, _ in members]
+                trained_shared_sites.add(share_key)
             stats = train_layer_rotation(
                 weight_rot, train_weight, layer_quant,
-                train_cfg, activations=layer_acts)
+                train_cfg, activations=layer_acts,
+                hessian=source_hessian)
+            stats["site_members"] = site_members
             if train_on_source:
                 weight_rot.to(device=work_linear.weight.device, dtype=torch.float32)
+                selection_weight = selection_weight.to(
+                    device=work_linear.weight.device, dtype=torch.float32)
             if isinstance(weight_rot, ButterflyRotation) \
                     and train_cfg.objective == "activation":
                 if layer_acts is None:
@@ -227,7 +312,7 @@ def patch_model(model: nn.Module, cfg: PatchConfig,
                     selection_acts = layer_acts
                     selection_tokens = train_cfg.max_tokens
                 selection = select_butterfly_checkpoint(
-                    weight_rot, reference_rot, work_linear.weight, layer_quant,
+                    weight_rot, reference_rot, selection_weight, layer_quant,
                     selection_acts, max_tokens=selection_tokens,
                     min_improvement=train_cfg.selection_min_improvement)
                 stats.update(selection)
@@ -240,7 +325,9 @@ def patch_model(model: nn.Module, cfg: PatchConfig,
                          if stats.get("selection_accepted") else
                          " (restored FWHT)"
                          if "selection_accepted" in stats else ""))
-        H = hessians.get(name)
+        elif reused_shared_rotation and cfg.train_rotation is not None:
+            logger.debug("reusing jointly trained rotation for %s", name)
+        H = source_hessian
         if H is not None:
             # Hessians may have been offloaded to CPU by collect_hessians;
             # bring them back next to the weight for the rotation + GPTQ solve.
@@ -254,7 +341,17 @@ def patch_model(model: nn.Module, cfg: PatchConfig,
                                        weight_rotation=weight_rot,
                                        act_rotation=act_rot, H=H,
                                        fallback=cfg.fallback,
-                                       fallback_dtype=source_dtype)
+                                       fallback_dtype=source_dtype,
+                                       activation_bits=cfg.activation_bits)
+        if layer_quant.bias_correction in {"mean", "length_mean"}:
+            activation_mean = activation_means.get(name)
+            if activation_mean is None:
+                raise ValueError(
+                    f"mean bias correction requires activation mean for {name}"
+                )
+            qlin.apply_mean_bias_correction(
+                work_linear.weight, activation_mean
+            )
         if stage_on_cpu:
             qlin = qlin.to(device=source_device, dtype=source_dtype)
         parent, attr = get_parent(model, name)
@@ -269,6 +366,8 @@ def patch_model(model: nn.Module, cfg: PatchConfig,
     if train_stats:
         agg = {
             "layers": len(train_stats),
+            "projections": sum(len(s.get("site_members", (None,)))
+                               for s in train_stats),
             "steps": train_stats[0]["steps"],
             "objective": train_stats[0]["objective"],
             "tokens": train_stats[0]["tokens"],
@@ -281,6 +380,10 @@ def patch_model(model: nn.Module, cfg: PatchConfig,
             ),
             "mean_final_mse": (
                 sum(s["final_mse"] for s in train_stats) / len(train_stats)
+            ),
+            "mean_sign_flip_rate": (
+                sum(s.get("sign_flip_rate", 0.0) for s in train_stats)
+                / len(train_stats)
             ),
         }
         agg["mean_relative_improvement"] = (
@@ -302,6 +405,9 @@ def patch_model(model: nn.Module, cfg: PatchConfig,
                     agg["mean_initial_mse"], agg["mean_final_mse"], agg["layers"])
         if stats_out is not None:
             stats_out["rotation_train"] = agg
+
+    if stats_out is not None:
+        stats_out["shared_rotation_sites"] = len(shared_rotations)
 
     logger.info("Patched %d modules (adapter=%s, rotation=%s, mode=%s)",
                 len(targets), adapter.name, cfg.rotation, cfg.mode)

@@ -181,3 +181,34 @@ def test_rotation_train_config_validates_selection_split():
         assert "selection_tokens" in str(exc)
     else:
         raise AssertionError("negative selection token count was accepted")
+
+
+def test_butterfly_learned_signs_commit_to_exact_orthogonal_buffer():
+    torch.manual_seed(17)
+    d = 16
+    weight = torch.randn(12, d)
+    hessian = torch.randn(d, d)
+    hessian = hessian.T @ hessian / d
+    rotation = ButterflyRotation(d, block=16, seed=4)
+    stats = train_layer_rotation(
+        rotation,
+        weight,
+        _quant_cfg(d),
+        RotationTrainConfig(
+            steps=3,
+            lr=2e-2,
+            objective="hessian",
+            assignment_scale="rms",
+            learn_signs=True,
+        ),
+        hessian=hessian,
+    )
+    assert rotation.sign_logits is None
+    assert set(rotation.signs.tolist()) <= {-1.0, 1.0}
+    assert 0.0 <= stats["sign_flip_rate"] <= 1.0
+    x = torch.randn(5, d)
+    assert torch.allclose(
+        rotation.inverse_activation(rotation.rotate_activation(x)),
+        x,
+        atol=2e-5,
+    )

@@ -1,0 +1,71 @@
+# Focused algorithmic promotion run: shared learned rotations, Hessian objective,
+# learned signs, true 8-bit scales, W4A8 semantics, and finite-rate E8P KV.
+experiment: QWEN35_W4A8_E8_TRIALS_CUDA
+label: qwen35_4b_w4a8_e8_trials_cuda
+model: unsloth/Qwen3.5-4B
+model_revision: 3764fa359b9082ea5a1e4a5e3ac3aaf6e9671636
+calib_dataset_revision: 1588ec454efa1a09f29cd18ddd04fe05fc8653a2
+model_loader: multimodal_lm
+device: cuda
+dtype: float16
+seed: 0
+calib_seq_len: 512
+rotation_n_calib: 32
+n_calib: 32
+hessian_collection: streamed
+hessian_layers_per_pass: 1
+quant:
+  bits: 4
+  codebook: gaussian
+  scale: mse_search
+  scale_bits: 8
+  scale_quant_group_size: 256
+  group_size: 128
+  error_comp: gptq
+  gptq_actorder: true
+  gptq_recompute_scales: true
+  bias_correction: mean
+patch:
+  rotation: butterfly
+  block: 128
+  mode: consistent
+  share_rotations: true
+  activation_bits: 8
+  fallback: true
+  train_rotation:
+    steps: 200
+    lr: 0.001
+    objective: hessian
+    assignment_scale: rms
+    learn_signs: true
+    sign_temperature: 1.0
+  include: [model.language_model.layers.]
+  exclude: [linear_attn.in_proj_a, linear_attn.in_proj_b, lm_head, embed_out]
+eval:
+  perplexity: true
+  ppl_datasets: [wikitext2, c4]
+  ppl:
+    seq_len: 2048
+    max_samples: 32
+  zeroshot: false
+  logit_fidelity:
+    batches: 4
+    prompt_len: 512
+    skip: 4096
+    bootstrap_draws: 4000
+  kv_cache:
+    bits: 2
+    key_bits: 2
+    value_bits: 2
+    group_size: 64
+    codebook: e8p
+    scale_bits: 8
+    scale_quant_group_size: 256
+    sink_tokens: 4
+    recent_window: 32
+    batches: 2
+    eval_offset_batches: 2
+    prompt_len: 2048
+    continuation_len: 32
+    skip: 8192
+    bootstrap_draws: 4000

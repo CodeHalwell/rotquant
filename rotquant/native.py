@@ -269,7 +269,7 @@ def encode_quantized_weight(
         .numpy()
         .astype(np.uint8, copy=False)
     )
-    scales = qweight.scales.detach().cpu().numpy()
+    scales = qweight.main_scales().detach().cpu().numpy()
     qdata = pack_native_blocks(indices, scales, resolved)
     return NativeEncodedMatrix(
         qdata=qdata,

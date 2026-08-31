@@ -47,8 +47,9 @@ those are the widths intended to receive dedicated runtime kernels.
 Every entry in `quantized_modules` identifies its original module path, logical
 input/output dimensions, activation rotation and `QuantizedWeight` tensor map.
 The primary packed tensor must contain exactly
-`in_features * out_features` codes. Optional residual and sketch streams use
-the same generic bitstream and declare their own logical shapes.
+`in_features * out_features` scalar codes. Optional residual and sketch streams
+use the same generic bitstream and declare their own logical shapes. Scales are
+stored as fp16 or fp32 tensors.
 
 New producers include a top-level `packing` object copied from
 `CURRENT_PACKING.to_manifest()`. Early v1 checkpoints did not include this

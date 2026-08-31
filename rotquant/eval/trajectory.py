@@ -15,6 +15,8 @@ from typing import Any
 
 import torch
 
+from .statistics import bootstrap_report
+
 
 @dataclass(frozen=True)
 class TrajectoryConfig:
@@ -25,6 +27,8 @@ class TrajectoryConfig:
     # substantial prefix prevents these prompts overlapping calibration calls.
     skip: int = 1024
     use_cache: bool = True
+    bootstrap_draws: int = 2_000
+    bootstrap_seed: int = 17
 
     def __post_init__(self) -> None:
         if self.batches < 1:
@@ -33,6 +37,8 @@ class TrajectoryConfig:
             raise ValueError("trajectory lengths must be >= 1")
         if self.skip < 0:
             raise ValueError("trajectory skip must be >= 0")
+        if self.bootstrap_draws < 1 or self.bootstrap_seed < 0:
+            raise ValueError("bootstrap draws must be positive and seed nonnegative")
 
 
 @dataclass
@@ -109,6 +115,9 @@ def evaluate_trajectories(model, tokenizer,
     prefix_tokens = 0
     examples = 0
     prompt_metrics: list[dict[str, Any]] = []
+    prompt_agreement = []
+    prompt_exact = []
+    prompt_prefix = []
     for reference in references:
         inputs = _device_inputs(reference.inputs, device)
         output = model.generate(**inputs, **kwargs)
@@ -128,6 +137,9 @@ def evaluate_trajectories(model, tokenizer,
         prefix_tokens += int(row_prefix.sum().item())
         prompt_examples = rows.shape[0]
         examples += prompt_examples
+        prompt_agreement.extend(rows.float().mean(dim=-1).tolist())
+        prompt_exact.extend(row_exact.float().tolist())
+        prompt_prefix.extend(row_prefix.float().tolist())
         prompt_metrics.append({
             "input_hash": reference.input_hash,
             "examples": prompt_examples,
@@ -135,17 +147,25 @@ def evaluate_trajectories(model, tokenizer,
             "token_agreement": float(rows.float().mean().item()),
             "exact_trajectory_rate": float(row_exact.float().mean().item()),
             "mean_matching_prefix": float(row_prefix.float().mean().item()),
-            "mean_first_divergence": float(row_prefix.float().mean().item()),
         })
     if not examples or not total_tokens:
         raise ValueError("trajectory references contain no continuation tokens")
-    return {
+    result = {
         "prompts": examples,
         "new_tokens": config.new_tokens,
         "token_agreement": matching_tokens / total_tokens,
         "exact_trajectory_rate": exact / examples,
         "mean_matching_prefix": prefix_tokens / examples,
-        "mean_first_divergence": prefix_tokens / examples,
         "input_hashes": [reference.input_hash for reference in references],
         "prompt_metrics": prompt_metrics,
     }
+    result["paired_prompt_bootstrap"] = bootstrap_report(
+        {
+            "token_agreement": prompt_agreement,
+            "exact_trajectory_rate": prompt_exact,
+            "mean_matching_prefix": prompt_prefix,
+        },
+        draws=config.bootstrap_draws,
+        seed=config.bootstrap_seed,
+    )
+    return result

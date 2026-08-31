@@ -62,7 +62,7 @@ class _CustomCheckpointModel(nn.Module):
         return self.proj(value)
 
 
-def _tiny_packed_llama(rotation="butterfly"):
+def _tiny_packed_llama(rotation="butterfly", quant_config=None):
     transformers = pytest.importorskip("transformers")
     pytest.importorskip("safetensors")
     config = transformers.LlamaConfig(
@@ -79,7 +79,7 @@ def _tiny_packed_llama(rotation="butterfly"):
     patch_model(
         model,
         PatchConfig(
-            quant=QuantConfig(
+            quant=quant_config or QuantConfig(
                 bits=4,
                 codebook="gaussian",
                 scale="mse_search",
@@ -95,6 +95,46 @@ def _tiny_packed_llama(rotation="butterfly"):
         ),
     )
     return model
+
+
+@pytest.mark.parametrize("profile", ["scale8", "vector"])
+def test_extended_checkpoint_profiles_round_trip_exactly(tmp_path, profile):
+    torch.manual_seed(37)
+    if profile == "scale8":
+        quant_config = QuantConfig(
+            bits=4,
+            codebook="gaussian",
+            scale="rms",
+            scale_bits=8,
+            scale_quant_group_size=16,
+            group_size=8,
+        )
+    else:
+        quant_config = QuantConfig(
+            bits=2,
+            codebook="vector",
+            vector_dim=2,
+            vector_samples=512,
+            vector_iters=5,
+            scale="rms",
+            group_size=8,
+        )
+    model = _tiny_packed_llama("fwht", quant_config)
+    input_ids = torch.tensor([[1, 5, 8, 13]])
+    with torch.no_grad():
+        expected = model(input_ids=input_ids, use_cache=False).logits
+    output = tmp_path / profile
+    save_packed_checkpoint(model, output, model_loader="causal_lm")
+    manifest = checkpoint_manifest(output)
+    codebook_tensors = {
+        item["qweight"]["codebook"]["centroids"]
+        for item in manifest["quantized_modules"]
+    }
+    assert len(codebook_tensors) == 1
+    restored = load_packed_model(output, dtype=torch.float32)
+    with torch.no_grad():
+        actual = restored(input_ids=input_ids, use_cache=False).logits
+    torch.testing.assert_close(actual, expected, rtol=0, atol=0)
 
 
 @pytest.mark.parametrize("rotation", ["fwht", "butterfly"])
@@ -160,7 +200,7 @@ def test_manifest_is_plain_json_and_records_loader(tmp_path):
     save_packed_checkpoint(model, export_dir, model_loader="causal_lm")
     manifest = checkpoint_manifest(export_dir)
     assert manifest["format"] == "rotquant-packed"
-    assert manifest["format_version"] == 1
+    assert manifest["format_version"] == 2
     assert manifest["packing"]["word_bits"] == 32
     assert manifest["packing"]["bit_order"] == "lsb_first"
     assert manifest["packing"]["optimized_profile_bits"] == list(range(1, 9))

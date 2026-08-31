@@ -243,7 +243,8 @@ def native_tensor(
         out_features=qweight.out_features,
         in_features=qweight.in_features,
     )
-    scales = qweight.scales.detach().cpu().numpy().astype(SCALE_DTYPE, copy=False)
+    scales = qweight.main_scales().detach().cpu().numpy().astype(
+        SCALE_DTYPE, copy=False)
     rotation_data = pack_rotation(rotation)
     signs, theta = unpack_rotation(rotation_data, in_features=qweight.in_features)
 

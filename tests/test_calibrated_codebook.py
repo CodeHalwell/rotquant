@@ -20,18 +20,25 @@ def _cfg() -> QuantConfig:
                        calibrated_samples=512, calibrated_iters=20)
 
 
-def test_large_calibration_sampling_never_rounds_past_matrix_end():
+def test_large_calibration_sampling_is_bounded_unique_and_deterministic():
     total_values = 2_560 * 9_216  # Qwen3.5-4B MLP projection size (> 2**24)
     indices = _calibration_sample_indices(
-        total_values, 65_536, device="cpu"
+        total_values, 65_536, device="cpu", seed=17
+    )
+    repeated = _calibration_sample_indices(
+        total_values, 65_536, device="cpu", seed=17
+    )
+    other_seed = _calibration_sample_indices(
+        total_values, 65_536, device="cpu", seed=18
     )
 
     assert indices.dtype == torch.int64
-    assert indices[0].item() == 0
-    assert indices[-1].item() == total_values - 1
+    assert indices.numel() == 65_536
     assert indices.min().item() >= 0
     assert indices.max().item() < total_values
     assert torch.all(indices[1:] > indices[:-1])
+    assert torch.equal(indices, repeated)
+    assert not torch.equal(indices, other_seed)
 
 
 def test_calibrated_refits_for_permuted_matrix():

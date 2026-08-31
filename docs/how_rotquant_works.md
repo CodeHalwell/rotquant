@@ -617,6 +617,13 @@ $$
 Quantization breaks exact equality, but this construction keeps the error local
 to the finite-rate approximation rather than adding a basis mismatch.
 
+The cache can also be tiered by position. For a sequence of length `L`, RotQuant
+stores positions `[0, sink_tokens)` and `[L-recent_window, L)` as rotated fp16
+rows and packs only the middle. The sets are deduplicated when they overlap.
+Protected storage is therefore O(1) in context length, while the packed fraction
+tends to one as `L` grows. This is a real split in `QuantizedKV`, not merely a
+retrieval reservation.
+
 K and V need not use the same bit width. Key error perturbs logits before a
 softmax, so it can change every attention weight. Value error enters linearly
 after the weights are chosen. Their observed distributions also differ; for
@@ -701,6 +708,40 @@ fp16 scale followed by LSB-first codes for each group. It supports scalar W1--W8
 and has a portable C++ streaming reference plus SIMD CPU paths. The Python
 fallback and C++ scalar reference establish correctness floors; neither stands
 in for the planned CUDA/Triton, Metal, vLLM, SGLang, or llama.cpp serving work.
+
+The generic checkpoint also supports blockwise 8-bit scale metadata. If primary
+scales `s_i` are divided into blocks of `B=256`, each block stores fp16 `a` and
+`delta` plus uint8 codes
+
+$$
+q_i=\operatorname{clip}_{[0,255]}
+\operatorname{round}\left(\frac{s_i-a}{\delta}\right),
+\qquad \hat s_i=a+q_i\delta.
+$$
+
+Assignments are computed against `hat s`, so packing and inference cannot
+disagree. Exact code, offset, and step bytes enter the instantiated bit budget.
+Existing native-v2 blocks still materialize fp16 scales when exported; a fused
+uint8-scale decoder remains a distinct runtime capability.
+
+For W4A8 experiments, activations are rotated first and then quantized with a
+signed symmetric per-token scale:
+
+$$
+s_x=\frac{\max_i |x_i'|}{2^{b-1}-1},\qquad
+\hat x_i'=s_x\,\operatorname{clip}
+\left(\operatorname{round}(x_i'/s_x),-q_{max},q_{max}\right).
+$$
+
+The portable module immediately dequantizes this value; it defines the quality
+semantics and training STE, not a tensor-core speed claim.
+
+The finite E8P comparator keeps exactly `2^(8b)` shaped E8 points for each
+8-coordinate product block. At `b=2`, one 16-bit packed index represents eight
+weights—exactly 2 bits/weight. Its usual encoder snaps to the nearest E8 lattice
+point and uses a deterministic key table; overload points outside the retained
+shape fall back to exact finite-codebook search. The same codebook is available
+for weights and KV rows.
 
 ## 13. How quality is measured
 
@@ -807,7 +848,9 @@ comparison live in the [competitive evaluation contract](competitive_eval.md).
 | GPTQ optimizes an activation-weighted local error | Prior method and implemented approximation |
 | Learned block rotations improve every architecture | Not proved; must pass held-out selection per model |
 | Dynamic mixed precision beats uniform quantization | Not guaranteed; current greedy allocator needs controls |
-| Vector codes beat scalar codes at equal rate | Plausible and sometimes observed, not established across models |
+| Finite E8P beats scalar codes at equal rate | Packed comparator implemented; empirical advantage not yet established across models |
+| W4A8 improves prefill throughput | Quality semantics implemented; no fused-kernel speed claim yet |
+| fp16 sink/recent KV tiers improve long-context quality | Storage semantics implemented; 8k–32k result pending |
 | Packed KV retrieval reduces end-to-end latency | Hypothesis; no production kernel claim yet |
 | A smaller packed artifact makes inference faster | False in general; requires a specialized runtime and workload measurement |
 
@@ -847,7 +890,7 @@ Repository implementation map:
 | Block recovery and distillation | `rotquant/block_train.py` |
 | Static mixed-precision allocation | `rotquant/dynamic.py` |
 | KV rotations and retrieval oracle | `rotquant/kv_cache.py` |
-| Versioned checkpoint bitstream | [packed format v1](packed_format_v1.md) |
+| Versioned checkpoint bitstream | [packed format v2](packed_format_v2.md) |
 | Backend-independent runtime blocks | [native runtime v2](native_runtime_v2.md) |
 | Selective cache design | [KV retrieval](kv_retrieval.md) |
 | Evaluation and claim policy | [competitive evaluation](competitive_eval.md) |

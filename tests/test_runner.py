@@ -15,7 +15,7 @@ import yaml
 from torch import nn
 
 from rotquant._internal import cpu_staging_linear, group_scales_rms
-from rotquant.calibrate import collect_activations
+from rotquant.calibrate import collect_activation_means, collect_activations
 from rotquant.linear import QuantLinear
 from rotquant.patch import PatchConfig, patch_model
 from rotquant.quantize import QuantConfig, Quantizer
@@ -119,6 +119,47 @@ def test_calibration_batches_are_cached_and_content_addressed(monkeypatch):
     assert len(manifest["digest"]) == 64
 
 
+def test_calibration_loader_excludes_exact_source_rows(monkeypatch):
+    datasets = ModuleType("datasets")
+    datasets.load_dataset = lambda *args, **kwargs: [
+        {"text": f"document-{index}-long-enough"} for index in range(8)
+    ]
+    monkeypatch.setitem(sys.modules, "datasets", datasets)
+
+    class Tokenizer:
+        name_or_path = "tiny/tokenizer"
+        vocab_size = 32
+        special_tokens_map: ClassVar[dict] = {}
+
+        def __call__(self, text, return_tensors="pt"):
+            del return_tensors
+            return SimpleNamespace(
+                input_ids=torch.tensor([[ord(char) % 32 for char in text]])
+            )
+
+    run_experiment._CALIB_CACHE.clear()
+    batches = run_experiment.build_calib_loader(
+        Tokenizer(), 3, 8, "cpu", exclude_source_rows={0, 2, 4}
+    )
+    assert [batch.source_row for batch in batches] == [1, 3, 5]
+
+
+def test_internal_manifest_disjointness_checks_source_rows():
+    common = {
+        "dataset": "allenai/c4",
+        "split": "train",
+        "revision": "pinned",
+    }
+    manifests = {
+        "hessian_calibration": {**common, "source_rows": [4, 10]},
+        "trajectory": {**common, "source_rows": [11, 12]},
+    }
+    run_experiment.validate_internal_data_disjointness(manifests)
+    manifests["trajectory"]["source_rows"] = [10, 12]
+    with pytest.raises(ValueError, match="not disjoint"):
+        run_experiment.validate_internal_data_disjointness(manifests)
+
+
 def test_run_id_seed_suffix_and_explicit():
     assert run_experiment.derive_run_id({"label": "e1_fwht", "seed": 2},
                                         "configs/e1.yaml") == "e1_fwht_s2"
@@ -217,6 +258,19 @@ def test_baseline_run_id_includes_quantization_options():
         for changed in changed_protocols
     )
     assert baseline_mod.IMPLEMENTED_BACKENDS == ("gptq", "awq", "aqlm")
+
+
+def test_baseline_storage_uses_actual_tensor_and_artifact_bytes(tmp_path):
+    model = nn.Sequential(nn.Linear(8, 4, bias=False))
+    (tmp_path / "weights.bin").write_bytes(b"x" * 17)
+    (tmp_path / "config.json").write_bytes(b"{}")
+    storage = baseline_mod.baseline_storage_metrics(model, tmp_path)
+    assert storage["retained_tensor_bytes"] == 8 * 4 * 4
+    assert storage["parameter_elements"] == 32
+    assert storage["retained_bits_per_parameter"] == 32
+    assert storage["artifact_measured"] is True
+    assert storage["artifact_bytes"] == 19
+    assert storage["artifact_files"] == 2
 
 
 def test_awq_receives_the_recorded_calibration_protocol(monkeypatch):
@@ -347,7 +401,139 @@ def test_activation_collection_is_bounded_and_removes_hooks():
     assert set(result.activations) == {"q_proj", "mlp", "lm_head"}
     assert all(x.shape[0] == 7 for x in result.activations.values())
     assert all(x.dtype == torch.float32 for x in result.activations.values())
+    assert all(count == 20 for count in result.seen_samples.values())
     assert all(not module._forward_hooks for module in model.modules())
+
+
+def test_activation_reservoir_is_seeded_and_not_prefix_only():
+    model = nn.Linear(4, 4, bias=False)
+    batches = [
+        torch.full((1, 4), float(index)) for index in range(20)
+    ]
+    first = collect_activations(
+        model, batches, "cpu", max_tokens=5, storage_dtype=torch.float32, seed=9
+    )
+    repeated = collect_activations(
+        model, batches, "cpu", max_tokens=5, storage_dtype=torch.float32, seed=9
+    )
+    other = collect_activations(
+        model, batches, "cpu", max_tokens=5, storage_dtype=torch.float32, seed=10
+    )
+    assert torch.equal(first.activations[""], repeated.activations[""])
+    assert not torch.equal(first.activations[""], other.activations[""])
+    assert first.activations[""].max() >= 5  # not merely the first five rows
+
+
+def test_mean_bias_correction_cancels_calibration_mean_error():
+    torch.manual_seed(21)
+    source = nn.Sequential(nn.Linear(16, 8, bias=False)).eval()
+    batches = [torch.randn(4, 16) + 1.5 for _ in range(8)]
+    activation_means = collect_activation_means(source, batches, "cpu")
+    reference_weight = source[0].weight.detach().clone()
+    patch_model(
+        source,
+        PatchConfig(
+            quant=QuantConfig(
+                bits=2,
+                codebook="gaussian",
+                scale="rms",
+                group_size=16,
+                bias_correction="mean",
+            ),
+            rotation="fwht",
+            block=16,
+            exclude=(),
+        ),
+        activation_means=activation_means,
+    )
+    mean = activation_means["0"].unsqueeze(0)
+    expected = mean @ reference_weight.T
+    actual = source(mean)
+    assert source[0].bias is not None
+    assert torch.allclose(actual, expected, atol=2e-5)
+
+
+def test_same_input_projections_share_one_cached_rotation():
+    class AttentionSite(nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.q_proj = nn.Linear(16, 16, bias=False)
+            self.k_proj = nn.Linear(16, 16, bias=False)
+            self.v_proj = nn.Linear(16, 16, bias=False)
+            self.o_proj = nn.Linear(16, 16, bias=False)
+
+    class SharedModel(nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.attn = AttentionSite()
+
+    model = SharedModel()
+    stats = {}
+    patch_model(
+        model,
+        PatchConfig(
+            quant=QuantConfig(bits=3, scale="rms", group_size=16),
+            rotation="fwht",
+            block=16,
+            share_rotations=True,
+            exclude=(),
+        ),
+        stats_out=stats,
+    )
+    shared = model.attn.q_proj.act_rotation
+    assert model.attn.k_proj.act_rotation is shared
+    assert model.attn.v_proj.act_rotation is shared
+    assert model.attn.o_proj.act_rotation is not shared
+    assert stats["shared_rotation_sites"] == 1
+    values = torch.randn(2, 16)
+    with torch.no_grad():
+        first = shared.cached_rotate_activation(values)
+        repeated = shared.cached_rotate_activation(values)
+        assert repeated is first
+        values.add_(1.0)
+        refreshed = shared.cached_rotate_activation(values)
+        assert refreshed is not first
+
+
+def test_same_input_projections_jointly_train_one_shared_rotation():
+    class AttentionSite(nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.q_proj = nn.Linear(16, 12, bias=False)
+            self.k_proj = nn.Linear(16, 8, bias=False)
+            self.v_proj = nn.Linear(16, 8, bias=False)
+
+    class SharedModel(nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.attn = AttentionSite()
+
+    model = SharedModel()
+    stats = {}
+    patch_model(
+        model,
+        PatchConfig(
+            quant=QuantConfig(bits=3, scale="rms", group_size=16),
+            rotation="butterfly",
+            block=16,
+            share_rotations=True,
+            train_rotation={
+                "steps": 2,
+                "lr": 1e-2,
+                "objective": "weight",
+                "assignment_scale": "rms",
+                "learn_signs": True,
+            },
+            exclude=(),
+        ),
+        stats_out=stats,
+    )
+    shared = model.attn.q_proj.act_rotation
+    assert model.attn.k_proj.act_rotation is shared
+    assert model.attn.v_proj.act_rotation is shared
+    assert shared.sign_logits is None
+    assert stats["rotation_train"]["layers"] == 1
+    assert stats["rotation_train"]["projections"] == 3
 
 
 # --------------------------------------------------------------------------- #
@@ -464,9 +650,28 @@ def test_scales_stored_at_claimed_precision():
             == 2 * qw32.scales.numel())
 
 
-def test_unimplemented_scale_precision_is_rejected():
-    with pytest.raises(ValueError, match="scale_bits must be 16 or 32"):
-        QuantConfig(scale_bits=8.0)
+def test_eight_bit_scale_codec_is_real_and_accounted():
+    torch.manual_seed(4)
+    weight = torch.randn(13, 130)
+    qweight = Quantizer(QuantConfig(
+        bits=3,
+        group_size=32,
+        scale_bits=8.0,
+        scale_quant_group_size=16,
+    )).quantize_weight(weight)
+    assert qweight.scales.dtype == torch.uint8
+    assert qweight.scale_offsets.dtype == torch.float16
+    assert qweight.scale_steps.dtype == torch.float16
+    assert qweight.main_scales().shape == qweight.scales.shape
+    assert torch.isfinite(qweight.dequantize()).all()
+    linear = QuantLinear(qweight, act_rotation=Identity(130))
+    assert qweight.bit_budget().bits_per_weight == pytest.approx(
+        linear.packed_state_bytes() * 8 / weight.numel())
+
+
+def test_unknown_scale_precision_is_rejected():
+    with pytest.raises(ValueError, match="scale_bits must be 8, 16, or 32"):
+        QuantConfig(scale_bits=12.0)
 
 
 @pytest.mark.parametrize("value", ["gptqq", "Residual", ""])

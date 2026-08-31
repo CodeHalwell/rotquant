@@ -513,6 +513,19 @@ codebook against an exact Gaussian RotQuant cache kernel.
 
 ## Open experiments
 
+### 2026-09-01 — scientific-review implementation pass (no model result yet)
+
+Implemented the review's high-value prerequisites before spending another
+Qwen3.5-4B run: randomized bounded-memory calibration sampling; disjoint source
+rows; streamed actorder GPTQ; larger resumable recovery; mean-bias correction;
+shared and jointly trained projection rotations; Hessian-weighted rotation
+training; learned hard signs; real uint8 scale metadata; per-token W4A8;
+position-tiered KV storage; finite-rate E8P weight/KV codebooks; and paired
+bootstrap intervals. Added focused CUDA profiles for the compositional W4A8/E8
+trial and the 8k tiered-KV confirmation. These are implementation milestones,
+not quality or speed results; promotion still depends on the recorded held-out
+gates.
+
 - Run `notebooks/rotquant_algorithm_lab_colab.ipynb`: screen exact-rate scalar
   versus finite-rate vector codebooks and scalar extensions, then promote only
   Pareto winners through allocation objectives, three seeds, and a second model

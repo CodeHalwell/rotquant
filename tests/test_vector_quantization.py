@@ -6,7 +6,12 @@ import torch
 from torch import nn
 
 from rotquant.checkpoint import _quantized_weight_spec
-from rotquant.codebooks import VectorCodebook, fit_vector_codebook
+from rotquant.codebooks import (
+    FiniteE8Codebook,
+    VectorCodebook,
+    build_finite_e8_codebook,
+    fit_vector_codebook,
+)
 from rotquant.linear import QuantLinear
 from rotquant.quantize import QuantConfig, Quantizer
 
@@ -33,6 +38,37 @@ def test_vector_codebook_fit_is_deterministic_and_fixed_rate() -> None:
     assert torch.equal(first.centroids, second.centroids)
     assert first.code_bits == 4
     assert first.bits_per_weight == 2
+
+
+def test_finite_e8p_is_a_real_two_bit_packed_codebook() -> None:
+    codebook = build_finite_e8_codebook(2)
+    assert isinstance(codebook, FiniteE8Codebook)
+    assert codebook.levels == 65_536
+    assert codebook.dim == 8
+    assert codebook.bits_per_weight == 2
+
+    torch.manual_seed(29)
+    weight = torch.randn(8, 64)
+    qweight = Quantizer(QuantConfig(
+        bits=2,
+        codebook="e8p",
+        scale="rms",
+        group_size=32,
+    )).quantize_weight(weight)
+    assert qweight.packed.bits == 16
+    assert qweight.packed.shape == (8, 8)
+    assert qweight.bit_budget().code_bits == 16
+    assert torch.isfinite(qweight.dequantize()).all()
+
+    samples = torch.randn(8, 8) * 2.5
+    encoded = codebook.encode(samples)
+    brute = (
+        (samples[:, None, :] - codebook.centroids[None, :, :])
+        .square()
+        .sum(dim=-1)
+        .argmin(dim=1)
+    )
+    assert torch.equal(encoded, brute)
 
 
 def test_vector_quantizer_matches_scalar_storage_rate_and_improves_nmse() -> None:
@@ -79,12 +115,13 @@ def test_vector_profiles_fail_closed_on_unsupported_shapes_and_gptq() -> None:
         Quantizer(_config("vector"), codebook=wrong_dimension)
 
 
-def test_vector_checkpoint_and_scale_training_fail_closed() -> None:
+def test_vector_checkpoint_contract_and_scale_training_boundary() -> None:
     source = nn.Linear(16, 8, bias=False)
     module = QuantLinear.from_linear(source, _config("vector"), fallback=False)
 
-    with pytest.raises(TypeError, match="checkpoint contract"):
-        _quantized_weight_spec(0, module.qweight, {})
+    spec = _quantized_weight_spec(0, module.qweight, {})
+    assert spec["codebook"]["kind"] == "vector"
+    assert spec["codebook"]["dimension"] == 2
     with pytest.raises(TypeError, match="scale fine-tuning"):
         module.enable_scale_finetuning()
 
