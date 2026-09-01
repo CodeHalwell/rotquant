@@ -38,6 +38,17 @@ software.
 
 ### Fixed
 
+- `rotquant.eval.kv_cache` cloned only tensor-valued cache attributes, so on
+  Transformers releases that keep linear-attention conv/recurrent state in
+  `dict` attributes (5.16.x) the simulated packed cache shared, and the two
+  decode passes corrupted, that state. Every K/V code width then produced the
+  same next-token KL (~0.5–0.9 on Qwen3.5-4B). The clone now covers tensors
+  inside containers and fails closed when any storage remains shared;
+  `non_kv_state_bytes` accounting sees the same tensors. A regression test
+  (`tests/test_kv_cache_bit_monotone.py`) requires near-zero KL at 8 bits and
+  monotone KL across bit widths on a hybrid model. See
+  `docs/scientific_validity_review_2026-09-01.md` for the affected results.
+
 - `set_seed` no longer sets `PYTHONHASHSEED` at runtime (a no-op that
   suggested determinism it could not provide).
 - `git_sha` provenance now resolves the repository containing the package

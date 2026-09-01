@@ -740,6 +740,37 @@ projector is 3,584,533,344 bytes; current complete RotQuant W4 is 5.66% larger,
 so this is a nearest-release developmental anchor rather than a <=1% matched-
 byte competitive result. See `docs/unsloth_qwen35_4b_comparison.md`.
 
+### 2026-09-01 — KV-cache simulator state sharing invalidates all earlier cache KL results
+
+An independent validity review (`docs/scientific_validity_review_2026-09-01.md`)
+found that every cache KL recorded above this entry (seed-0 matrix, three-seed
+validation, 1,024-token confirmation, frozen-map transfer, whole-system joint
+matrix, and the matched K4/V4 follow-up) is independent of the K/V code width:
+uniform K8/V8 reported 0.5827, K2/V2 0.5752, K4/V4 0.5483, and K4/V4 was worse
+than K2/V2 in two of three seeds, which quantization error cannot produce.
+
+Replication on the pinned `unsloth/Qwen3.5-4B` weights (CPU, bf16, source
+weights, prompt 256, 16 evaluated tokens, Gaussian g64, no tiers) with the
+committed simulator:
+
+| Transformers | K8/V8 KL | K4/V4 KL | K2/V2 KL | `non_kv_state_bytes` |
+|---|---:|---:|---:|---:|
+| 5.9.0 (pinned in `uv.lock`) | 5.0e-4 | 6.3e-3 | 6.5e-2 | 26,738,688 |
+| 5.16.1 (what `pip install -U "transformers>=5.9,<6"` resolved to on 2026-08-29/30) | 0.877 | 0.891 | — | 0 |
+| 5.16.1 with the fixed clone | 3.6e-4 | 6.9e-3 | — | 51,904,512 |
+
+Cause: Transformers 5.16 keeps linear-attention conv/recurrent state in
+`dict` attributes that are updated in place; `_clone_cache` shallow-copied
+them, so the source and packed decode passes shared and corrupted each other's
+state. The 2026-09-01 W4A8/E8 stage pinned 5.9.0 and is unaffected.
+
+Decision: withdraw the cache-KL conclusions listed in the review (including
+the 3.25-bpv frozen map's advantage over K4/V4 and the context-length
+sensitivity reversal); keep the weight-only PPL/KL/trajectory results; re-run
+the cache studies with the fixed simulator, an explicit Transformers pin, a
+mandatory K8/V8 near-zero endpoint row, and at least 10^4 evaluated tokens per
+seed before re-selecting the deployment map.
+
 ## Entry template
 
 For each new run, append:

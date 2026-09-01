@@ -128,26 +128,79 @@ class KVDynamicConfig:
         return self.candidate_bits if selected is None else selected
 
 
+def _clone_tree(value):
+    """Clone every tensor reachable through plain containers.
+
+    Transformers cache layers have stored linear-attention conv/recurrent
+    state both as direct tensor attributes (5.9) and as ``dict[int, Tensor]``
+    attributes (5.16).  Those states are updated *in place* during decode, so a
+    shallow container copy would silently share them between the source and
+    packed caches and the second decode pass would see state already advanced
+    by the first.  Every tensor must therefore be cloned wherever it lives.
+    """
+    if isinstance(value, torch.Tensor):
+        return value.clone()
+    if isinstance(value, dict):
+        return {key: _clone_tree(item) for key, item in value.items()}
+    if isinstance(value, list):
+        return [_clone_tree(item) for item in value]
+    if isinstance(value, tuple):
+        return tuple(_clone_tree(item) for item in value)
+    return copy.copy(value)
+
+
+def _iter_tensors(value):
+    if isinstance(value, torch.Tensor):
+        yield value
+    elif isinstance(value, dict):
+        for item in value.values():
+            yield from _iter_tensors(item)
+    elif isinstance(value, (list, tuple)):
+        for item in value:
+            yield from _iter_tensors(item)
+
+
+def _storage_keys(cache) -> set[tuple[str, int]]:
+    keys = set()
+    for layer in cache.layers:
+        for tensor in _iter_tensors(vars(layer)):
+            if tensor.numel():
+                keys.add((str(tensor.device), tensor.untyped_storage().data_ptr()))
+    for name, value in vars(cache).items():
+        if name == "layers":
+            continue
+        for tensor in _iter_tensors(value):
+            if tensor.numel():
+                keys.add((str(tensor.device), tensor.untyped_storage().data_ptr()))
+    return keys
+
+
 def _clone_cache(cache):
-    """Clone tensor state without relying on deepcopy of non-leaf tensors."""
+    """Clone all cache state so source and packed decode passes never interact."""
     cloned = copy.copy(cache)
     cloned.layers = []
     for layer in cache.layers:
         layer_copy = copy.copy(layer)
         for name, value in vars(layer).items():
-            if isinstance(value, torch.Tensor):
-                setattr(layer_copy, name, value.clone())
-            else:
-                setattr(layer_copy, name, copy.copy(value))
+            setattr(layer_copy, name, _clone_tree(value))
         cloned.layers.append(layer_copy)
+    for name, value in vars(cache).items():
+        if name != "layers" and isinstance(value, (torch.Tensor, dict, list, tuple)):
+            setattr(cloned, name, _clone_tree(value))
+    shared = _storage_keys(cache) & _storage_keys(cloned)
+    if shared:
+        raise RuntimeError(
+            "cloned cache still shares tensor storage with the source cache; "
+            "the source/packed decode passes would corrupt each other"
+        )
     return cloned
 
 
 def _cache_tensor_bytes(cache) -> int:
     storages: dict[tuple[str, int], int] = {}
     for layer in cache.layers:
-        for value in vars(layer).values():
-            if not isinstance(value, torch.Tensor) or value.numel() == 0:
+        for value in _iter_tensors(vars(layer)):
+            if value.numel() == 0:
                 continue
             storage = value.untyped_storage()
             key = (str(value.device), storage.data_ptr())
