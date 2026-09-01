@@ -13,7 +13,7 @@ calib_seq_len: 512
 rotation_n_calib: 32
 n_calib: 32
 hessian_collection: streamed
-hessian_layers_per_pass: 1
+hessian_layers_per_pass: 4
 quant:
   bits: 4
   codebook: gaussian

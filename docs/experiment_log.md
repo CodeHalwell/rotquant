@@ -485,6 +485,59 @@ selection/confidence policy. The competitive follow-up uses exact deployed-size
 GGUF/Unsloth controls, KL distribution tails, and the disjoint 300-prompt,
 32-token suite specified in `docs/competitive_eval.md`.
 
+### Algorithm Lab repaired confirmation run (2026-09-01)
+
+The complete rerun at Git SHA `5f81a739b4a75738e9b994bdf93eecb9a68479f7`
+is archived under experiment identity `5f81a739b4a7/6fa343e0f6c1`. It ran on an
+NVIDIA A100-SXM4-40GB with PyTorch 2.11.0/CUDA 12.8 and a source-built
+fast-hadamard-transform 1.1.0. The delivered bundle contains 61 valid compact
+records and 61 matching raw records, with no failure artifacts: 23 primary
+screens, 27 three-seed candidate validations plus their source reference, nine
+cross-family candidates plus their source reference, and the selective-V
+oracle. This supersedes the unavailable add-on observations above.
+
+The repaired primary-model validation made the free-running distinction clear:
+
+| Qwen3.5-4B recipe | WikiText-2 mean / worst delta | C4 worst delta | Top-1 agreement | 32-token agreement / worst | Mean matching prefix | Status |
+|---|---:|---:|---:|---:|---:|---|
+| Calibrated W4 | +4.58% / +6.04% | +3.43% | 86.51% | **52.08% / 39.84%** | **15.67** | runtime candidate |
+| Gaussian W4 | +4.63% / +5.80% | +3.31% | 84.66% | 37.24% / 25.00% | 11.67 | runtime candidate |
+| Teacher 3.625 bpw | +11.12% / +11.94% | +7.57% | 82.80% | 20.31% / **7.81%** | 6.17 | diagnostics failed |
+| TurboQuant-scale W4 | +10.85% / +10.96% | +9.82% | 82.28% | 14.84% / 7.81% | 4.00 | diagnostics failed |
+| Vector W3 | +26.35% / +26.89% | +19.83% | 74.87% | 9.64% / 5.47% | 2.92 | research quality failed |
+
+Calibrated and Gaussian W4 have the same 3,789,608,768-byte logical complete
+model size (58.26% below the 9,078,531,392-byte source accounting). Calibration
+therefore buys trajectory stability rather than storage. It costs more to
+produce—about 166 seconds per complete trial versus 73 seconds for Gaussian—but
+does not change the deployed scalar format. Both passed the primary diagnostic
+gate. `runtime candidate` means only that they advance to packed runtime work;
+the CUDA fallback materialized dense weights and is not runtime evidence.
+
+Teacher-guided 3.625-bpw allocation continued to beat its exact-rate random
+control on paired WikiText-2 and C4 NLL for every primary seed and on Qwen2.5.
+Nevertheless, its worst primary 32-token agreement was 7.81%, and its Qwen2.5
+worst-layer NMSE was 0.781. The compact preset is therefore rejected: a good
+teacher-forced allocation score did not preserve free-running behavior. The
+dimension-2 vector W3 control similarly improved paired PPL while worsening
+several source-fidelity metrics, and dynamic vector 2.75 bpw collapsed on
+Qwen2.5 (PPL +3,108%, top-1 10.32%). No sub-W4 recipe advances.
+
+Calibrated W4 was also the strongest transfer recipe on Qwen2.5-3B: WikiText-2
++10.32%, C4 +7.03%, top-1 84.13%, 32-token agreement 60.16%, exact trajectory
+25%, and a 19-token mean prefix. Gaussian W4 remains the cheaper fast-conversion
+control. The dense-attention selective-V result reproduced the earlier useful
+oracle points: a 90% mass gate read 51.56% of V rows at 2.95% additional error
+over dense RotQuant V, while 95% read 67.19% at 0.97% additional error. This is
+still only two layers with dense candidate selection.
+
+Decision: freeze calibrated W4 as the quality control and Gaussian W4 as the
+fast control for the streamed-GPTQ stage. Drop the provisional compact preset,
+TurboQuant scale arm, and vector formats from the production ladder. The next
+candidate must beat these W4 controls on held-out KL/top-1 and 32-token
+trajectories as well as PPL. The registered 300-prompt competitive contract was
+not run and remains mandatory before any comparison with Unsloth.
+
 ## Native K/V cache benchmark notes
 
 Command family:
@@ -526,17 +579,10 @@ trial and the 8k tiered-KV confirmation. These are implementation milestones,
 not quality or speed results; promotion still depends on the recorded held-out
 gates.
 
-- Run `notebooks/rotquant_algorithm_lab_colab.ipynb`: screen exact-rate scalar
-  versus finite-rate vector codebooks and scalar extensions, then promote only
-  Pareto winners through allocation objectives, three seeds, and a second model
-  family. The pre-run protocol now requires the source/W4 sentinel, paired
-  per-window NLL intervals, matched allocation/vector controls, WikiText-2 plus
-  C4 confirmation, logit/layer/trajectory diagnostics, immutable token hashes,
-  complete persistent/runtime bytes, and atomic resumable records. The notebook
-  is the canonical record template for this funnel.
-- Measure the real-attention selective-V upper bound in that notebook. Only
-  build packed-key candidate kernels if its confidence-gated quality curve
-  yields a useful reduction in effective V reads.
+- The Algorithm Lab and real-attention selective-V stages are now complete; see
+  the repaired confirmation entry above. Do not rerun the broad screen. Run the
+  focused streamed-GPTQ stage against calibrated/Gaussian W4 next, retaining
+  the same paired WikiText-2/C4, KL/top-1, and trajectory gates.
 
 - Measure packed checkpoint and native process resident memory and peak
   transient memory; artifact and tensor-file bytes are now verified.
@@ -556,6 +602,25 @@ gates.
 - Implement the canonical Transformers quantization-config contract, then a
   vLLM out-of-tree quantization plugin and the corresponding SGLang method; see
   `docs/serving_backends.md` for acceptance gates.
+
+### 2026-09-01 — focused 4B promotion harness (no new model result yet)
+
+Recorded the completed Algorithm Lab as the baseline and replaced the next
+broad rerun with a five-arm W4 ladder: source FP16, Gaussian W4, calibrated W4,
+and streamed GPTQ applied independently to each codebook. The pinned 4B GPTQ
+profile uses four disk-offloaded Hessians per calibration replay on the A100
+40 GB development target; the 27B profile must return to one per pass unless a
+measured memory trace supports a larger group. Resumption is keyed by both the
+fully resolved configuration and Git revision.
+
+The generated `notebooks/qwen35_4b_optimization_stage_colab.ipynb` keeps
+W4A8/E8, million-token recovery, and four 8k-context KV confirmations as
+separate opt-ins, so an end-to-end default run does not accidentally launch
+every costly stage. A source/candidate competitive collector now persists full
+FP16 teacher distributions once and emits the registered per-token KL, top-1,
+source/candidate trajectory, and structured-failure records for Transformers
+or RotQuant checkpoints. No quality numbers were produced by this
+implementation pass.
 
 ## Entry template
 

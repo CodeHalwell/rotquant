@@ -110,6 +110,9 @@ def test_calibration_batches_are_cached_and_content_addressed(monkeypatch):
     )
     assert calls == {"loads": 1, "tokens": 1}
     assert torch.equal(first[0]["input_ids"], second[0]["input_ids"])
+    assert torch.equal(
+        first[0]["attention_mask"], torch.ones_like(first[0]["input_ids"])
+    )
     manifest = run_experiment.token_batch_manifest(
         first, dataset="allenai/c4", split="train", revision="pinned",
         skip=0, seq_len=8,
@@ -142,6 +145,35 @@ def test_calibration_loader_excludes_exact_source_rows(monkeypatch):
         Tokenizer(), 3, 8, "cpu", exclude_source_rows={0, 2, 4}
     )
     assert [batch.source_row for batch in batches] == [1, 3, 5]
+
+
+def test_calibration_exclusions_before_skip_do_not_shift_held_out_rows(monkeypatch):
+    datasets = ModuleType("datasets")
+    datasets.load_dataset = lambda *args, **kwargs: [
+        {"text": f"document-{index}-long-enough"} for index in range(8)
+    ]
+    monkeypatch.setitem(sys.modules, "datasets", datasets)
+
+    class Tokenizer:
+        name_or_path = "tiny/tokenizer"
+        vocab_size = 32
+        special_tokens_map: ClassVar[dict] = {}
+
+        def __call__(self, text, return_tensors="pt"):
+            del return_tensors
+            return SimpleNamespace(
+                input_ids=torch.tensor([[ord(char) % 32 for char in text]])
+            )
+
+    run_experiment._CALIB_CACHE.clear()
+    baseline = run_experiment.build_calib_loader(
+        Tokenizer(), 2, 8, "cpu", skip=3
+    )
+    excluded = run_experiment.build_calib_loader(
+        Tokenizer(), 2, 8, "cpu", skip=3, exclude_source_rows={0, 1, 2}
+    )
+    assert [batch.source_row for batch in baseline] == [3, 4]
+    assert [batch.source_row for batch in excluded] == [3, 4]
 
 
 def test_internal_manifest_disjointness_checks_source_rows():

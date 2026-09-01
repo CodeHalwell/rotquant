@@ -176,13 +176,53 @@ audit table. Run and comparison reports are themselves content-addressed, so
 post-aggregation edits fail validation. Deltas are always candidate minus baseline; the tool does not
 invent a winner or promotion threshold.
 
+### Transformers and RotQuant collector
+
+The Python collector splits source capture from candidate scoring. Source
+teacher logits are stored once as object-free FP16 NumPy archives (roughly
+3 GB for 300 prompts, 32 tokens, and a 150K-token vocabulary). Candidate runs
+then need only one model resident, persist one prompt record at a time, and can
+resume safely after a Colab interruption. The candidate must be a local file or
+directory: every file named by the run metadata is rehashed before model load,
+and the per-prompt resume key includes the resulting artifact metadata.
+
+```bash
+python scripts/collect_competitive_transformers.py source \
+  --protocol manifests/qwen35-4b-protocol.json \
+  --prompt-manifest manifests/private/held_out.json \
+  --reference-dir runs/source-references \
+  --model-loader multimodal_lm
+
+python scripts/collect_competitive_transformers.py candidate \
+  --protocol manifests/qwen35-4b-protocol.json \
+  --prompt-manifest manifests/private/held_out.json \
+  --reference-dir runs/source-references \
+  --candidate-kind rotquant \
+  --candidate artifacts/qwen35-4b-rotquant \
+  --run-metadata runs/rotquant-metadata.json \
+  --fallback \
+  --work-dir runs/rotquant-work \
+  --observations runs/rotquant-observations.jsonl \
+  --failures runs/rotquant-failures.jsonl \
+  --model-loader multimodal_lm
+```
+
+The source continuation is scored teacher-forced by both models for one full
+KL value and top-1 decision per generated token. The candidate also generates
+its own 32-token greedy continuation. Explicit all-ones attention masks and
+fixed min/max new-token counts avoid PAD/EOS ambiguity. This collector is a
+quality reference path, not a packed-throughput benchmark; `--fallback`
+materializes RotQuant weights for faster scoring and must not support runtime
+memory claims.
+
 ## What remains before the 4B competitive run
 
 1. implement and review the five upstream source adapters;
 2. select/freeze 60 rows per domain and materialize the licensed private/public
    manifests;
-3. add collector adapters for source Transformers, RotQuant, llama.cpp GGUF,
-   and the exact-size Unsloth artifact;
+3. add llama.cpp GGUF collectors for the same-size standard and exact-size
+   Unsloth artifacts (the source Transformers and RotQuant reference collector
+   is implemented);
 4. add task-outcome scorers (execution, function arguments, maths, and IFEval)
    alongside—not inside—the divergence metric;
 5. run the calibration-size ablation and freeze the winning data/optimizer

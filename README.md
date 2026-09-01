@@ -76,10 +76,12 @@ weight blocks and fail-closed kernel dispatch across 1–8 bits while preserving
 the deployed 4-bit GGUF v1 bytes exactly.
 
 The [algorithm-lab Colab](notebooks/rotquant_algorithm_lab_colab.ipynb) runs the
-next research funnel: exact-rate scalar/vector controls, calibrated and
+completed research funnel: exact-rate scalar/vector controls, calibrated and
 TurboQuant-style variants, mixed-bit allocation, cross-family replication, and
-a real-attention selective-V upper-bound oracle. It is resumable through Google
-Drive and leaves expensive cells disabled until explicitly confirmed.
+a real-attention selective-V upper-bound oracle. The focused
+[Qwen3.5-4B optimization Colab](notebooks/qwen35_4b_optimization_stage_colab.ipynb)
+now runs the promoted W4 controls against streamed GPTQ, with W4A8/E8,
+million-token recovery, and 8k-context KV stages as explicit resumable opt-ins.
 
 ## Install
 

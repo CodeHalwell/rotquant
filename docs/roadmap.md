@@ -87,6 +87,10 @@ specialized around them:
   primary model, then promote only Pareto winners to three seeds and a second
   architecture family (Qwen3.5-4B primary and Qwen2.5-3B transfer; see the
   experiment log for positive and negative results);
+- [x] rerun the repaired three-seed/cross-family confidence protocol with
+  KL/top-1 and 32-token trajectories; calibrated W4 and Gaussian W4 are the only
+  runtime candidates, while the 3.625-bpw compact and all sub-W4 recipes fail
+  free-running or transfer quality;
 - [x] formalize the exact-size external-artifact and competitive-claim gates in
   [the competitive evaluation contract](competitive_eval.md), including
   content-addressed prompt/calibration protocols and KL distribution tails;
@@ -94,6 +98,11 @@ specialized around them:
   [competitive data pipeline](competitive_data.md): immutable source/license
   manifests, post-template token identities, exact/near leakage checks, fixed
   domain quotas, structured run failures, and paired/domain bootstrap reports;
+- [x] add the focused, commit/config-aware
+  [Qwen3.5-4B optimization Colab](../notebooks/qwen35_4b_optimization_stage_colab.ipynb)
+  for matched calibrated/Gaussian W4 versus streamed GPTQ, with W4A8/E8,
+  serious recovery, and 8k KV as separate opt-in stages; add a resumable
+  source-Transformers/RotQuant collector for the registered divergence records;
 - [ ] build a pinned, calibration-disjoint 300-prompt/32-token free-running
   divergence suite spanning agentic, code, maths, multilingual, and long-document
   prompts; compare the source, RotQuant, same-size GGUF, and Unsloth baselines;

@@ -61,7 +61,15 @@ class TokenBatch(dict):
     """Model-input mapping carrying a non-forwarded source-row identity."""
 
     def __init__(self, input_ids: torch.Tensor, source_row: int):
-        super().__init__(input_ids=input_ids)
+        # Calibration/evaluation batches are fixed-length and never padded, so
+        # every token is valid.  Supplying the mask explicitly avoids ambiguous
+        # Transformers behaviour when a tokenizer uses the same ID for PAD and
+        # EOS (Qwen2.5 does), and keeps source/candidate generation semantics
+        # identical across model families and inference engines.
+        super().__init__(
+            input_ids=input_ids,
+            attention_mask=torch.ones_like(input_ids),
+        )
         self.source_row = source_row
 
 
@@ -276,6 +284,7 @@ def build_calib_loader(tokenizer, n_seq: int, seq_len: int, device,
         "seq_len": seq_len,
         "skip": skip,
         "exclude_source_rows": sorted(excluded),
+        "selection_scheme": "eligible-skip-before-exclusion-v2",
     }, sort_keys=True, default=str).encode()).hexdigest()
     cached = _CALIB_CACHE.get(key)
     if cached is not None:
@@ -292,13 +301,18 @@ def build_calib_loader(tokenizer, n_seq: int, seq_len: int, device,
     )
     batches, count, eligible = [], 0, 0
     for source_row, row in enumerate(ds):
-        if source_row in excluded:
-            continue
         ids = tokenizer(row["text"], return_tensors="pt").input_ids
         if ids.shape[1] < seq_len:
             continue
-        if eligible < skip:
-            eligible += 1
+        # ``skip`` names an eligible-document position in the pinned source,
+        # independent of calibration exclusions.  Counting excluded documents
+        # before applying the exclusion prevents an early calibration row from
+        # shifting every later held-out prompt by one.
+        eligible_position = eligible
+        eligible += 1
+        if eligible_position < skip:
+            continue
+        if source_row in excluded:
             continue
         batches.append(TokenBatch(ids[:, :seq_len].cpu(), source_row))
         count += 1

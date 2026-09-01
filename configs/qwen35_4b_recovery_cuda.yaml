@@ -6,6 +6,8 @@
 experiment: QWEN35_RECOVERY
 label: qwen35_4b_w4_streamed_qat_cuda
 model: unsloth/Qwen3.5-4B
+model_revision: 3764fa359b9082ea5a1e4a5e3ac3aaf6e9671636
+calib_dataset_revision: 1588ec454efa1a09f29cd18ddd04fe05fc8653a2
 model_loader: multimodal_lm
 device: cuda
 dtype: float16
@@ -78,8 +80,10 @@ eval:
     batches: 16
     prompt_len: 128
     skip: 16384
+    bootstrap_draws: 4000
   trajectory:
     batches: 16
     prompt_len: 128
     new_tokens: 32
     skip: 20000
+    bootstrap_draws: 4000
