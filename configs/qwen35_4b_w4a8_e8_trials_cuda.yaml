@@ -1,7 +1,8 @@
 # Post-promotion composition run. The runner first reproduces the promoted
-# Gaussian FWHT+GPTQ W4/g128 recipe, then adds shared learned rotations, the
-# Hessian objective, learned signs, true 8-bit scales, mean-bias correction,
-# W4A8 semantics, and finally finite-rate E8P KV in separately paired arms.
+# Gaussian FWHT+GPTQ W4/g128 recipe. One branch tests shared learned rotations,
+# the Hessian objective, learned signs, true 8-bit scales, and mean-bias
+# correction. A separate branch changes only A8, then adds finite-rate E8P KV,
+# avoiding three repeated 200-step learned-rotation fits.
 experiment: QWEN35_W4A8_E8_TRIALS_CUDA
 label: qwen35_4b_w4a8_e8_trials_cuda
 model: unsloth/Qwen3.5-4B

@@ -34,9 +34,9 @@ def build_notebook():
 
         - **W4 (default):** source FP16, Gaussian W4, calibrated W4, and both
           matched streamed-GPTQ variants.
-        - **W4A8/E8 (opt-in):** anchors on promoted Gaussian FWHT+GPTQ W4,
-          then separately tests optimized weight-only composition,
-          activation-8-bit, and finite-rate E8 KV effects.
+        - **W4A8/E8 (opt-in):** anchors on promoted Gaussian FWHT+GPTQ W4;
+          separately tests optimized weight-only composition and A8, then adds
+          finite-rate E8 KV to the matched A8 arm.
         - **Recovery (opt-in, very expensive):** a resumable million-token
           block-reconstruction and distillation protocol.
         - **Long KV (opt-in):** four disjoint 8k-prefill/64-token confirmations.

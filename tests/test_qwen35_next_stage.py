@@ -64,9 +64,14 @@ def test_w4a8_ladder_anchors_each_composition_step_to_its_predecessor():
     assert resolved["quant"]["codebook"] == "gaussian"
     assert resolved["quant"]["error_comp"] == "gptq"
     assert resolved["quant"]["group_size"] == 128
+    w4a8 = overrides["w4a8"]
+    assert w4a8["patch.rotation"] == "fwht"
+    assert w4a8["patch.train_rotation"] is None
+    assert w4a8["patch.activation_bits"] == 8
+    assert overrides["w4a8_e8"]["patch.train_rotation"] is None
     assert runner.PAIRED_ARMS["w4a8"] == (
         ("optimized_w4", "promoted_w4"),
-        ("w4a8", "optimized_w4"),
+        ("w4a8", "promoted_w4"),
         ("w4a8_e8", "w4a8"),
     )
 

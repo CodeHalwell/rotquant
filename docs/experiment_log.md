@@ -652,9 +652,11 @@ slightly higher; none of the head-to-head PPL, top-1, or trajectory differences
 is decisive with only eight unique trajectory prompts.
 
 The post-promotion W4A8/E8 stage now starts from an exact Gaussian FWHT+GPTQ
-W4/g128 arm. It adds optimized weight-only composition, A8, and E8 KV in three
-separate paired steps rather than conflating them. The 300-prompt competitive
-suite remains the final Gaussian-versus-calibrated codebook gate.
+W4/g128 arm. One paired branch tests optimized weight-only composition; a
+separate branch changes only A8 and then adds E8 KV. This avoids conflating the
+effects or repeating the 200-step learned-rotation fit three times. The
+300-prompt competitive suite remains the final Gaussian-versus-calibrated
+codebook gate.
 
 ## Entry template
 

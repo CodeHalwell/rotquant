@@ -41,7 +41,7 @@ PAIRED_ARMS = {
     ),
     "w4a8": (
         ("optimized_w4", "promoted_w4"),
-        ("w4a8", "optimized_w4"),
+        ("w4a8", "promoted_w4"),
         ("w4a8_e8", "w4a8"),
     ),
     "recovery": (("recovered_w4", "unrecovered_w4"),),
@@ -122,9 +122,26 @@ def stage_trials(stage: str) -> tuple[Trial, ...]:
             ),
             _trial(
                 stage, "w4a8", config,
-                **{"patch.activation_bits": 8, "eval.kv_cache": False},
+                **{
+                    "quant.scale_bits": 16,
+                    "quant.bias_correction": "none",
+                    "patch.rotation": "fwht",
+                    "patch.share_rotations": False,
+                    "patch.train_rotation": None,
+                    "patch.activation_bits": 8,
+                    "eval.kv_cache": False,
+                },
             ),
-            _trial(stage, "w4a8_e8", config),
+            _trial(
+                stage, "w4a8_e8", config,
+                **{
+                    "quant.scale_bits": 16,
+                    "quant.bias_correction": "none",
+                    "patch.rotation": "fwht",
+                    "patch.share_rotations": False,
+                    "patch.train_rotation": None,
+                },
+            ),
         )
     if stage == "recovery":
         config = "configs/qwen35_4b_recovery_cuda.yaml"
