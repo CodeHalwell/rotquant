@@ -222,6 +222,8 @@ def test_next_stage_notebook_is_valid_compilable_and_fail_safe():
     assert "run_unsloth_qwen35_4b_kl.py" in source
     assert "UD-Q4_K_XL" in source
     assert "llama_cpp_python" in source
+    assert '"diskcache==5.6.3"' in source
+    assert "import diskcache, llama_cpp" in source
     assert "ppl_wikitext2_relative_to_source" in source
     assert "trajectory_token_agreement" in source
     assert "paired_comparisons" in source

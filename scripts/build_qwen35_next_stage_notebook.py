@@ -168,7 +168,18 @@ def build_notebook():
 
         if RUN_UNSLOTH_KL:
             # Build the exact pinned llama.cpp Python binding used by the GGUF
-            # comparator. Pinning the wrapper also pins its llama.cpp submodule.
+            # comparator. The source build deliberately uses --no-deps so it
+            # cannot replace Colab's NumPy/CUDA stack; install the wrapper's
+            # pure-Python runtime dependencies explicitly first.
+            llama_runtime_packages = [
+                "diskcache==5.6.3",
+                "jinja2==3.1.6",
+                "typing-extensions==4.15.0",
+            ]
+            subprocess.run([
+                sys.executable, "-m", "pip", "install", "-q", "-U",
+                *llama_runtime_packages,
+            ], check=True)
             llama_env = os.environ.copy()
             llama_env.update({
                 "CMAKE_ARGS": "-DGGML_CUDA=on",
@@ -180,9 +191,14 @@ def build_notebook():
                 sys.executable, "-m", "pip", "install", "-v", "--no-deps",
                 f"git+https://github.com/abetlen/llama-cpp-python.git@{llama_revision}",
             ], check=True, env=llama_env)
+            # Probe in a clean interpreter. This catches missing Python
+            # dependencies and native loader failures before downloading GGUFs.
             importlib.invalidate_caches()
-            import llama_cpp
-            print({"llama_cpp_python": llama_cpp.__version__, "revision": llama_revision})
+            llama_version = subprocess.check_output([
+                sys.executable, "-c",
+                "import diskcache, llama_cpp; print(llama_cpp.__version__)",
+            ], text=True).strip()
+            print({"llama_cpp_python": llama_version, "revision": llama_revision})
         subprocess.run(
             [sys.executable, "-m", "pip", "install", "-q", "-e", str(REPO_DIR), "--no-deps"],
             check=True,
