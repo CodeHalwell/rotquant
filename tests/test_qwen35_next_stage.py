@@ -116,6 +116,10 @@ def test_next_stage_notebook_is_valid_compilable_and_fail_safe():
     assert "REQUIRE_FAST_HADAMARD = True" in source
     assert "bounded source build" in source
     assert "--dry-run" in source
+    assert 'sys.executable, "-u"' in source
+    assert "subprocess.Popen" in source
+    assert "stderr=subprocess.STDOUT" in source
+    assert 'child_env["PYTHONUNBUFFERED"] = "1"' in source
     assert "ppl_wikitext2_relative_to_source" in source
     assert "trajectory_token_agreement" in source
     assert "paired_comparisons" in source

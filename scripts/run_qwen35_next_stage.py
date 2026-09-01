@@ -28,7 +28,7 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from rotquant.utils import write_result
+from rotquant.utils import enable_default_logging, write_result
 from scripts import run_experiment
 
 PROTOCOL_VERSION = "qwen35-next-stage-v1"
@@ -459,10 +459,10 @@ def _run_trial(
             fingerprint=fingerprint,
         )
         if existing is not None:
-            print(f"resume {trial.stage}/{trial.arm}/seed-{seed}")
+            print(f"resume {trial.stage}/{trial.arm}/seed-{seed}", flush=True)
             return existing, 0.0, True
 
-    print(f"run {trial.stage}/{trial.arm}/seed-{seed}")
+    print(f"run {trial.stage}/{trial.arm}/seed-{seed}", flush=True)
     if dry_run:
         return None, 0.0, False
     marker_overrides = (
@@ -502,6 +502,7 @@ def parse_args() -> argparse.Namespace:
 
 
 def main() -> None:
+    enable_default_logging()
     args = parse_args()
     stages = tuple(dict.fromkeys(args.stage or DEFAULT_STAGES))
     seeds = tuple(dict.fromkeys(args.seeds or [0]))

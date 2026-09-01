@@ -239,8 +239,11 @@ def build_notebook():
         """),
         md("## 5. Run or resume the selected stages"),
         code("""
+        import os
+
         command = [
-            sys.executable, str(REPO_DIR / "scripts/run_qwen35_next_stage.py"),
+            sys.executable, "-u",
+            str(REPO_DIR / "scripts/run_qwen35_next_stage.py"),
             "--output-dir", str(RESULT_ROOT),
         ]
         for stage in selected_stages:
@@ -249,7 +252,23 @@ def build_notebook():
             command.extend(["--seed", str(seed)])
         if FORCE_RERUN:
             command.append("--force")
-        subprocess.run(command, cwd=REPO_DIR, check=True)
+        child_env = os.environ.copy()
+        child_env["PYTHONUNBUFFERED"] = "1"
+        process = subprocess.Popen(
+            command,
+            cwd=REPO_DIR,
+            env=child_env,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+            bufsize=1,
+        )
+        assert process.stdout is not None
+        for line in process.stdout:
+            print(line, end="", flush=True)
+        returncode = process.wait()
+        if returncode:
+            raise subprocess.CalledProcessError(returncode, command)
         """),
         md("## 6. Inspect quality, divergence, storage, and memory together"),
         code("""
