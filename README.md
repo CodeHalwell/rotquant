@@ -61,6 +61,11 @@ matching, disjoint calibration and 300-prompt manifests, KL distribution tails,
 32-token greedy divergence, task failures, and runtime evidence. A fallback PPL
 win alone is explicitly not treated as a competitive product claim.
 
+The pinned [Unsloth Qwen3.5-4B comparison note](docs/unsloth_qwen35_4b_comparison.md)
+records the exact released artifacts, hashes, byte mismatch, same-engine KL
+method, and the boundary between the next development result and a Dynamic 3.0
+competitive claim.
+
 The [competitive data pipeline](docs/competitive_data.md) turns that contract
 into immutable calibration/held-out manifests, leakage checks, engine-neutral
 observations, and paired domain/bootstrap reports without redistributing gated

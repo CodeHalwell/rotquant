@@ -1,6 +1,8 @@
 # Long-context confirmation for the promoted Qwen3.5-4B RotQuant recipe.
 # Four disjoint 8k prefill/64-token continuation pairs are deliberately costly:
 # this is the first protocol where KV storage dominates and tiering is meaningful.
+# Keep this base config identical to the promoted Gaussian FWHT+GPTQ W4/g128
+# recipe. The runner changes only the explicitly named source/A8 arms.
 experiment: QWEN35_LONG_CONTEXT_KV_CUDA
 label: qwen35_4b_long_context_tiered_kv_cuda
 model: unsloth/Qwen3.5-4B
@@ -10,23 +12,26 @@ model_loader: multimodal_lm
 device: cuda
 dtype: float16
 seed: 0
-calib_seq_len: 128
-rotation_n_calib: 8
-bias_n_calib: 32
+n_calib: 128
+calib_seq_len: 512
+hessian_collection: streamed
+hessian_layers_per_pass: 4
 quant:
   bits: 4
   codebook: gaussian
   scale: mse_search
-  scale_bits: 8
-  scale_quant_group_size: 256
+  scale_bits: 16
   group_size: 128
-  error_comp: none
-  bias_correction: mean
+  error_comp: gptq
+  gptq_block: 128
+  gptq_actorder: true
+  gptq_recompute_scales: true
+  bias_correction: none
 patch:
   rotation: fwht
   block: 128
   mode: consistent
-  share_rotations: true
+  share_rotations: false
   fallback: true
   include: [model.language_model.layers.]
   exclude: [linear_attn.in_proj_a, linear_attn.in_proj_b, lm_head, embed_out]
@@ -34,13 +39,13 @@ eval:
   perplexity: false
   zeroshot: false
   kv_cache:
-    bits: 3
-    key_bits: 3
-    value_bits: 3
+    bits: 2
+    key_bits: 2
+    value_bits: 2
     group_size: 64
     scale_bits: 8
     scale_quant_group_size: 256
-    codebook: gaussian
+    codebook: e8p
     rotation_block: 128
     sink_tokens: 4
     recent_window: 32

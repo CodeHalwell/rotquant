@@ -25,21 +25,29 @@ def build_notebook():
         # RotQuant Qwen3.5-4B optimization stage
 
         This is the focused follow-up to the completed Algorithm Lab. It does
-        not repeat the broad screen. The default run compares the validated
-        calibrated and Gaussian W4 controls with streamed GPTQ under identical
-        held-out PPL, token-distribution, and 32-token trajectory checks.
+        not repeat the broad screen. The W4 and W4A8 ladders are complete; the
+        next-run defaults are the corrected 8k E8P cache confirmation and the
+        pinned released-Unsloth KL anchor.
         """),
         md("""
         ## What the notebook can run
 
-        - **W4 (default):** source FP16, Gaussian W4, calibrated W4, and both
+        - **W4 (completed, opt-in):** source FP16, Gaussian W4, calibrated W4, and both
           matched streamed-GPTQ variants.
         - **W4A8/E8 (opt-in):** anchors on promoted Gaussian FWHT+GPTQ W4;
           separately tests optimized weight-only composition and A8, then adds
           finite-rate E8 KV to the matched A8 arm.
+        - **Factor ablation (opt-in):** decomposes the failed bundled optimizer
+          into scale precision, bias correction, sharing, butterfly rotation,
+          Hessian training, and learned-sign increments. Catastrophic arms stop
+          at a global KL/top-1 sentinel.
         - **Recovery (opt-in, very expensive):** a resumable million-token
           block-reconstruction and distillation protocol.
-        - **Long KV (opt-in):** four disjoint 8k-prefill/64-token confirmations.
+        - **Long KV (next-run default):** exact promoted W4, optional A8, and
+          2-bit E8P cache on four disjoint 8k-prefill/64-token confirmations.
+        - **Unsloth KL (next-run default):** exact released UD-Q4_K_XL against
+          its BF16 GGUF in one pinned llama.cpp engine on the same held-out C4
+          token sequences used by the RotQuant W4A8 stage.
 
         Every completed arm is stored in Google Drive. Resumption requires the
         same Git commit and fully resolved configuration; stale results are not
@@ -57,10 +65,15 @@ def build_notebook():
         DRIVE_RESULT_ROOT = Path("/content/drive/MyDrive/rotquant/qwen35_next_stage")
         LOCAL_RESULT_ROOT = Path("/content/rotquant_qwen35_next_stage")
 
-        RUN_W4 = True
+        # The W4 and W4A8 ladders are complete. The defaults below run only the
+        # two outstanding confirmations; turn on the factor ablation separately
+        # if Colab time remains after those results are safely persisted.
+        RUN_W4 = False
         RUN_W4A8 = False
+        RUN_FACTOR_ABLATION = False
         RUN_RECOVERY = False       # deliberately opt-in: >=1M unique train tokens
-        RUN_LONG_CONTEXT_KV = False
+        RUN_LONG_CONTEXT_KV = True
+        RUN_UNSLOTH_KL = True
         SEEDS = (0,)               # use (0, 1, 2) only after seed 0 promotes
         FORCE_RERUN = False
         REQUIRE_FAST_HADAMARD = True
@@ -70,8 +83,10 @@ def build_notebook():
             "repo_ref": REPO_REF,
             "run_w4": RUN_W4,
             "run_w4a8": RUN_W4A8,
+            "run_factor_ablation": RUN_FACTOR_ABLATION,
             "run_recovery": RUN_RECOVERY,
             "run_long_context_kv": RUN_LONG_CONTEXT_KV,
+            "run_unsloth_kl": RUN_UNSLOTH_KL,
             "seeds": SEEDS,
         })
         """),
@@ -150,6 +165,24 @@ def build_notebook():
             [sys.executable, "-m", "pip", "install", "-q", "-U", *runtime_packages],
             check=True,
         )
+
+        if RUN_UNSLOTH_KL:
+            # Build the exact pinned llama.cpp Python binding used by the GGUF
+            # comparator. Pinning the wrapper also pins its llama.cpp submodule.
+            llama_env = os.environ.copy()
+            llama_env.update({
+                "CMAKE_ARGS": "-DGGML_CUDA=on",
+                "CMAKE_BUILD_PARALLEL_LEVEL": "2",
+                "FORCE_CMAKE": "1",
+            })
+            llama_revision = "3691546f1c9e0c1bf93323dff02230bd959cf562"
+            subprocess.run([
+                sys.executable, "-m", "pip", "install", "-v", "--no-deps",
+                f"git+https://github.com/abetlen/llama-cpp-python.git@{llama_revision}",
+            ], check=True, env=llama_env)
+            importlib.invalidate_caches()
+            import llama_cpp
+            print({"llama_cpp_python": llama_cpp.__version__, "revision": llama_revision})
         subprocess.run(
             [sys.executable, "-m", "pip", "install", "-q", "-e", str(REPO_DIR), "--no-deps"],
             check=True,
@@ -211,8 +244,10 @@ def build_notebook():
             REPO_DIR / "scripts/run_qwen35_next_stage.py",
             REPO_DIR / "configs/qwen35_4b_gptq_cuda.yaml",
             REPO_DIR / "configs/qwen35_4b_w4a8_e8_trials_cuda.yaml",
+            REPO_DIR / "configs/qwen35_4b_w4_factor_ablation_cuda.yaml",
             REPO_DIR / "configs/qwen35_4b_recovery_cuda.yaml",
             REPO_DIR / "configs/qwen35_4b_long_context_kv_cuda.yaml",
+            REPO_DIR / "scripts/run_unsloth_qwen35_4b_kl.py",
         ]
         missing = [str(path) for path in required if not path.exists()]
         assert not missing, "Missing required files: " + ", ".join(missing)
@@ -222,11 +257,13 @@ def build_notebook():
             selected_stages.append("w4")
         if RUN_W4A8:
             selected_stages.append("w4a8")
+        if RUN_FACTOR_ABLATION:
+            selected_stages.append("ablation")
         if RUN_RECOVERY:
             selected_stages.append("recovery")
         if RUN_LONG_CONTEXT_KV:
             selected_stages.append("long-kv")
-        assert selected_stages, "Enable at least one stage."
+        assert selected_stages or RUN_UNSLOTH_KL, "Enable at least one run."
 
         dry_command = [
             sys.executable, str(REPO_DIR / "scripts/run_qwen35_next_stage.py"),
@@ -236,40 +273,58 @@ def build_notebook():
             dry_command.extend(["--stage", stage])
         for seed in SEEDS:
             dry_command.extend(["--seed", str(seed)])
-        subprocess.run(dry_command, cwd=REPO_DIR, check=True)
+        if selected_stages:
+            subprocess.run(dry_command, cwd=REPO_DIR, check=True)
         """),
         md("## 5. Run or resume the selected stages"),
         code("""
         import os
 
-        command = [
-            sys.executable, "-u",
-            str(REPO_DIR / "scripts/run_qwen35_next_stage.py"),
-            "--output-dir", str(RESULT_ROOT),
-        ]
-        for stage in selected_stages:
-            command.extend(["--stage", stage])
-        for seed in SEEDS:
-            command.extend(["--seed", str(seed)])
-        if FORCE_RERUN:
-            command.append("--force")
         child_env = os.environ.copy()
         child_env["PYTHONUNBUFFERED"] = "1"
-        process = subprocess.Popen(
-            command,
-            cwd=REPO_DIR,
-            env=child_env,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.STDOUT,
-            text=True,
-            bufsize=1,
-        )
-        assert process.stdout is not None
-        for line in process.stdout:
-            print(line, end="", flush=True)
-        returncode = process.wait()
-        if returncode:
-            raise subprocess.CalledProcessError(returncode, command)
+
+        def run_live(command):
+            print("Running:", " ".join(map(str, command)), flush=True)
+            process = subprocess.Popen(
+                command,
+                cwd=REPO_DIR,
+                env=child_env,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                text=True,
+                bufsize=1,
+            )
+            assert process.stdout is not None
+            for line in process.stdout:
+                print(line, end="", flush=True)
+            returncode = process.wait()
+            if returncode:
+                raise subprocess.CalledProcessError(returncode, command)
+
+        if RUN_UNSLOTH_KL:
+            unsloth_command = [
+                sys.executable, "-u",
+                str(REPO_DIR / "scripts/run_unsloth_qwen35_4b_kl.py"),
+                "--output-dir", str(RESULT_ROOT / "unsloth_kl"),
+                "--artifact-dir", "/content/unsloth-qwen35-4b-gguf",
+            ]
+            if FORCE_RERUN:
+                unsloth_command.append("--force")
+            run_live(unsloth_command)
+
+        if selected_stages:
+            command = [
+                sys.executable, "-u",
+                str(REPO_DIR / "scripts/run_qwen35_next_stage.py"),
+                "--output-dir", str(RESULT_ROOT),
+            ]
+            for stage in selected_stages:
+                command.extend(["--stage", stage])
+            for seed in SEEDS:
+                command.extend(["--seed", str(seed)])
+            if FORCE_RERUN:
+                command.append("--force")
+            run_live(command)
         """),
         md("## 6. Inspect quality, divergence, storage, and memory together"),
         code("""
@@ -279,36 +334,60 @@ def build_notebook():
         from IPython.display import display
 
         summary_path = RESULT_ROOT / "next_stage_summary.json"
-        summary = json.loads(summary_path.read_text())
-        frame = pd.DataFrame(summary["rows"])
-        display(frame)
+        if summary_path.exists():
+            summary = json.loads(summary_path.read_text())
+            frame = pd.DataFrame(summary["rows"])
+            display(frame)
 
-        quality_columns = [column for column in [
-            "stage", "arm", "seed",
-            "ppl_wikitext2_relative_to_source", "ppl_c4_relative_to_source",
-            "mean_teacher_kl", "p95_teacher_kl", "top1_agreement",
-            "trajectory_token_agreement", "exact_trajectory_rate",
-            "mean_matching_prefix", "complete_persistent_model_bytes",
-            "peak_vram_bytes_patch", "peak_vram_bytes_eval",
-        ] if column in frame]
-        display(frame[quality_columns])
+            quality_columns = [column for column in [
+                "stage", "arm", "seed", "evaluation_halted",
+                "ppl_wikitext2_relative_to_source", "ppl_c4_relative_to_source",
+                "mean_teacher_kl", "p95_teacher_kl", "top1_agreement",
+                "trajectory_token_agreement", "exact_trajectory_rate",
+                "mean_matching_prefix", "kv_mean_teacher_kl",
+                "kv_top1_agreement", "complete_persistent_model_bytes",
+                "peak_vram_bytes_patch", "peak_vram_bytes_eval",
+            ] if column in frame]
+            display(frame[quality_columns])
 
-        print("Paired candidate-minus-control bootstrap reports:")
-        print(json.dumps(summary.get("paired_comparisons", []), indent=2))
+            print("Paired candidate-minus-control bootstrap reports:")
+            print(json.dumps(summary.get("paired_comparisons", []), indent=2))
+
+        unsloth_path = RESULT_ROOT / "unsloth_kl" / "unsloth_ud_q4_kl.json"
+        if unsloth_path.exists():
+            unsloth = json.loads(unsloth_path.read_text())
+            print("Pinned Unsloth UD-Q4_K_XL same-engine result:")
+            print(json.dumps({
+                "complete_artifact_bytes": unsloth["candidate"]["complete_artifact_bytes"],
+                **unsloth["metrics"],
+                "warning": unsloth["comparison_warning"],
+            }, indent=2))
 
         print(
-            "Promotion is paired: compare each GPTQ arm with the control using "
-            "the same codebook. Do not infer a win from PPL alone; require KL, "
-            "top-1, and free-running trajectory evidence to agree."
+            "Promotion is paired. Do not infer a win from PPL alone; require "
+            "KL, top-1, and free-running trajectory evidence to agree. The "
+            "nearest Unsloth Q4 artifact is an external quality anchor, not a "
+            "same-byte win/loss until the <=1% byte gate is met."
         )
         """),
         md("## 7. Preserve a downloadable bundle"),
         code("""
         import shutil
 
+        bundle_root = Path(f"/content/qwen35_next_stage_{commit[:12]}_bundle")
+        if bundle_root.exists():
+            shutil.rmtree(bundle_root)
+        # The BF16 full-logit references are ~1 GB and already persist in Drive.
+        # Keep them out of the browser download while retaining manifests,
+        # prompt records, summaries, hashes, and all model-stage JSON records.
+        shutil.copytree(
+            RESULT_ROOT,
+            bundle_root,
+            ignore=shutil.ignore_patterns("*.npz"),
+        )
         archive = shutil.make_archive(
             f"/content/qwen35_next_stage_{commit[:12]}", "zip",
-            root_dir=RESULT_ROOT,
+            root_dir=bundle_root,
         )
         print(f"Created {archive}; Drive results remain at {RESULT_ROOT}")
         if DOWNLOAD_RESULTS:
@@ -318,9 +397,13 @@ def build_notebook():
         md("""
         ## Interpretation boundary
 
-        These fixed WikiText/C4 and held-out C4 trajectory metrics decide which
+        These fixed WikiText/C4 and held-out C4 metrics decide which
         optimizer variants deserve the expensive frozen 300-prompt run. They do
-        not yet establish parity with Unsloth Dynamic 3.0. That comparison needs
+        not yet establish parity with Unsloth Dynamic 3.0. The exact released
+        Qwen3.5-4B UD-Q4_K_XL KL leg added here is a same-engine development
+        anchor, but the current complete RotQuant artifact is about 5.7% larger
+        and therefore fails the registered <=1% same-byte gate. A
+        competitive claim still needs
         the licensed five-domain manifest, 32-token teacher KL/trajectory records,
         task-outcome scorers, and deployed artifacts matched within 1% of size.
         """),

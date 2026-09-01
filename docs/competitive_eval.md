@@ -11,6 +11,44 @@ held-out KL/top-1 and 300-prompt greedy-trajectory evaluation, and deployment
 through llama.cpp. Their public releases and importance matrices are valid
 artifact baselines even where their allocator is not publicly reproducible.
 
+### What the Unsloth comparison is testing
+
+The publicly visible core of Dynamic GGUF is a static, model-specific
+mixed-format recipe: calibration and importance information determine which
+tensors receive different GGUF quantization formats, higher precision, or an
+exception. It is not a precision choice made dynamically for each request, and
+the GGUF releases execute through existing llama.cpp operators rather than
+requiring a new Dynamic-specific arithmetic primitive. The exact Dynamic 3.0
+selection objective and all of its recipe details are not public, so the
+comparison must use released artifacts rather than treating it as a known
+simple per-layer bit-width heuristic.
+
+Mixed precision is therefore required for a fair attempt at the same-size
+frontier, but it is not RotQuant's complete contribution. The intended
+composition is:
+
+$$
+\text{structured rotations} + \text{GPTQ error compensation}
++ \text{codebook/scale choice} + \text{mixed-format allocation}.
+$$
+
+Every competitive rate must preserve the following ablation ladder at matched
+deployed bytes:
+
+1. standard uniform quantization;
+2. standard mixed-format quantization without RotQuant;
+3. uniform RotQuant with the frozen error-compensation recipe;
+4. mixed-format RotQuant with the same frozen quantizer; and
+5. the nearest-size released Unsloth artifact.
+
+This separates gains from allocation from gains within each allocated format.
+Uniform Gaussian W4+GPTQ remains the locked W4 control until a mixed recipe
+beats it on calibration-disjoint KL and trajectories at the same actual bytes.
+Mixed allocation is evidence-gated at W4, expected to become increasingly
+important at W3, and is a required design component for credible W2/W1
+artifacts. Weight allocation, activation precision, and KV-cache precision are
+three separate experiments and must not be conflated in one arm.
+
 ## Four independent gates
 
 | Gate | Required evidence | A failure means |

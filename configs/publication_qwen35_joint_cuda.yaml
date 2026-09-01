@@ -1,0 +1,55 @@
+# Publication-grade replay of the selected Qwen3.5 language-path recipe.
+# Cache evaluation simulates the exact frozen deployment map; perplexity and
+# zero-shot evaluation currently measure the W4 model without cache injection.
+experiment: PAPER_QWEN35_JOINT
+label: paper_qwen35_joint_rotquant_w4_kv3p25
+model: unsloth/Qwen3.5-4B
+model_revision: 3764fa359b9082ea5a1e4a5e3ac3aaf6e9671636
+model_loader: multimodal_lm
+device: cuda
+dtype: float16
+seed: 0
+calib_seq_len: 2048
+rotation_n_calib: 1
+quant:
+  bits: 4
+  codebook: gaussian
+  scale: mse_search
+  group_size: 128
+  error_comp: none
+patch:
+  rotation: fwht
+  block: 128
+  mode: consistent
+  fallback: true  # quality-only; native runtime owns memory/throughput claims
+  include: [model.language_model.layers.]
+  exclude: [linear_attn.in_proj_a, linear_attn.in_proj_b]
+eval:
+  perplexity: true
+  ppl_datasets: [wikitext2, c4]
+  ppl:
+    seq_len: 2048
+    max_samples: null
+  zeroshot: true
+  tasks: [arc_challenge, arc_easy, boolq, piqa, winogrande, hellaswag]
+  kv_cache:
+    bits: 4
+    key_bits: 4
+    value_bits: 4
+    group_size: 64
+    codebook: gaussian
+    rotation_block: 128
+    batches: 4
+    eval_offset_batches: 4
+    prompt_len: 1024
+    continuation_len: 32
+    skip: 384
+    frozen_recipe:
+      - {layer: 3, key_bits: 2, value_bits: 2}
+      - {layer: 7, key_bits: 4, value_bits: 4}
+      - {layer: 11, key_bits: 3, value_bits: 3}
+      - {layer: 15, key_bits: 4, value_bits: 2}
+      - {layer: 19, key_bits: 3, value_bits: 3}
+      - {layer: 23, key_bits: 3, value_bits: 2}
+      - {layer: 27, key_bits: 4, value_bits: 3}
+      - {layer: 31, key_bits: 2, value_bits: 4}

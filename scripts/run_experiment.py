@@ -1043,6 +1043,38 @@ def _apply_quantization(cfg: dict[str, Any], model, pcfg: PatchConfig,
     metrics.update(footprint_metrics(model, cfg))
 
 
+def _logit_fail_fast_reasons(
+    metrics: dict[str, Any], config: dict[str, Any]
+) -> list[str]:
+    """Return registered global-fidelity violations for a candidate arm."""
+
+    supported = {"mean_teacher_kl_max", "top1_agreement_min"}
+    unknown = set(config).difference(supported)
+    if unknown:
+        raise ValueError(
+            "unknown eval.fail_fast fields: " + ", ".join(sorted(unknown))
+        )
+    logit = metrics.get("logit_fidelity")
+    if not isinstance(logit, dict):
+        raise TypeError("eval.fail_fast requires eval.logit_fidelity")
+    reasons = []
+    if "mean_teacher_kl_max" in config:
+        limit = float(config["mean_teacher_kl_max"])
+        value = float(logit["mean_teacher_kl"])
+        if limit < 0:
+            raise ValueError("mean_teacher_kl_max must be non-negative")
+        if value > limit:
+            reasons.append(f"mean_teacher_kl={value:.8g} exceeds {limit:.8g}")
+    if "top1_agreement_min" in config:
+        limit = float(config["top1_agreement_min"])
+        value = float(logit["top1_agreement"])
+        if not 0 <= limit <= 1:
+            raise ValueError("top1_agreement_min must be in [0, 1]")
+        if value < limit:
+            reasons.append(f"top1_agreement={value:.8g} is below {limit:.8g}")
+    return reasons
+
+
 def _run_evaluations(cfg: dict[str, Any], eval_cfg: dict[str, Any],
                      model, tokenizer, device: str, seed: int,
                      refs: _ReferenceCaptures,
@@ -1057,14 +1089,6 @@ def _run_evaluations(cfg: dict[str, Any], eval_cfg: dict[str, Any],
         metrics["layer_mse"] = {"mse": drift.mse, "cosine": drift.cosine,
                                 "order": drift.order}
 
-    if refs.trajectory_references is not None:
-        from rotquant.eval.trajectory import evaluate_trajectories
-        with Timer() as t:
-            metrics["trajectory"] = evaluate_trajectories(
-                model, tokenizer, refs.trajectory_references, device,
-                refs.trajectory_config)
-        metrics["trajectory"]["seconds"] = t.elapsed
-
     if refs.logit_references is not None:
         from rotquant.eval.logit_fidelity import evaluate_logit_fidelity
         with Timer() as t:
@@ -1072,6 +1096,26 @@ def _run_evaluations(cfg: dict[str, Any], eval_cfg: dict[str, Any],
                 model, refs.logit_references, device, refs.logit_fidelity_config
             )
         metrics["logit_fidelity"]["seconds"] = t.elapsed
+
+    fail_fast_config = eval_cfg.get("fail_fast")
+    if fail_fast_config:
+        if not isinstance(fail_fast_config, dict):
+            raise TypeError("eval.fail_fast must be a mapping")
+        reasons = _logit_fail_fast_reasons(metrics, fail_fast_config)
+        metrics["evaluation_halted"] = bool(reasons)
+        metrics["evaluation_halt_reasons"] = reasons
+        metrics["evaluation_fail_fast_thresholds"] = dict(fail_fast_config)
+        if reasons:
+            metrics["peak_vram_bytes_eval"] = peak_vram_bytes()
+            return
+
+    if refs.trajectory_references is not None:
+        from rotquant.eval.trajectory import evaluate_trajectories
+        with Timer() as t:
+            metrics["trajectory"] = evaluate_trajectories(
+                model, tokenizer, refs.trajectory_references, device,
+                refs.trajectory_config)
+        metrics["trajectory"]["seconds"] = t.elapsed
 
     kv_cache_requested = eval_cfg.get("kv_cache", False)
     if kv_cache_requested:

@@ -1,0 +1,77 @@
+schema_version: 1
+protocols:
+  smoke:
+    ppl_seq_len: 256
+    ppl_max_samples: 8
+    zeroshot: false
+    zeroshot_limit: null
+  publication:
+    ppl_seq_len: 2048
+    ppl_max_samples: null
+    zeroshot: true
+    zeroshot_limit: null
+
+models:
+  opt_1_3b:
+    model_id: facebook/opt-1.3b
+    revision: 3f5c25d0bc631cb57ac65913f76e22c2dfb61d62
+    config: configs/publication_dense_cuda.yaml
+    device: cuda
+    methods: [source, rotquant_w4, gptq_w4, awq_w4]
+    role: legacy dense decoder and cross-scale replication
+  qwen3_4b:
+    model_id: Qwen/Qwen3-4B
+    revision: 1cfa9a7208912126459214e8b04321603b3df60c
+    config: configs/publication_dense_cuda.yaml
+    device: cuda
+    methods: [source, rotquant_w4, gptq_w4, awq_w4]
+    role: modern standard dense decoder with matched external baselines
+  qwen35_4b:
+    model_id: unsloth/Qwen3.5-4B
+    revision: 3764fa359b9082ea5a1e4a5e3ac3aaf6e9671636
+    config: configs/publication_qwen35_joint_cuda.yaml
+    device: cuda
+    methods: [source, rotquant_w4]
+    role: hybrid multimodal checkpoint, language-path joint weight/KV study
+    limitation: GPTQ/AWQ compatibility must be demonstrated before adding baseline rows
+
+methods:
+  source:
+    runner: rotquant
+    seeds: [0]
+    overrides:
+      patch.enabled: false
+      eval.kv_cache: false
+  rotquant_w4:
+    runner: rotquant
+    seeds: [0, 1, 2]
+    overrides:
+      quant.bits: 4
+      quant.codebook: gaussian
+      quant.scale: mse_search
+      quant.group_size: 128
+      patch.rotation: fwht
+  gptq_w4:
+    runner: baseline
+    backend: gptq
+    bits: 4
+    group_size: 128
+    seeds: [0]
+  awq_w4:
+    runner: baseline
+    backend: awq
+    bits: 4
+    group_size: 128
+    seeds: [0]
+
+reporting:
+  datasets: [wikitext2, c4]
+  zero_shot_tasks: [arc_challenge, arc_easy, boolq, piqa, winogrande, hellaswag]
+  required_metrics:
+    - perplexity
+    - zero_shot_bundle
+    - actual_artifact_bytes
+    - resident_memory
+    - peak_transient_memory
+    - prefill_throughput
+    - decode_throughput

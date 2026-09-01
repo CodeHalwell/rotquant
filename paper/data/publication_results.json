@@ -1,0 +1,75 @@
+{
+  "schema_version": 1,
+  "study": "rotquant-joint-weight-kv-development",
+  "evidence_status": "development",
+  "models": {
+    "source": {
+      "model_id": "unsloth/Qwen3.5-4B",
+      "revision": "3764fa359b9082ea5a1e4a5e3ac3aaf6e9671636",
+      "tensor_bytes": 9319737856,
+      "complete_snapshot_bytes": 9348509644,
+      "source": "source model.safetensors.index.json and cached snapshot"
+    },
+    "rotquant": {
+      "model_id": "HallD/qwen35-4b-rotquant-joint",
+      "revision": "986ed9839cd3396d538aa567ba254ba13403ea9c",
+      "tensor_files": [
+        "rotquant_model.safetensors",
+        "rotquant_packed.safetensors"
+      ],
+      "tensor_bytes": 3789750560,
+      "complete_snapshot_bytes": 3809973748,
+      "quantized_modules": 200,
+      "source": "verified winner export and cached Hub snapshot"
+    }
+  },
+  "artifacts": {
+    "native_joint_gguf": {
+      "filename": "qwen35-4b-rotquant-joint-kv3p25-native.gguf",
+      "bytes": 3146308736,
+      "sha256": "ac70480575ce94d482402ac575e75e12bd01125a85cc32711af13bbd4491ecba",
+      "producer_model_id": "HallD/qwen35-4b-rotquant-joint",
+      "producer_revision": "986ed9839cd3396d538aa567ba254ba13403ea9c",
+      "verified_projections": 200,
+      "packed_conformance": "pass",
+      "scope": "language path with tied vocabulary and frozen mixed KV metadata; not a like-for-like multimodal artifact",
+      "source": "local native export; scripts/verify_rotquant_gguf.py exact-value audit"
+    }
+  },
+  "results": {
+    "qwen_joint": {
+      "source_ppl": 13.9001,
+      "candidate_ppl_by_seed": [14.7029, 14.6091, 14.3524],
+      "reported_mean_ppl": 14.5548,
+      "reported_mean_relative_ppl_pct": 4.71,
+      "reported_worst_relative_ppl_pct": 5.78,
+      "estimated_complete_weight_reduction_pct": 56.78,
+      "effective_weight_bpw": 4.125,
+      "effective_kv_bpv": 3.25,
+      "source": "docs/experiment_log.md:288-397"
+    },
+    "cache_transfer": {
+      "mixed_short_kl": 0.435155,
+      "uniform_short_kl": 0.572441,
+      "reported_short_reduction_pct": 24.0,
+      "mixed_long_kl": 1.376698,
+      "uniform_long_kl": 1.540281,
+      "reported_long_reduction_pct": 10.6,
+      "source": "docs/experiment_log.md:256-276"
+    },
+    "matched_cache": {
+      "candidate_kl_by_seed": [0.435155, 0.700824, 0.514957],
+      "control_k4v4_kl_by_seed": [0.541733, 0.839113, 0.670372],
+      "reported_reduction_pct_by_seed": [19.7, 16.5, 23.2],
+      "reported_mean_ratio": 0.802209,
+      "reported_worst_ratio": 0.835197,
+      "source": "docs/experiment_log.md:370-397"
+    }
+  },
+  "claim_boundary": {
+    "quality": "development subsets; no state-of-the-art claim",
+    "cuda_mps_fallback": "quality-only because dense reconstructed weights are cached",
+    "native_runtime": "representation-preserving prototype; final fused performance study pending",
+    "model_scope": "Qwen3.5 language path only; vision quality is unevaluated"
+  }
+}

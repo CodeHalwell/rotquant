@@ -414,6 +414,28 @@ def test_apply_set_overrides_types_and_nesting():
     assert cfg["eval"] == {"perplexity": True, "zeroshot": True}
 
 
+def test_logit_fail_fast_reports_only_registered_threshold_violations():
+    metrics = {
+        "logit_fidelity": {
+            "mean_teacher_kl": 0.4,
+            "top1_agreement": 0.7,
+        }
+    }
+    reasons = run_experiment._logit_fail_fast_reasons(
+        metrics,
+        {"mean_teacher_kl_max": 0.25, "top1_agreement_min": 0.75},
+    )
+    assert len(reasons) == 2
+    assert "mean_teacher_kl" in reasons[0]
+    assert "top1_agreement" in reasons[1]
+    assert run_experiment._logit_fail_fast_reasons(
+        metrics,
+        {"mean_teacher_kl_max": 0.5, "top1_agreement_min": 0.6},
+    ) == []
+    with pytest.raises(ValueError, match="unknown eval.fail_fast"):
+        run_experiment._logit_fail_fast_reasons(metrics, {"ppl_max": 2.0})
+
+
 def test_device_fallback_without_cuda():
     if torch.cuda.is_available():
         pytest.skip("CPU-only fallback behaviour")

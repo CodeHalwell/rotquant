@@ -1,0 +1,125 @@
+{
+  "schema_version": 1,
+  "protocol": "qwen35-next-stage-v1",
+  "code_revision": "8ad3b8e6c80952ff5b8ffe57f088f1254e449436",
+  "model": "unsloth/Qwen3.5-4B",
+  "model_revision": "3764fa359b9082ea5a1e4a5e3ac3aaf6e9671636",
+  "stage": "w4a8",
+  "seed": 0,
+  "delivered_summary_sha256": "3f067bd11090b098943cfe2ee4767d70d8a9fe8f08623cfaa7f16ae46d4d13a9",
+  "logit_fidelity_input_hashes": [
+    "cf0fb236893f847ff99cb0f571d38604fcb9446ee9df3b5d780a6fa7bb8e6996",
+    "f798e40153c544c8469d6c036999956e3178fdefc533a10b882348409f643f85",
+    "76dfffdaf3002f54dc29343d066c32626f61fb6aa530e337155d6f46c812dc1b",
+    "a68977746b8c8a843f193c2b41b4401a92ea7bda637cd894196d4d6b5dd3d0ef"
+  ],
+  "raw_file_sha256": {
+    "source_fp16": "bff58f9a9c58b182ed124e1061c90776e1947e265742810d8efa4b59146d7a25",
+    "promoted_w4": "8a4c6ac7cf5cf616a37d9211c5b6157ca8f8ef15f323805a2176ad65d8e22b3d",
+    "optimized_w4": "8107e8bc9f556e1f2347082296c824a122a7065aeb4e10286e0eacd14fbf01a1",
+    "w4a8": "bef4700ed78826ba2637ddb108ace334349794cdd9e817b20ecd6dd4bf5a2de8",
+    "w4a8_e8": "ceb4d06fc5ce07f7787bdb304b6e52b88e80b022590dab5a183b20ac0dbf2845"
+  },
+  "arms": {
+    "source_fp16": {
+      "complete_persistent_model_bytes": 9078531392,
+      "quality_runtime_model_bytes": 9078531392,
+      "ppl_wikitext2": 9.586260795593262,
+      "ppl_c4": 14.020668983459473,
+      "mean_teacher_kl": -1.536952719475569e-09,
+      "p95_teacher_kl": 7.450577044210149e-08,
+      "top1_agreement": 1.0
+    },
+    "promoted_w4": {
+      "complete_persistent_model_bytes": 3787286336,
+      "quality_runtime_model_bytes": 10917603136,
+      "packed_weight_bytes": 1838284800,
+      "ppl_wikitext2": 9.848016738891602,
+      "ppl_wikitext2_relative_to_source": 0.027305322573601076,
+      "ppl_c4": 14.268929481506348,
+      "ppl_c4_relative_to_source": 0.017706751249869424,
+      "mean_teacher_kl": 0.022257535658237286,
+      "p95_teacher_kl": 0.07056654244661331,
+      "top1_agreement": 0.9271037181996086
+    },
+    "optimized_w4": {
+      "complete_persistent_model_bytes": 3789359936,
+      "quality_runtime_model_bytes": 10919676736,
+      "packed_weight_bytes": 1810867200,
+      "ppl_wikitext2": 243.15858459472656,
+      "ppl_wikitext2_relative_to_source": 24.365321242512504,
+      "ppl_c4": 412.15264892578125,
+      "ppl_c4_relative_to_source": 28.39607585144531,
+      "mean_teacher_kl": 3.047405862528284,
+      "p95_teacher_kl": 8.056464195251465,
+      "top1_agreement": 0.312133072407045,
+      "local_hessian_training": {
+        "projections": 200,
+        "steps": 200,
+        "mean_best_step": 103.79605263157895,
+        "mean_initial_mse": 0.006423276807732978,
+        "mean_final_mse": 0.0062765581464382676,
+        "mean_relative_improvement": 0.02284171548049681,
+        "mean_sign_flip_rate": 0.0
+      }
+    },
+    "w4a8": {
+      "complete_persistent_model_bytes": 3787286336,
+      "quality_runtime_model_bytes": 10917603136,
+      "packed_weight_bytes": 1838284800,
+      "ppl_wikitext2": 9.868668556213379,
+      "ppl_wikitext2_relative_to_source": 0.029459636728216054,
+      "ppl_c4": 14.279404640197754,
+      "ppl_c4_relative_to_source": 0.01845387385177677,
+      "mean_teacher_kl": 0.023801094398573187,
+      "p95_teacher_kl": 0.07761544734239578,
+      "top1_agreement": 0.9271037181996086,
+      "paired_delta_vs_promoted_w4": {
+        "mean_teacher_kl": 0.0015435587403359007,
+        "mean_teacher_kl_bootstrap_95_ci": [0.0010097624037830309, 0.0024256193007974967],
+        "wikitext2_mean_nll": 0.0020947290969349427,
+        "wikitext2_mean_nll_bootstrap_95_ci": [0.0010221137497328785, 0.0032097818796729106],
+        "c4_mean_nll": 0.00073400216971483,
+        "c4_mean_nll_bootstrap_95_ci": [0.0001892147613957276, 0.0012577243240274533],
+        "top1_agreement": -2.7755575615628914e-17,
+        "top1_agreement_bootstrap_95_ci": [-0.003913894324853229, 0.003913894324853173]
+      }
+    },
+    "w4a8_e8": {
+      "weight_activation_metrics_identical_to": "w4a8",
+      "kv_cache": {
+        "batches": 2,
+        "prompt_len": 2048,
+        "continuation_len": 32,
+        "evaluated_tokens": 64,
+        "kv_layers": 8,
+        "key_bits": 2.0,
+        "value_bits": 2.0,
+        "mean_teacher_kl": 0.0296004912099761,
+        "mean_teacher_kl_bootstrap_95_ci": [0.02187593219014161, 0.03867185117462668],
+        "top1_agreement": 0.921875,
+        "top1_agreement_bootstrap_95_ci": [0.859375, 0.984375],
+        "source_kv_bytes": 67108864.0,
+        "packed_kv_bytes": 9943936.0,
+        "kv_compression_ratio": 6.748722437473451,
+        "effective_kv_bpv": 2.370819091796875,
+        "source_total_cache_bytes": 93847552.0,
+        "deployed_total_cache_bytes": 36682624.0,
+        "total_cache_compression_ratio": 2.5583652903347374,
+        "full_precision_kv_fraction": 0.017578125
+      }
+    }
+  },
+  "decision": {
+    "promoted_w4": "retained",
+    "optimized_w4": "rejected as catastrophic; decompose factors before retry",
+    "w4a8": "quality viable but runtime promotion blocked until a native A8 kernel is measured",
+    "w4a8_e8": "promising smoke only; run four disjoint 8k/64-token confirmations"
+  },
+  "limitations": [
+    "seed 0 only",
+    "no free-running trajectory evaluation in this stage",
+    "E8P cache result is 64 tokens from two 2048-token prompts and eight KV layers",
+    "quality fallback materializes dense weights and is not a runtime-memory result"
+  ]
+}

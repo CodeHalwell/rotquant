@@ -220,9 +220,9 @@ memory claims.
 1. implement and review the five upstream source adapters;
 2. select/freeze 60 rows per domain and materialize the licensed private/public
    manifests;
-3. add llama.cpp GGUF collectors for the same-size standard and exact-size
-   Unsloth artifacts (the source Transformers and RotQuant reference collector
-   is implemented);
+3. generalize the implemented pinned Qwen3.5-4B BF16/Unsloth GGUF KL collector
+   from the four-prompt development slice to the registered 300-prompt suite,
+   then add the same-size standard GGUF artifact;
 4. add task-outcome scorers (execution, function arguments, maths, and IFEval)
    alongside—not inside—the divergence metric;
 5. run the calibration-size ablation and freeze the winning data/optimizer

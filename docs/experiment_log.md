@@ -658,6 +658,88 @@ effects or repeating the 200-step learned-rotation fit three times. The
 300-prompt competitive suite remains the final Gaussian-versus-calibrated
 codebook gate.
 
+### 2026-09-01 — mixed-precision competitive decision
+
+Record the Unsloth comparison as primarily a comparison against calibrated,
+model-specific static mixed-format allocation, not request-time dynamic
+precision or a known proprietary runtime arithmetic primitive. The complete
+Dynamic 3.0 allocator is not public, so claims about its internal objective
+must remain qualified and released GGUF artifacts are the authoritative
+external controls.
+
+Decision: mixed precision is necessary for a fair same-size competitive
+frontier, especially below four average bits, but it does not replace the
+uniform RotQuant baseline or explain away the value of rotations and GPTQ.
+The required matched-byte ablation is standard uniform, standard mixed,
+uniform RotQuant+GPTQ, mixed RotQuant+GPTQ, and released Unsloth. This will
+measure allocation gain separately from RotQuant's gain within each selected
+format.
+
+Keep Gaussian FWHT+GPTQ W4/g128 as the frozen control and provisional default.
+Do not promote mixed W4 unless it improves calibration-disjoint KL and
+free-running trajectories at identical deployed bytes with paired uncertainty.
+Treat mixed allocation as increasingly important at W3 and as a required part
+of credible W2/W1 recipes. Weight mixed precision, W4A8 activation
+quantization, and mixed K/V precision are independent axes and must be tested
+in separate arms. The allocator must choose only deployable formats, count all
+metadata and retained high-precision tensors, and include kernel/runtime cost
+rather than producing an unusable mathematical optimum.
+
+### 2026-09-01 — Qwen3.5-4B W4A8/E8 composition result
+
+The complete seed-0 composition stage ran at code revision
+`8ad3b8e6c80952ff5b8ffe57f088f1254e449436` and model revision
+`3764fa359b9082ea5a1e4a5e3ac3aaf6e9671636`. The delivered summary hashes to
+`3f067bd11090b098943cfe2ee4767d70d8a9fe8f08623cfaa7f16ae46d4d13a9`;
+the compact machine-readable record and raw-file hashes are versioned in
+`research/results/qwen35_4b_w4a8_e8_8ad3b8e6c809.json`.
+
+| Arm | WikiText-2 delta | C4 delta | Mean / p95 KL | Top-1 | Decision |
+|---|---:|---:|---:|---:|---|
+| Promoted Gaussian FWHT+GPTQ W4 | +2.731% | +1.771% | 0.02226 / 0.07057 | 92.71% | retain |
+| Bundled optimized W4 | +2,436.5% | +2,839.6% | 3.0474 / 8.0565 | 31.21% | catastrophic reject |
+| Promoted W4 + per-token A8 | +2.946% | +1.845% | 0.02380 / 0.07762 | 92.71% | quality viable; runtime unproven |
+
+A8 added 0.001544 mean KL (+6.94% relative) versus W4, with a paired 95%
+bootstrap interval of `[0.001010, 0.002426]`. Its WikiText-2/C4 paired mean-NLL
+deltas were `0.002095 [0.001022, 0.003210]` and
+`0.000734 [0.000189, 0.001258]`. The top-1 point estimate was unchanged and its
+interval included zero. A8 therefore imposes a small, detectable distribution
+cost but no detected top-1 cost on this slice. It cannot be promoted for speed
+until a native A8 GEMM is benchmarked; the fallback's 10.168-GiB quality
+runtime is larger than the 8.455-GiB source and is not runtime evidence.
+
+The bundled optimized arm changed learned butterfly rotations, shared
+rotations, learned signs, 8-bit scales, and mean-bias correction together. Its
+local Hessian objective improved only 2.284% (mean MSE 0.0064233 to 0.0062766,
+mean best step 103.8/200, zero learned sign flips) while global quality
+collapsed. The bundle is rejected, but no individual factor is blamed from
+this confounded arm. The next harness decomposes each factor and stops an arm
+before long evaluation when mean KL exceeds 0.25 or top-1 falls below 75%.
+
+The W4A8 + 2-bit E8P cache smoke covered two 2048-token prompts, 32 continuation
+tokens each, and eight KV layers. It achieved KL 0.02960
+`[0.02188, 0.03867]`, top-1 92.19% `[85.94%, 98.44%]`, 2.371 effective bits per
+KV value, 6.749x raw K/V compression, and 2.558x whole-cache compression after
+non-KV recurrent state. This is promising but only 64 evaluated tokens. The
+long-context config was found to be stale (non-GPTQ W4 and 3-bit Gaussian KV),
+so it has been corrected before use to the exact promoted W4 recipe plus 2-bit
+E8P on four disjoint 8k-prefill/64-token confirmations.
+
+No free-running trajectory block was enabled in this composition profile.
+Accordingly, none of these arms advances directly to a release claim.
+
+### 2026-09-01 — pinned Unsloth Qwen3.5-4B KL comparator (run pending)
+
+Implemented a resumable same-engine BF16-GGUF versus released
+UD-Q4_K_XL full-vocabulary KL comparator. It pins the Unsloth repository,
+llama-cpp-python wrapper, llama.cpp submodule, C4 revision, prompt token IDs,
+artifact sizes, and hashes. It will run by default before the corrected
+long-context stage in the next Colab. The complete Unsloth text model plus F16
+projector is 3,584,533,344 bytes; current complete RotQuant W4 is 5.66% larger,
+so this is a nearest-release developmental anchor rather than a <=1% matched-
+byte competitive result. See `docs/unsloth_qwen35_4b_comparison.md`.
+
 ## Entry template
 
 For each new run, append:

@@ -76,6 +76,66 @@ def test_w4a8_ladder_anchors_each_composition_step_to_its_predecessor():
     )
 
 
+def test_failed_optimization_is_decomposed_into_nested_factor_ablation():
+    runner = _load_runner()
+    trials = runner.stage_trials("ablation")
+    assert [trial.arm for trial in trials] == [
+        "promoted_w4",
+        "scale8_w4",
+        "mean_bias_w4",
+        "shared_fwht_w4",
+        "butterfly_control_w4",
+        "butterfly_hessian_w4",
+        "butterfly_hessian_signs_w4",
+        "shared_butterfly_hessian_signs_w4",
+    ]
+    resolved = {
+        trial.arm: runner._resolved_trial_config(trial, 0) for trial in trials
+    }
+    promoted = resolved["promoted_w4"]
+    assert promoted["quant"]["error_comp"] == "gptq"
+    assert promoted["quant"]["scale_bits"] == 16
+    assert promoted["quant"]["bias_correction"] == "none"
+    assert promoted["patch"]["rotation"] == "fwht"
+    assert promoted["patch"]["share_rotations"] is False
+    assert resolved["scale8_w4"]["quant"]["scale_bits"] == 8
+    assert resolved["mean_bias_w4"]["quant"]["bias_correction"] == "mean"
+    assert resolved["shared_fwht_w4"]["patch"]["share_rotations"] is True
+    assert resolved["butterfly_hessian_signs_w4"]["patch"][
+        "train_rotation"
+    ]["learn_signs"] is True
+    assert resolved["shared_butterfly_hessian_signs_w4"]["patch"][
+        "share_rotations"
+    ] is True
+    assert promoted["eval"]["fail_fast"] == {
+        "mean_teacher_kl_max": 0.25,
+        "top1_agreement_min": 0.75,
+    }
+
+
+def test_long_kv_uses_promoted_w4_and_two_bit_e8p_only():
+    runner = _load_runner()
+    trials = runner.stage_trials("long-kv")
+    assert [trial.arm for trial in trials] == [
+        "source_fp16_e8", "promoted_w4_e8", "w4a8_e8"
+    ]
+    resolved = {
+        trial.arm: runner._resolved_trial_config(trial, 0) for trial in trials
+    }
+    promoted = resolved["promoted_w4_e8"]
+    assert promoted["quant"]["error_comp"] == "gptq"
+    assert promoted["quant"]["scale_bits"] == 16
+    assert promoted["quant"]["bias_correction"] == "none"
+    assert promoted["patch"]["rotation"] == "fwht"
+    assert promoted["patch"]["share_rotations"] is False
+    assert promoted["patch"].get("activation_bits") is None
+    assert promoted["eval"]["kv_cache"]["key_bits"] == 2
+    assert promoted["eval"]["kv_cache"]["value_bits"] == 2
+    assert promoted["eval"]["kv_cache"]["codebook"] == "e8p"
+    assert promoted["eval"]["kv_cache"]["prompt_len"] == 8192
+    assert resolved["w4a8_e8"]["patch"]["activation_bits"] == 8
+
+
 def test_summary_uses_same_stage_seed_source_ppl():
     runner = _load_runner()
     source, candidate = runner.stage_trials("w4")[:2]
@@ -147,7 +207,10 @@ def test_next_stage_notebook_is_valid_compilable_and_fail_safe():
     assert 'REPO_REF = "main"' in source
     assert 'run_git(["fetch", "--force", "origin", REPO_REF]' in source
     assert 'run_git(["checkout", "--detach", "FETCH_HEAD"]' in source
-    assert "RUN_W4 = True" in source
+    assert "RUN_W4 = False" in source
+    assert "RUN_FACTOR_ABLATION = False" in source
+    assert "RUN_LONG_CONTEXT_KV = True" in source
+    assert "RUN_UNSLOTH_KL = True" in source
     assert "RUN_RECOVERY = False" in source
     assert "REQUIRE_FAST_HADAMARD = True" in source
     assert "bounded source build" in source
@@ -156,6 +219,9 @@ def test_next_stage_notebook_is_valid_compilable_and_fail_safe():
     assert "subprocess.Popen" in source
     assert "stderr=subprocess.STDOUT" in source
     assert 'child_env["PYTHONUNBUFFERED"] = "1"' in source
+    assert "run_unsloth_qwen35_4b_kl.py" in source
+    assert "UD-Q4_K_XL" in source
+    assert "llama_cpp_python" in source
     assert "ppl_wikitext2_relative_to_source" in source
     assert "trajectory_token_agreement" in source
     assert "paired_comparisons" in source

@@ -107,6 +107,26 @@ specialized around them:
   retain Gaussian as the provisional default because it has lower KL in every
   seed and keep calibrated GPTQ as the 300-prompt challenger; anchor the W4A8
   composition ladder on the exact promoted recipe;
+- [x] complete the seed-0 W4A8/E8 composition: retain promoted W4, reject the
+  confounded learned-rotation bundle after catastrophic global collapse, keep
+  A8 as a small-quality-cost/runtime-unproven candidate, and advance 2-bit E8P
+  from a 64-token smoke to corrected four-prompt 8k confirmation;
+- [x] pin and implement the exact released Unsloth Qwen3.5-4B UD-Q4_K_XL
+  same-engine KL/top-1 comparator, including BF16 references, complete artifact
+  bytes/projector policy, checksums, prompt hashes, bootstrap intervals, and
+  interruption-safe source/candidate records; the Colab execution is pending;
+- [ ] run the controlled W4 factor ablation (8-bit scales, bias correction,
+  sharing, butterfly basis, Hessian training, and learned signs) with the new
+  global KL/top-1 fail-fast gate; do not rerun the rejected bundled arm;
+- [ ] run the corrected four-prompt 8k/64-token source-W4-W4A8 plus 2-bit E8P
+  cache confirmation and require its whole-cache, KL, and top-1 intervals;
+- [ ] rebuild the model-specific mixed-format allocator as a constrained,
+  exact-byte optimization layer over the frozen RotQuant+GPTQ quantizer;
+  compare standard uniform, standard mixed, uniform RotQuant, mixed RotQuant,
+  and Unsloth artifacts at matched bytes. Uniform W4 remains the control and
+  production default until held-out KL and trajectories prove a mixed W4 win;
+  mixed allocation is mandatory in the W2/W1 design space, while weight,
+  activation, and KV precision remain independently gated;
 - [ ] build a pinned, calibration-disjoint 300-prompt/32-token free-running
   divergence suite spanning agentic, code, maths, multilingual, and long-document
   prompts; compare the source, RotQuant, same-size GGUF, and Unsloth baselines;

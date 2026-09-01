@@ -1,0 +1,59 @@
+# Controlled decomposition of the failed bundled W4 optimization arm.
+#
+# Every arm starts from the promoted Gaussian FWHT+GPTQ W4/g128 recipe. The
+# runner changes one factor at a time, then adds learned-rotation factors in a
+# nested sequence. A cheap global logit gate stops catastrophic arms before
+# WikiText/C4 and free-running trajectory evaluation.
+experiment: QWEN35_W4_FACTOR_ABLATION_CUDA
+label: qwen35_4b_w4_factor_ablation_cuda
+model: unsloth/Qwen3.5-4B
+model_revision: 3764fa359b9082ea5a1e4a5e3ac3aaf6e9671636
+calib_dataset_revision: 1588ec454efa1a09f29cd18ddd04fe05fc8653a2
+model_loader: multimodal_lm
+device: cuda
+dtype: float16
+seed: 0
+n_calib: 128
+calib_seq_len: 512
+hessian_collection: streamed
+hessian_layers_per_pass: 4
+quant:
+  bits: 4
+  codebook: gaussian
+  scale: mse_search
+  scale_bits: 16
+  group_size: 128
+  error_comp: gptq
+  gptq_block: 128
+  gptq_actorder: true
+  gptq_recompute_scales: true
+  bias_correction: none
+patch:
+  rotation: fwht
+  block: 128
+  mode: consistent
+  share_rotations: false
+  fallback: true
+  include: [model.language_model.layers.]
+  exclude: [linear_attn.in_proj_a, linear_attn.in_proj_b, lm_head, embed_out]
+eval:
+  perplexity: true
+  ppl_datasets: [wikitext2, c4]
+  ppl:
+    seq_len: 2048
+    max_samples: 32
+  zeroshot: false
+  logit_fidelity:
+    batches: 4
+    prompt_len: 512
+    skip: 4096
+    bootstrap_draws: 4000
+  fail_fast:
+    mean_teacher_kl_max: 0.25
+    top1_agreement_min: 0.75
+  trajectory:
+    batches: 8
+    prompt_len: 128
+    new_tokens: 32
+    skip: 12288
+    bootstrap_draws: 4000

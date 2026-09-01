@@ -1,0 +1,708 @@
+\documentclass[10pt,twocolumn]{article}
+
+\usepackage[margin=0.72in]{geometry}
+\usepackage{amsmath,amssymb}
+\usepackage{booktabs}
+\usepackage{graphicx}
+\usepackage{xcolor}
+\usepackage{microtype}
+\usepackage{enumitem}
+\usepackage{url}
+\usepackage[hidelinks]{hyperref}
+
+\setlength{\columnsep}{0.22in}
+\setlist{nosep,leftmargin=*}
+
+\newcommand{\method}{RotQuant}
+\newcommand{\todo}[1]{\textcolor{red}{[TODO: #1]}}
+\newcommand{\bpw}{\mathrm{bpw}}
+\newcommand{\bpv}{\mathrm{bpv}}
+\input{generated/results.tex}
+
+\title{\method: Whole-System Rotation-Aware Compression of\\
+Language-Model Weights and Key--Value Caches}
+
+\author{
+  Daniel Halwell\\
+  Independent Researcher\\
+  \texttt{\todo{email}}
+  \and
+  \todo{additional authors and affiliations}
+}
+
+\date{}
+
+\begin{document}
+
+\maketitle
+
+\begin{abstract}
+Low-bit post-training quantization is commonly evaluated on either model
+weights or the key--value (KV) cache in isolation, even though both contribute
+to the memory and bandwidth cost of autoregressive inference. We present
+\method, a reproducible framework for jointly designing rotation-aware weight
+and KV-cache compression and carrying the selected representation into a native
+runtime. \method applies structured randomized Hadamard rotations, Gaussian
+scalar codebooks, exact packed-bit accounting, and optional validation-gated
+block reconstruction. For the cache, it searches key and value precision
+independently per layer on held-out calibration calls, then freezes the selected
+map for deployment and cross-context evaluation.
+
+In a development study on Qwen3.5-4B, a uniform 4-bit weight profile combined
+with a frozen mixed 3.25-bit-per-value cache obtains mean WikiText-2 perplexity
+\QwenJointMeanPPL{} across three seeds, a \QwenJointMeanRelativePct\% relative
+increase over matched high-precision references. The exported checkpoint's
+tensor files are \ActualTensorReductionPct\% smaller than those of the pinned
+source checkpoint. At every seed, the 3.25-bit cache produces lower teacher KL
+divergence than a matched uniform 4-bit cache, reducing KL by 16.5--23.2\%.
+On held-out 256- and 1,024-token contexts, one frozen map reduces KL by
+\CacheShortReductionPct\% and \CacheLongReductionPct\%, respectively, relative
+to a same-size uniform 3-bit cache. Negative
+results show that learned rotations, block recovery, and LoRA-based
+quantization-aware recovery do not improve every model or operating point.
+We additionally implement a self-describing GGUF extension and llama.cpp/Metal
+prototype that preserves the packed representation rather than reconstructing
+and requantizing it. The present results are development-scale: broader tasks,
+models, hardware, and native end-to-end benchmarks remain required before a
+state-of-the-art or production claim.
+\end{abstract}
+
+\section{Introduction}
+
+Autoregressive model inference has two persistent memory consumers. Model
+weights are read repeatedly during prefill and decoding, while the KV cache
+grows linearly with sequence length and active batch size. Quantizing one while
+leaving the other at half precision can simply move the memory and bandwidth
+bottleneck. Moreover, the best isolated choice is not necessarily the best
+whole-system choice: a slightly more accurate weight model can be more or less
+sensitive to subsequent cache compression, and a cache recipe selected at one
+context length may not transfer to another.
+
+Orthogonal rotations are a promising common primitive. Randomized Hadamard
+transforms make weights and activations more incoherent and suppress coordinate
+outliers without changing the represented linear function
+\cite{che2023quip,tseng2024quipsharp,ashkboos2024quarot}. Learned rotations can
+improve over unlucky random bases under some quantization settings
+\cite{liu2024spinquant}. Separately, Gaussian-aware scalar quantizers and
+near-optimal vector quantizers exploit the distribution induced by rotation
+\cite{dettmers2023qlora,zandieh2025turboquant}. These ideas motivate a unified
+question: can one use a common rotation-and-codebook vocabulary to compress
+both weights and cache state, select a joint operating point under held-out
+quality gates, and deploy exactly that representation?
+
+This paper makes four contributions:
+
+\begin{enumerate}
+  \item We define a rotation-consistent weight format combining blockwise
+  randomized Hadamard transforms, MSE-searched group scales, Gaussian scalar
+  codebooks, and exact storage accounting.
+  \item We introduce a held-out mixed-precision cache allocator that treats key
+  and value sensitivity independently at each layer, measures global teacher
+  divergence per exact byte, and freezes the selected deployment map.
+  \item We report a joint development study on OPT and Qwen3.5-4B, including
+  multiple seeds, matched controls, cross-context transfer, negative recovery
+  results, and a documented correction to an initially confounded protocol.
+  \item We implement a versioned packed artifact and native llama.cpp/Metal
+  path for weights and the selected cache profile, establishing the system
+  boundary needed for honest memory and performance measurement.
+\end{enumerate}
+
+The emphasis is methodological rather than a state-of-the-art claim. Our most
+important finding is that compression decisions must be evaluated as deployed
+systems: local reconstruction loss, nominal bit width, and even a successful
+load are insufficient evidence of end-to-end quality or efficiency.
+
+\section{Background and Related Work}
+
+\subsection{Weight-only quantization}
+
+GPTQ uses approximate second-order information to propagate rounding error
+across columns of a weight matrix \cite{frantar2022gptq}. AWQ instead uses
+activation statistics to identify and protect salient channels through an
+equivalent scaling transformation \cite{lin2023awq}. AQLM formulates extreme
+compression using multiple learned additive codebooks and block-level
+reconstruction \cite{egiazarian2024aqlm}. These approaches demonstrate that
+weight-only quantization can retain strong language-model quality, but they
+occupy different points in the preprocessing, calibration, coding, and runtime
+design space.
+
+\method uses scalar rather than vector codes in the evaluated 4-bit profile.
+This is deliberately simple and runtime-oriented. At 2--3 bits, vector and
+trellis methods such as QuIP\#, AQLM, and QTIP provide a stronger comparison
+class \cite{tseng2024quipsharp,egiazarian2024aqlm,tseng2024qtip}; we therefore
+do not infer low-bit superiority from the present experiments.
+
+\subsection{Rotation-aware quantization}
+
+For a row activation $x\in\mathbb{R}^{d}$, weight
+$W\in\mathbb{R}^{m\times d}$, and orthogonal matrix $R$, the linear map obeys
+\begin{equation}
+  xW^{\top} = (xR^{\top})(WR^{\top})^{\top},
+  \label{eq:rotation-invariance}
+\end{equation}
+because $R^{\top}R=I$. QuIP and QuIP\# use incoherence processing to make
+weight and Hessian directions less aligned with coordinate axes
+\cite{che2023quip,tseng2024quipsharp}. QuaRot extends function-preserving
+rotations to weights, activations, and the cache \cite{ashkboos2024quarot},
+while SpinQuant learns rotations using task-aware optimization
+\cite{liu2024spinquant}. TurboQuant studies near-optimal distortion after random
+rotation and introduces a residual one-bit randomized sketch for unbiased inner
+products \cite{zandieh2025turboquant}.
+
+\method builds on these principles but focuses on a distinct systems problem:
+the selection, validation, serialization, and native execution of one joint
+weight-and-cache profile. The evaluated winner does not use TurboQuant's
+residual QJL sketch; it uses a Gaussian scalar codebook and groupwise scale
+search after structured rotation.
+
+\subsection{KV-cache quantization}
+
+KIVI observes different distributional structure for keys and values and uses
+asymmetric 2-bit cache quantization \cite{liu2024kivi}. KVQuant combines
+per-channel keys, non-uniform datatypes, and outlier handling
+\cite{hooper2024kvquant}. These results establish that keys and values should
+not automatically share one quantization rule. \method extends this principle
+to per-layer rate allocation and evaluates a frozen map across context lengths.
+
+\section{Method}
+
+Figure~\ref{fig:overview} summarizes the pipeline. A source model is first
+profiled under candidate weight recipes. Viable weight profiles are then
+crossed with uniform and mixed cache profiles. Selection calls, evaluation
+calls, and final perplexity data are disjoint. The chosen representation is
+serialized without reconstructing dense weights.
+
+\begin{figure*}[t]
+\centering
+\fbox{\parbox{0.96\textwidth}{\centering
+\textbf{Source model}
+$\rightarrow$ rotation-consistent weight candidates
+$\rightarrow$ held-out weight gate
+$\rightarrow$ per-layer K/V sensitivity and exact-byte allocation
+$\rightarrow$ frozen joint profile
+$\rightarrow$ multi-seed and cross-context validation
+$\rightarrow$ packed artifact
+$\rightarrow$ native runtime\\[2pt]
+Selection data, evaluation data, and final quality data remain disjoint;
+failed recovery stages restore the previous deployable checkpoint.}}
+\caption{The \method selection and deployment pipeline. This placeholder will
+be replaced by a graphical system diagram in the next draft.}
+\label{fig:overview}
+\end{figure*}
+
+\subsection{Structured rotation}
+
+We use a randomized block Hadamard rotation
+\begin{equation}
+  R = \operatorname{blockdiag}\!\left(\frac{H_b}{\sqrt{b}}\right)D,
+\end{equation}
+where $H_b$ is a Walsh--Hadamard matrix and $D$ is a fixed random sign
+diagonal. The evaluated Qwen profile uses block size $b=128$. This transform is
+exactly orthogonal and costs $O(d\log b)$ additions per vector. If a dimension
+is not divisible by 128, the implementation selects the largest dividing
+power-of-two block.
+
+The framework also provides an exactly orthogonal trainable butterfly. Each
+Hadamard stage is replaced by pairwise transforms parameterized by angles
+$\theta$ and initialized at $\pi/4$, making initialization numerically
+equivalent to the randomized Hadamard transform. This parameterization enables
+validation-gated learning while retaining $O(d\log b)$ complexity. Learned
+rotation is an ablation, not part of the final Qwen profile.
+
+Rotation consistency is enforced per linear operation: the activation and
+input dimension of the weight use the same basis. A deliberately mismatched
+control rotates weights without the corresponding activation transformation;
+this exposes cross-layer drift and is never exportable.
+
+\subsection{Gaussian scalar weight quantization}
+
+After rotation, each row of $\widetilde W=WR^{\top}$ is split into groups of
+$g$ input coordinates. Let $C_b=\{c_1,\ldots,c_{2^b}\}$ be a scalar Lloyd--Max
+codebook optimized for a standard Gaussian source. For group $G$, we select a
+positive scale $s_G$ from a fixed search grid around its RMS value:
+\begin{equation}
+  s_G^* = \arg\min_{s\in\mathcal{S}(G)}
+  \sum_{w\in G}\left(w-s\,Q_{C_b}(w/s)\right)^2.
+  \label{eq:scale-search}
+\end{equation}
+Scales are rounded to FP16 before assigning final indices, ensuring that
+pack-time and runtime reconstruction agree. With $b$ code bits, FP16 scales,
+and full groups of size $g$, the logical rate is
+\begin{equation}
+  r_W = b + \frac{16}{g}\quad\bpw.
+  \label{eq:weight-rate}
+\end{equation}
+Thus the evaluated 4-bit, group-128 profile uses 4.125 logical bits per
+quantized weight, excluding unquantized model components and small format
+metadata. We report complete-model estimates separately from quantized-tensor
+rates.
+
+\subsection{Validation-gated block recovery}
+
+Local weight MSE does not capture error propagation through a transformer.
+\method can replay complete transformer blocks on recorded source calls,
+initialize trainable butterflies from the deployable randomized rotation, and
+optionally learn group scale multipliers. Later blocks can receive the already
+quantized preceding state to expose accumulated drift. Candidate checkpoints
+are selected on disjoint block calls; if no checkpoint beats step zero, the
+source deployable profile is restored.
+
+An optional LoRA recovery stage \cite{hu2021lora} optimizes low-rank residuals
+against teacher logits while retaining exact adapter-byte accounting. The same
+rollback rule applies. In the Qwen experiments, every LoRA arm selected step
+zero, and recovery on the final winner slightly worsened perplexity; neither is
+included in the released profile.
+
+\subsection{Rotated KV-cache quantization}
+
+Let post-RoPE queries, keys, and values for one head be $Q,K,V$. We use
+independent orthogonal rotations $R_K$ and $R_V$:
+\begin{align}
+  \widetilde Q &= QR_K^{\top}, &
+  \widetilde K &= KR_K^{\top}, &
+  \widetilde V &= VR_V^{\top}.
+\end{align}
+The attention score is preserved before quantization because
+$\widetilde Q\widetilde K^{\top}=QK^{\top}$. After multiplying attention
+probabilities by the dequantized $\widetilde V$, the output is transformed by
+$R_V$ to return to the original basis.
+
+Cache rows use Gaussian scalar codes with group size 64 and FP16 group scales.
+For code width $b$, the logical rate is therefore $b+16/64=b+0.25$ bits per
+stored value. The deployed map chooses $b_K,b_V\in\{2,3,4\}$ independently for
+each full-attention layer, with average rate 3.25~bpv including scales.
+
+\subsection{Held-out rate allocation}
+
+The allocator evaluates one layer-side candidate at a time on selection calls.
+Its objective is global teacher KL reduction per exact byte relative to a
+lower-rate state. It constructs a recipe under a target byte budget, measures
+the assembled recipe jointly, and falls back to the best same-budget uniform
+profile if interactions overturn the predicted gain. Candidate construction
+uses no final evaluation calls.
+
+The final Qwen map contains eight full-attention layers. Mean selected
+key/value code widths are not constrained to be equal. A mixed-context map is
+constructed using both short- and long-context selection metrics, then frozen
+and replayed without recalibration on held-out calls at both lengths.
+
+\subsection{Artifact and native runtime}
+
+The Python checkpoint stores packed codes, FP16 scales, codebook identifiers,
+rotation parameters, logical shapes, model configuration, tokenizer assets,
+and deployment metadata without pickle. A native GGUF extension records the
+same semantics under a versioned \texttt{rotquant.*} namespace. The Qwen
+prototype stores 4-bit Gaussian weight rows and the exact 2/3/4-bit frozen
+cache map. It also represents the tied input embedding and output projection
+once.
+
+The audited exported Transformers checkpoint contains 200 quantized modules,
+no retained LoRA adapter, and \RotQuantTensorGB{}~GB of tensor files, compared
+with \SourceTensorGB{}~GB for the pinned source checkpoint. This is a measured
+\ActualTensorReductionPct\% tensor-storage reduction and a
+\ActualSnapshotReductionPct\% reduction after including the tokenizer and
+configuration files in both cached snapshots. The native language-path GGUF is
+\NativeGGUFGB{}~GB, but it omits the vision tower and is therefore not used for
+the like-for-like storage comparison.
+
+The llama.cpp fork provides a CPU reference and Metal kernels for structured
+weight rotation and packed Gaussian-codebook matrix--vector products. The
+cache is written in packed form and retained persistently; the current Metal
+prototype dequantizes each active cache block into transient graph storage
+before flash attention. This is native representation preservation, but not yet
+a fully fused cache-attention kernel.
+
+\section{Experimental Methodology}
+
+\subsection{Models and data}
+
+Early ablations use OPT-125M and OPT-1.3B \cite{zhang2022opt}. The principal
+study uses the language path of Qwen3.5-4B. \todo{Add the exact upstream model
+revision and an authoritative Qwen3.5 architecture citation.} Weight quality is
+measured on WikiText-2 \cite{merity2016wikitext}; cache selection and held-out
+trajectory comparisons use disjoint C4 calls \cite{raffel2020t5,dodge2021c4}.
+
+The main Qwen protocol evaluates 64 sequences of length 256 for perplexity.
+Cache experiments use separate selection and evaluation batches and generate
+16 or 32 continuation tokens depending on the stage. Long-context confirmation
+uses four 1,024-token selection calls and four disjoint evaluation calls.
+
+\subsection{Metrics}
+
+We report perplexity and relative perplexity against a matched high-precision
+reference. Cache fidelity includes teacher KL divergence, cosine similarity,
+top-1 token agreement, negative-log-likelihood delta, and direct K/V
+reconstruction NMSE. Rates include packed codes and FP16 scale bytes. Estimated
+complete-model size includes unquantized components; it is labeled as an
+estimate until replaced by a verified, like-for-like artifact comparison.
+
+Each cache KL uses the same weight model with a full-precision cache as its
+teacher. Consequently, cache KL compares cache sensitivity within a weight
+profile; it is not a cross-weight accuracy metric. Likewise, a lower cache KL
+for quantized weights than source weights does not imply that quantized weights
+are more accurate.
+
+\subsection{Protocol safeguards}
+
+The evaluation code requires:
+
+\begin{itemize}
+  \item matched model, tokenizer, split, sequence length, and sample count;
+  \item disjoint calibration, candidate-selection, and final evaluation calls;
+  \item exact byte targets and endpoint-equivalence tests;
+  \item at least three seeds for promoted candidates;
+  \item step-zero rollback for learned recovery;
+  \item explicit labeling of dense-weight fallback as quality-only; and
+  \item matched cache controls within weight profile and seed.
+\end{itemize}
+
+An early cache matrix violated the second requirement: uniform and dynamic rows
+used different C4 calls. The discrepancy was revealed because nominally
+identical uniform-8-bit and restricted-dynamic-8-bit endpoints disagreed. We
+discarded the cross-profile ranking, corrected the evaluation offset, and added
+an endpoint-equivalence regression test. Only corrected runs appear below.
+
+\section{Results}
+
+\subsection{Rotation is necessary but not sufficient}
+
+Table~\ref{tab:opt} shows the directionally stable role of rotation at 3 bits.
+On OPT-1.3B, randomized Hadamard rotation reduces perplexity from 313.53 to
+58.89, although it remains well above the 30.33 source reference. On OPT-125M,
+validation-gated scale learning and propagation-aware block inputs improve over
+the basic rotation, while end-to-end distillation makes no change.
+
+\begin{table}[t]
+\centering
+\small
+\caption{Development perplexity on WikiText-2. Values after the first two
+OPT-125M rows are single-seed ablations. The learned stages are cumulative.}
+\label{tab:opt}
+\resizebox{\columnwidth}{!}{%
+\begin{tabular}{lrr}
+\toprule
+Model / profile & Bits & PPL $\downarrow$ \\
+\midrule
+OPT-125M, no rotation & 3.125 & 793.3127 \\
+OPT-125M, randomized FWHT & 3.125 & $112.2128\pm1.3688$ \\
+\quad learned butterfly & 3.125 & 107.7451 \\
+\quad learned group scales & 3.125 & 92.8261 \\
+\quad propagated inputs & 3.125 & 83.2201 \\
+\quad LoRA-QAT recovery & 3.125+adapter & 76.0044 \\
+\midrule
+OPT-1.3B, source & 16 & 30.3330 \\
+OPT-1.3B, no rotation & 3.125 & 313.5290 \\
+OPT-1.3B, randomized FWHT & 3.125 & $58.8901\pm4.2042$ \\
+\bottomrule
+\end{tabular}
+}
+\end{table}
+
+These results also expose a limitation of local optimization. Increasing
+butterfly steps from 12 to 18 did not improve deployed perplexity, and several
+blocks overfit local reconstruction data. Learning deployable scale/clipping
+parameters helped more than additional rotation steps.
+
+\subsection{Four-bit weights are the viable Qwen operating point}
+
+Table~\ref{tab:qwen-weights} reports the seed-0 joint-matrix screen. Uniform
+4-bit weights are both more accurate and nearly the same estimated size as the
+dynamic 4.125-bpw allocation. Uniform 3-bit weights fail the predeclared 10\%
+quality gate. In an earlier matched matrix, rank-4 and rank-8 LoRA recovery both
+selected step zero; the 3-bit rank-4 arm reached 24.39\% relative perplexity
+degradation for only 4.61 additional percentage points of estimated total-size
+reduction over the 4-bit control.
+
+\begin{table*}[t]
+\centering
+\small
+\caption{Qwen3.5-4B seed-0 weight screen. Complete sizes are logical estimates
+that include unquantized components. Relative perplexity is measured against
+the matched 13.9001 source run.}
+\label{tab:qwen-weights}
+\resizebox{\textwidth}{!}{%
+\begin{tabular}{lrrrr}
+\toprule
+Profile & Quantized bpw & PPL $\downarrow$ & Relative PPL & Estimated complete weights \\
+\midrule
+Source & 16 & 13.9001 & 0.00\% & 9.3200 GB \\
+Uniform W4 & 4.125 & \textbf{14.7029} & \textbf{+5.78\%} & 4.0277 GB ($-56.78\%$) \\
+Dynamic, 4.125-bpw target & 4.116 & 14.9976 & +7.90\% & \textbf{4.0238 GB} ($-56.83\%$) \\
+\bottomrule
+\end{tabular}
+}
+\end{table*}
+
+Dynamic weights save only 3.93 MB (0.098\%) relative to uniform W4 while
+increasing perplexity by a further 2.00\%. This illustrates why a layerwise
+sensitivity search should not be retained merely because it returns a valid
+mixed recipe.
+
+\subsection{One frozen cache map transfers across contexts}
+
+Table~\ref{tab:cache-transfer} compares three frozen mixed maps with uniform
+K3/V3 at the identical 3.25-bpv storage rate. The mixed-context map has the
+lowest worst regret relative to the context-specific optima. It reduces KL by
+\CacheShortReductionPct\% at 256 tokens and \CacheLongReductionPct\% at
+1,024 tokens relative to uniform K3/V3.
+
+\begin{table}[t]
+\centering
+\small
+\caption{Frozen 3.25-bpv cache-map transfer. No map is recalibrated on the
+reported evaluation calls.}
+\label{tab:cache-transfer}
+\begin{tabular}{lrr}
+\toprule
+Frozen map & 256-token KL & 1,024-token KL \\
+\midrule
+Short-context map & 0.445652 & 1.430826 \\
+Long-context map & 0.496695 & \textbf{1.359091} \\
+Mixed-context map & \textbf{0.435155} & 1.376698 \\
+Uniform K3/V3 & 0.572441 & 1.540281 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+The independently selected context-specific recipes reverse their average
+key/value emphasis: the 256-token allocator selects mean K2.875/V3.125, whereas
+the 1,024-token allocator selects K3.375/V2.625. Key/value sensitivity therefore
+changes with context, motivating mixed-context selection rather than assuming
+that one short-context allocation transfers automatically.
+
+\subsection{Joint profile and matched controls}
+
+Across three seeds, uniform W4 plus the frozen mixed cache obtains perplexities
+14.7029, 14.6091, and 14.3524. The mean is \QwenJointMeanPPL{}, with mean
+relative degradation \QwenJointMeanRelativePct\% and worst-seed degradation
+\QwenJointWorstRelativePct\%. It passes the
+predeclared 5\% mean and 10\% worst development gates.
+
+An initially proposed cache gate compared the worst candidate seed with a
+seed-0 control and was therefore inconclusive. We ran missing K4/V4 controls at
+seeds 1 and 2 and replaced it with within-seed ratios. Table~\ref{tab:matched}
+shows that the 3.25-bpv candidate has lower KL than the 4.25-bpv K4/V4 control
+in every seed, with 16.5--23.2\% KL reduction.
+
+\begin{table}[t]
+\centering
+\small
+\caption{Matched cache comparison on uniform W4 weights. Candidate and control
+share the weight model, seed, and held-out calls.}
+\label{tab:matched}
+\begin{tabular}{rrrr}
+\toprule
+Seed & Mixed 3.25 KL & K4/V4 KL & Reduction \\
+\midrule
+0 & 0.435155 & 0.541733 & 19.7\% \\
+1 & 0.700824 & 0.839113 & 16.5\% \\
+2 & 0.514957 & 0.670372 & 23.2\% \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+The candidate/control KL ratio averages \MatchedCacheMeanRatio{} and is at most
+\MatchedCacheWorstRatio{}. The result
+is notable because the mixed profile uses one fewer logical bit per stored cache
+value than the uniform control. However, the continuation trajectories are
+short, and no long-context perplexity or retrieval benchmark has yet been run.
+
+\subsection{Recovery can be actively unhelpful}
+
+Block-and-scale recovery applied to the actual joint winner changes seed-0
+perplexity from 14.702918 to 14.713017, a 0.0687\% degradation, while adding an
+estimated 8.86 MB. The predeclared improvement gate rejects it. LoRA-QAT on a
+different finalist and the earlier Qwen matrix also selects step zero. These
+negative results support a fail-closed rule: trainable recovery must change a
+held-out objective and improve the deployed metric after accounting for its
+bytes.
+
+\subsection{Preliminary native measurements}
+
+The native weight path executes successfully on Apple Metal. Preliminary
+llama.cpp measurements on an Apple M5 Max are shown in
+Table~\ref{tab:native}. The quantized-cache rows use llama.cpp's generic Q4\_0
+cache rather than the final Gaussian mixed profile; they are diagnostic and do
+not establish a speedup. At depth 512, generic Q4 cache decoding is slower than
+FP16, suggesting that dequantization overhead exceeds bandwidth savings at this
+operating point.
+
+\begin{table}[t]
+\centering
+\small
+\caption{Preliminary native throughput in tokens/s. These data do not benchmark
+the final mixed Gaussian cache kernel.}
+\label{tab:native}
+\begin{tabular}{llr}
+\toprule
+Cache & Test & Throughput \\
+\midrule
+FP16 & prompt, 64 tokens & $20.57\pm0.27$ \\
+Q4\_0 & prompt, 64 tokens & $22.59\pm0.77$ \\
+FP16 & decode 16, depth 512 & $14.72\pm2.88$ \\
+Q4\_0 & decode 16, depth 512 & $12.13\pm0.45$ \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\section{Toward Architecture-Generic RotQuant}
+
+The present evidence covers decoder-only language paths, but the implementation
+should generalize by operator and state substrate rather than by an ever-growing
+list of model class names. We propose the following abstraction:
+
+\begin{center}
+\small\ttfamily
+\begin{tabular}{@{}l@{}}
+PipelineAdapter \\
+\quad ComponentAdapter[] \\
+\quad OperatorAdapter[] \\
+\quad RotationRegion[] \\
+\quad StateAdapter[] \\
+\quad CalibrationProfile \\
+\quad EvaluationProfile \\
+\quad RuntimeExportProfile
+\end{tabular}
+\end{center}
+
+Support should be reported at three levels: (1) pipeline-compatible, where
+unsupported components remain at high precision; (2) kernel-optimized, where
+dedicated kernels cover the parameter- and latency-dominant path; and (3)
+end-to-end certified, where task quality, state correctness, memory, latency,
+and portability pass a modality-specific profile.
+
+Near-term families with substantial operator reuse include dense encoders,
+encoder--decoders, embedding models, MoE models, hybrid state-space models,
+modular vision-language models, and Whisper-style ASR. Diffusion transformers,
+streaming audio, video, robotics, and graph/spectral scientific models require
+new calibration dimensions, persistent-state contracts, and kernels. This is a
+research roadmap, not evidence that the current prototype supports these
+families.
+
+\section{Limitations and Threats to Validity}
+
+\paragraph{Development-scale quality evaluation.}
+The principal result uses one 4B model, a WikiText-2 subset, short continuation
+trajectories, and three seeds. It lacks C4 perplexity, broad zero-shot tasks,
+reasoning, code, multilingual evaluation, retrieval, and long-context
+perplexity. WikiText-2 alone is not sufficient for a publication-quality model
+comparison.
+
+\paragraph{Incomplete baseline matrix.}
+The draft does not yet include matched GPTQ, AWQ, QuaRot, SpinQuant, QuIP\#,
+AQLM, or standard GGUF baselines on Qwen3.5-4B. The current result therefore
+supports an internal method comparison, not state-of-the-art superiority.
+
+\paragraph{Storage is measured; resident memory is not.}
+The exported Transformers tensor files measure \RotQuantTensorGB{}~GB versus
+\SourceTensorGB{}~GB for the pinned source, a \ActualTensorReductionPct\%
+reduction. This supersedes the earlier \EstimatedWeightReductionPct\% logical
+estimate for storage reporting. Publication still requires resident and peak
+transient-memory measurements. The native GGUF omits the vision tower, so its
+file size cannot serve as the like-for-like multimodal comparison.
+
+\paragraph{Fallback is not deployment.}
+CUDA and MPS quality experiments cache reconstructed FP16 weights for speed.
+They demonstrate numerical quality but not packed runtime memory or throughput.
+Only the native packed path can support deployment-performance claims.
+
+\paragraph{Cache execution is not fully fused.}
+The native cache stays packed persistently but currently dequantizes into
+transient graph storage before flash attention. A fused write path and fused
+dequantization-attention kernel are required to realize the expected bandwidth
+advantage and to avoid transient-memory ambiguity.
+
+\paragraph{Architecture coverage.}
+Qwen3.5-4B is multimodal, but only its language path is quantized and evaluated.
+Small linear-attention gates and the vision tower remain at source precision.
+The paper must not characterize the present result as full multimodal support.
+
+\section{Conclusion}
+
+\method treats low-bit inference as a joint selection-and-deployment problem.
+Structured rotations and Gaussian scalar codes make a simple 4-bit weight
+profile viable, while held-out layerwise allocation yields a frozen 3.25-bpv
+cache map that outperforms equal-size uniform cache quantization across short
+and longer contexts. The final profile passes matched three-seed development
+gates, and a native format preserves its representation through loading and
+execution. Equally important, several plausible recovery and dynamic-weight
+strategies fail their gates, demonstrating the value of rollback and matched
+controls. The next stage is not to add more optimization knobs; it is to run the
+missing baseline, task, long-context, resident-memory, and fused-runtime study
+needed to establish external validity.
+
+\section*{Reproducibility Statement}
+
+The repository records experiment configurations, random seeds, environment
+metadata, exact bit accounting, negative results, protocol corrections, packed
+checkpoint logic, a GGUF exporter, conformance tests, and the pinned llama.cpp
+patch. The current manifest pins source revision \SourceRevision{}, RotQuant
+revision \RotQuantRevision{}, and the native artifact SHA-256. Numerical claims
+and local artifact bytes are checked by
+\texttt{scripts/audit\_publication.py}.
+The pinned GPU command matrix is generated by
+\texttt{scripts/run\_publication\_suite.py}. \todo{Add public repository URL,
+immutable release tag, remaining hardware identifiers, and completed GPU result
+artifacts before submission.}
+
+\bibliographystyle{unsrt}
+\bibliography{references}
+
+\appendix
+
+\section{Frozen Qwen3.5-4B Cache Map}
+
+The evaluated 3.25-bpv Gaussian profile uses group size 64 and the following
+code widths in full-attention layers:
+
+\begin{table}[h]
+\centering
+\small
+\begin{tabular}{rrrrrrrr}
+\toprule
+Layer & 3 & 7 & 11 & 15 & 19 & 23 & 27 \\
+\midrule
+$K$ bits & 2 & 4 & 3 & 4 & 3 & 3 & 4 \\
+$V$ bits & 2 & 4 & 3 & 2 & 3 & 2 & 3 \\
+\bottomrule
+\end{tabular}
+
+\vspace{4pt}
+
+\begin{tabular}{rr}
+\toprule
+Layer & 31 \\
+\midrule
+$K$ bits & 2 \\
+$V$ bits & 4 \\
+\bottomrule
+\end{tabular}
+\caption{Frozen mixed-context deployment map. Adding 0.25 bpv for FP16 scales
+amortized over groups of 64 gives 3.25 effective bpv.}
+\end{table}
+
+\section{Publication Completion Checklist}
+
+The following items are intentionally left open rather than represented as
+completed evidence:
+
+\begin{enumerate}
+  \item Run full WikiText-2 and C4 perplexity plus a fixed zero-shot suite on
+  source, RotQuant, and all matched baselines.
+  \item Add at least two more model families and two model scales, including a
+  dense standard architecture without custom multimodal wrappers.
+  \item Evaluate long-context perplexity and retrieval at multiple cache depths.
+  \item Report process resident memory, peak transient memory, prefill
+  throughput, decode throughput, and energy where available. Artifact and
+  tensor-file bytes are now audited by the publication manifest.
+  \item Benchmark the exact Gaussian mixed cache against FP16 and standard
+  cache formats after kernel fusion.
+  \item Add confidence intervals and statistical tests appropriate to each
+  promoted quality metric.
+  \item Replace the overview placeholder with a publication-quality figure and
+  add rate--quality and context-depth plots generated from raw result JSON.
+  \item Archive configs, logs, checksums, source/model revisions, and the pinned
+  runtime patch under one immutable release.
+\end{enumerate}
+
+\end{document}

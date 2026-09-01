@@ -31,9 +31,9 @@ if str(ROOT) not in sys.path:
 from rotquant.utils import enable_default_logging, write_result
 from scripts import run_experiment
 
-PROTOCOL_VERSION = "qwen35-next-stage-v1"
+PROTOCOL_VERSION = "qwen35-next-stage-v2"
 DEFAULT_STAGES = ("w4",)
-REGISTERED_STAGES = ("w4", "w4a8", "recovery", "long-kv")
+REGISTERED_STAGES = ("w4", "w4a8", "ablation", "recovery", "long-kv")
 PAIRED_ARMS = {
     "w4": (
         ("gptq_gaussian_w4", "gaussian_w4_control"),
@@ -44,8 +44,20 @@ PAIRED_ARMS = {
         ("w4a8", "promoted_w4"),
         ("w4a8_e8", "w4a8"),
     ),
+    "ablation": (
+        ("scale8_w4", "promoted_w4"),
+        ("mean_bias_w4", "promoted_w4"),
+        ("shared_fwht_w4", "promoted_w4"),
+        ("butterfly_control_w4", "promoted_w4"),
+        ("butterfly_hessian_w4", "butterfly_control_w4"),
+        ("butterfly_hessian_signs_w4", "butterfly_hessian_w4"),
+        ("shared_butterfly_hessian_signs_w4", "butterfly_hessian_signs_w4"),
+    ),
     "recovery": (("recovered_w4", "unrecovered_w4"),),
-    "long-kv": (("rotquant_w4_quantized_kv", "source_weights_quantized_kv"),),
+    "long-kv": (
+        ("promoted_w4_e8", "source_fp16_e8"),
+        ("w4a8_e8", "promoted_w4_e8"),
+    ),
 }
 
 
@@ -143,6 +155,58 @@ def stage_trials(stage: str) -> tuple[Trial, ...]:
                 },
             ),
         )
+    if stage == "ablation":
+        config = "configs/qwen35_4b_w4_factor_ablation_cuda.yaml"
+        hessian_training = {
+            "steps": 200,
+            "lr": 0.001,
+            "objective": "hessian",
+            "assignment_scale": "rms",
+            "learn_signs": False,
+        }
+        hessian_training_with_signs = {
+            **hessian_training,
+            "learn_signs": True,
+            "sign_temperature": 1.0,
+        }
+        return (
+            _trial(stage, "promoted_w4", config),
+            _trial(stage, "scale8_w4", config, **{"quant.scale_bits": 8}),
+            _trial(
+                stage, "mean_bias_w4", config,
+                **{"quant.bias_correction": "mean"},
+            ),
+            _trial(
+                stage, "shared_fwht_w4", config,
+                **{"patch.share_rotations": True},
+            ),
+            _trial(
+                stage, "butterfly_control_w4", config,
+                **{"patch.rotation": "butterfly"},
+            ),
+            _trial(
+                stage, "butterfly_hessian_w4", config,
+                **{
+                    "patch.rotation": "butterfly",
+                    "patch.train_rotation": hessian_training,
+                },
+            ),
+            _trial(
+                stage, "butterfly_hessian_signs_w4", config,
+                **{
+                    "patch.rotation": "butterfly",
+                    "patch.train_rotation": hessian_training_with_signs,
+                },
+            ),
+            _trial(
+                stage, "shared_butterfly_hessian_signs_w4", config,
+                **{
+                    "patch.rotation": "butterfly",
+                    "patch.share_rotations": True,
+                    "patch.train_rotation": hessian_training_with_signs,
+                },
+            ),
+        )
     if stage == "recovery":
         config = "configs/qwen35_4b_recovery_cuda.yaml"
         return (
@@ -160,10 +224,17 @@ def stage_trials(stage: str) -> tuple[Trial, ...]:
         config = "configs/qwen35_4b_long_context_kv_cuda.yaml"
         return (
             _trial(
-                stage, "source_weights_quantized_kv", config,
-                **{"patch.enabled": False},
+                stage, "source_fp16_e8", config,
+                **{"patch.enabled": False, "patch.activation_bits": None},
             ),
-            _trial(stage, "rotquant_w4_quantized_kv", config),
+            _trial(
+                stage, "promoted_w4_e8", config,
+                **{"patch.activation_bits": None},
+            ),
+            _trial(
+                stage, "w4a8_e8", config,
+                **{"patch.activation_bits": 8},
+            ),
         )
     raise ValueError(f"unknown stage {stage!r}; choose from {REGISTERED_STAGES}")
 
@@ -282,6 +353,8 @@ def summarize_results(
                 metrics, "kv_cache", "mean_teacher_kl"
             ),
             "kv_top1_agreement": _metric(metrics, "kv_cache", "top1_agreement"),
+            "evaluation_halted": metrics.get("evaluation_halted", False),
+            "evaluation_halt_reasons": metrics.get("evaluation_halt_reasons"),
         }
         for dataset in ("wikitext2", "c4"):
             value = metrics.get(f"ppl_{dataset}")

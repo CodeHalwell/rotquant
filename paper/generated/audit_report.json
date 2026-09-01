@@ -1,0 +1,121 @@
+{
+  "checks": [
+    {
+      "absolute_difference": 0.0,
+      "actual": 14.5548,
+      "check": "joint mean PPL",
+      "expected": 14.5548,
+      "passed": true,
+      "tolerance": 5e-05
+    },
+    {
+      "absolute_difference": 3.80572801637058e-05,
+      "actual": 4.710038057280164,
+      "check": "joint mean relative PPL",
+      "expected": 4.71,
+      "passed": true,
+      "tolerance": 0.005
+    },
+    {
+      "absolute_difference": 0.0045019820001419575,
+      "actual": 5.775498017999858,
+      "check": "joint worst relative PPL",
+      "expected": 5.78,
+      "passed": true,
+      "tolerance": 0.005
+    },
+    {
+      "absolute_difference": 0.017441098733328886,
+      "actual": 23.98255890126667,
+      "check": "short-context cache KL reduction",
+      "expected": 24.0,
+      "passed": true,
+      "tolerance": 0.05
+    },
+    {
+      "absolute_difference": 0.020334860976666036,
+      "actual": 10.620334860976666,
+      "check": "long-context cache KL reduction",
+      "expected": 10.6,
+      "passed": true,
+      "tolerance": 0.05
+    },
+    {
+      "absolute_difference": 0.026470789115666804,
+      "actual": 19.673529210884332,
+      "check": "matched cache seed 0 reduction",
+      "expected": 19.7,
+      "passed": true,
+      "tolerance": 0.05
+    },
+    {
+      "absolute_difference": 0.019621314411761404,
+      "actual": 16.48037868558824,
+      "check": "matched cache seed 1 reduction",
+      "expected": 16.5,
+      "passed": true,
+      "tolerance": 0.05
+    },
+    {
+      "absolute_difference": 0.01660331875435972,
+      "actual": 23.18339668124564,
+      "check": "matched cache seed 2 reduction",
+      "expected": 23.2,
+      "passed": true,
+      "tolerance": 0.05
+    },
+    {
+      "absolute_difference": 1.52590606816716e-08,
+      "actual": 0.8022089847409393,
+      "check": "matched cache mean ratio",
+      "expected": 0.802209,
+      "passed": true,
+      "tolerance": 5e-06
+    },
+    {
+      "absolute_difference": 7.86855882339843e-07,
+      "actual": 0.8351962131441176,
+      "check": "matched cache worst ratio",
+      "expected": 0.835197,
+      "passed": true,
+      "tolerance": 5e-06
+    },
+    {
+      "actual": "HallD/qwen35-4b-rotquant-joint",
+      "check": "native producer model id",
+      "expected": "HallD/qwen35-4b-rotquant-joint",
+      "passed": true
+    },
+    {
+      "actual": "986ed9839cd3396d538aa567ba254ba13403ea9c",
+      "check": "native producer revision",
+      "expected": "986ed9839cd3396d538aa567ba254ba13403ea9c",
+      "passed": true
+    },
+    {
+      "actual": 200,
+      "check": "native verified projection count",
+      "expected": 200,
+      "passed": true
+    },
+    {
+      "actual": "pass",
+      "check": "native packed conformance status",
+      "expected": "pass",
+      "passed": true
+    }
+  ],
+  "derived": {
+    "actual_snapshot_storage_reduction_pct": 59.24512148901411,
+    "actual_tensor_storage_reduction_pct": 59.336296593791225,
+    "joint_mean_ppl": 14.5548,
+    "joint_mean_relative_ppl_pct": 4.710038057280164,
+    "joint_worst_relative_ppl_pct": 5.775498017999858,
+    "long_cache_kl_reduction_pct": 10.620334860976666,
+    "matched_cache_mean_ratio": 0.8022089847409393,
+    "matched_cache_worst_ratio": 0.8351962131441176,
+    "short_cache_kl_reduction_pct": 23.98255890126667
+  },
+  "manifest": "paper/data/publication_results.json",
+  "passed": true
+}
