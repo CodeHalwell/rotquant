@@ -17,9 +17,9 @@ from torch import nn
 from rotquant._internal import cpu_staging_linear, group_scales_rms
 from rotquant.calibrate import collect_activation_means, collect_activations
 from rotquant.linear import QuantLinear
-from rotquant.patch import PatchConfig, patch_model
+from rotquant.patch import PatchConfig, _rotate_hessian, patch_model
 from rotquant.quantize import QuantConfig, Quantizer
-from rotquant.rotate import Identity
+from rotquant.rotate import Identity, build_rotation
 
 _ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
@@ -120,6 +120,41 @@ def test_calibration_batches_are_cached_and_content_addressed(monkeypatch):
     assert manifest["batches"] == 1
     assert manifest["source_rows"] == [0]
     assert len(manifest["digest"]) == 64
+
+
+def test_hessian_cache_key_reuses_source_statistics_across_codebooks():
+    manifest = {
+        "digest": "exact-calibration-digest",
+        "token_hashes": ["batch-a", "batch-b"],
+    }
+    cfg = {
+        "model": "test/model",
+        "model_revision": "pinned",
+        "model_loader": "auto",
+        "dtype": "float16",
+    }
+    gaussian = PatchConfig(
+        quant=QuantConfig(bits=4, codebook="gaussian"),
+        include=("q_proj",),
+    )
+    calibrated = PatchConfig(
+        quant=QuantConfig(bits=4, codebook="calibrated"),
+        include=("q_proj",),
+    )
+    other_targets = PatchConfig(
+        quant=QuantConfig(bits=4, codebook="gaussian"),
+        include=("k_proj",),
+    )
+
+    gaussian_key = run_experiment._hessian_cache_key(
+        cfg, gaussian, manifest, "cuda"
+    )
+    assert gaussian_key == run_experiment._hessian_cache_key(
+        cfg, calibrated, manifest, "cuda"
+    )
+    assert gaussian_key != run_experiment._hessian_cache_key(
+        cfg, other_targets, manifest, "cuda"
+    )
 
 
 def test_calibration_loader_excludes_exact_source_rows(monkeypatch):
@@ -454,6 +489,24 @@ def test_activation_reservoir_is_seeded_and_not_prefix_only():
     assert torch.equal(first.activations[""], repeated.activations[""])
     assert not torch.equal(first.activations[""], other.activations[""])
     assert first.activations[""].max() >= 5  # not merely the first five rows
+
+
+@pytest.mark.parametrize("kind", ["fwht", "butterfly", "dense"])
+def test_hessian_rotation_matches_dense_reference_without_materialising(kind):
+    torch.manual_seed(17)
+    rotation = build_rotation(kind, 32, block=16, seed=4)
+    samples = torch.randn(48, 32)
+    hessian = samples.T @ samples / samples.shape[0]
+
+    matrix = rotation.as_matrix(dtype=torch.float64)
+    expected = (
+        matrix @ hessian.double() @ matrix.transpose(-1, -2)
+    ).float()
+    actual = _rotate_hessian(rotation, hessian)
+
+    assert actual.dtype == torch.float32
+    assert torch.allclose(actual, actual.T, atol=1e-6, rtol=0.0)
+    assert torch.allclose(actual, expected, atol=2e-5, rtol=2e-5)
 
 
 def test_mean_bias_correction_cancels_calibration_mean_error():

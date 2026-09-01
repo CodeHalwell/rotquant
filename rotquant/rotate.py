@@ -92,11 +92,23 @@ def fwht(x: torch.Tensor, normalize: bool = True) -> torch.Tensor:
         raise ValueError(f"FWHT length must be a power of two, got {d}")
 
     if x.is_cuda:
-        if _fht_cuda is not None and not _fast_hadamard_disabled():
+        kernel_available = (
+            _fht_cuda is not None and not _fast_hadamard_disabled()
+        )
+        # fast-hadamard-transform deliberately supports the inference/training
+        # dtypes only.  Dispatching float64 to it raises at runtime; diagnostic
+        # and reference computations must take the dtype-generic torch path.
+        kernel_dtype = getattr(x, "dtype", None) in {
+            torch.float16,
+            torch.float32,
+            torch.bfloat16,
+        }
+        if kernel_available and kernel_dtype:
             # The kernel applies the unnormalised H; scale to match our convention.
             out = _fht_cuda(x.contiguous())
             return out / math.sqrt(d) if normalize else out
-        _warn_slow_cuda_fwht()
+        if not kernel_available:
+            _warn_slow_cuda_fwht()
 
     orig_shape = x.shape
     h = x.reshape(-1, d).clone()

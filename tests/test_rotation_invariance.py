@@ -37,6 +37,31 @@ def test_fast_hadamard_disable_flag_bypasses_imported_kernel(monkeypatch):
         rotate_module.fwht(FakeCudaTensor())
 
 
+def test_fast_hadamard_float64_uses_dtype_generic_fallback(monkeypatch):
+    class FallbackSelected(Exception):
+        pass
+
+    class FakeCudaDouble:
+        shape = (1, 2)
+        is_cuda = True
+        dtype = torch.float64
+
+        def reshape(self, *_shape):
+            raise FallbackSelected
+
+    def fail_if_kernel_runs(_value):
+        pytest.fail("float64 was dispatched to the CUDA Hadamard kernel")
+
+    def fail_if_warned():
+        pytest.fail("an installed kernel should not be reported as unavailable")
+
+    monkeypatch.delenv("ROTQUANT_DISABLE_FAST_HADAMARD", raising=False)
+    monkeypatch.setattr(rotate_module, "_fht_cuda", fail_if_kernel_runs)
+    monkeypatch.setattr(rotate_module, "_warn_slow_cuda_fwht", fail_if_warned)
+    with pytest.raises(FallbackSelected):
+        rotate_module.fwht(FakeCudaDouble())
+
+
 def test_rotation_orthogonal_and_invariant():
     torch.manual_seed(0)
     d = 256

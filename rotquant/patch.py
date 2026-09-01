@@ -117,6 +117,26 @@ def make_rotations(in_features: int, cfg: PatchConfig, layer_seed: int,
     return weight_rot, act_rot
 
 
+@torch.no_grad()
+def _rotate_hessian(rotation: Rotation, hessian: torch.Tensor) -> torch.Tensor:
+    """Return ``R H R^T`` without materialising a dense structured rotation.
+
+    ``rotate_activation(X)`` computes ``X R^T``.  Applying it once to ``H``
+    and once to the transpose therefore performs the two-sided transform in
+    O(d^2 log(block)) for FWHT/butterfly rotations, instead of the O(d^3)
+    dense matrix products that would dominate GPTQ patching.  Hessians are
+    accumulated in float32, which is also supported by the optional CUDA FWHT
+    kernel; the final symmetrisation removes harmless transform round-off.
+    """
+
+    work = hessian.to(dtype=torch.float32)
+    right_rotated = rotation.rotate_activation(work)
+    rotated = rotation.rotate_activation(
+        right_rotated.transpose(-1, -2)
+    ).transpose(-1, -2)
+    return ((rotated + rotated.transpose(-1, -2)) * 0.5).contiguous()
+
+
 def patch_model(model: nn.Module, cfg: PatchConfig,
                 hessians: Mapping[str, torch.Tensor] | None = None,
                 activations: dict[str, torch.Tensor] | None = None,
@@ -335,8 +355,7 @@ def patch_model(model: nn.Module, cfg: PatchConfig,
         if H is not None and cfg.rotation not in ("none", "identity"):
             # Rotate the Hessian into the same basis as the rotated weight:
             # H' = R H R^T so GPTQ sees the consistent input statistics.
-            R = weight_rot.as_matrix(device=H.device, dtype=torch.float64)
-            H = (R @ H.to(torch.float64) @ R.transpose(-1, -2)).to(torch.float32)
+            H = _rotate_hessian(weight_rot, H)
         qlin = QuantLinear.from_linear(work_linear, layer_quant,
                                        weight_rotation=weight_rot,
                                        act_rotation=act_rot, H=H,

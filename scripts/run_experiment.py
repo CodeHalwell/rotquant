@@ -79,6 +79,10 @@ _CALIB_CACHE: OrderedDict[
 _CALIB_CACHE_LIMIT = 32
 _TRAJECTORY_REFERENCE_CACHE: dict[str, Any] = {}
 _LOGIT_REFERENCE_CACHE: dict[str, Any] = {}
+# Keep streamed, disk-backed source Hessians alive across matched arms in one
+# stage-runner process.  In particular, Gaussian and calibrated GPTQ consume
+# identical source statistics; collecting them twice only repeats model passes.
+_HESSIAN_CALIBRATION_CACHE: dict[str, tuple[Any, Any]] = {}
 
 
 def _deep_merge(base: dict[str, Any], override: dict[str, Any]) -> dict[str, Any]:
@@ -444,6 +448,28 @@ def _reference_cache_key(kind: str, model_name: str,
     ).hexdigest()
 
 
+def _hessian_cache_key(cfg: dict[str, Any], pcfg: PatchConfig,
+                       manifest: dict[str, Any], device: str) -> str:
+    """Identify reusable source-model Hessians independently of quantizer arm."""
+
+    payload = {
+        "model": cfg.get("model"),
+        "model_revision": cfg.get("model_revision"),
+        "model_loader": cfg.get("model_loader", "auto"),
+        "dtype": cfg.get("dtype"),
+        "device": str(device),
+        "adapter": pcfg.adapter,
+        "include": list(pcfg.include) if pcfg.include is not None else None,
+        "exclude": list(pcfg.exclude or ()),
+        "damp_frac": 0.0,
+        "data_digest": manifest.get("digest"),
+        "token_hashes": manifest.get("token_hashes"),
+    }
+    return hashlib.sha256(
+        json.dumps(payload, sort_keys=True, default=str).encode()
+    ).hexdigest()
+
+
 def footprint_metrics(model: torch.nn.Module, cfg_model: dict[str, Any]) -> dict[str, Any]:
     """True bits/weight + packed-vs-fp16 storage across all QuantLinear layers.
 
@@ -594,44 +620,70 @@ def _prepare_calibration(cfg: dict[str, Any], model, tokenizer, device: str,
         from rotquant.calibrate import collect_hessians, collect_hessians_streamed
         build_shared_loader(int(cfg.get("n_calib", 128)),
                             int(cfg.get("calib_seq_len", 2048)))
-        metrics["data_manifest"]["hessian_calibration"] = token_batch_manifest(
+        hessian_manifest = token_batch_manifest(
             calib_loader, dataset="allenai/c4", split="train",
             revision=calibration_revision, skip=0,
             seq_len=calib_loader_seq_len,
         )
-        with Timer() as t:
-            # damp_frac=0: the GPTQ solver applies (auto-increasing) percdamp
-            # itself; damping here as well would double it.
-            hessian_mode = str(cfg.get(
-                "hessian_collection",
-                "streamed" if qcfg.error_comp == "gptq" else "joint",
-            ))
-            if hessian_mode == "streamed":
-                art.hessian_tempdir = tempfile.TemporaryDirectory(
-                    prefix="rotquant-hessians-"
-                )
-                calib = collect_hessians_streamed(
-                    model,
-                    calib_loader,
-                    device,
-                    include=pcfg.include,
-                    exclude=pcfg.exclude,
-                    damp_frac=0.0,
-                    layers_per_pass=int(cfg.get("hessian_layers_per_pass", 1)),
-                    offload_dir=art.hessian_tempdir.name,
-                )
-            elif hessian_mode == "joint":
-                calib = collect_hessians(
-                    model,
-                    calib_loader,
-                    device,
-                    include=pcfg.include,
-                    exclude=pcfg.exclude,
-                    damp_frac=0.0,
-                )
-            else:
-                raise ValueError(
-                    "hessian_collection must be 'streamed' or 'joint'"
+        metrics["data_manifest"]["hessian_calibration"] = hessian_manifest
+        # damp_frac=0: the GPTQ solver applies (auto-increasing) percdamp
+        # itself; damping here as well would double it.
+        hessian_mode = str(cfg.get(
+            "hessian_collection",
+            "streamed" if qcfg.error_comp == "gptq" else "joint",
+        ))
+        hessian_cache_key = None
+        hessian_cache_hit = False
+        cached_hessians = None
+        if hessian_mode == "streamed":
+            hessian_cache_key = _hessian_cache_key(
+                cfg, pcfg, hessian_manifest, device
+            )
+            cached_hessians = _HESSIAN_CALIBRATION_CACHE.get(
+                hessian_cache_key
+            )
+        if cached_hessians is not None:
+            art.hessian_tempdir, calib = cached_hessians
+            hessian_cache_hit = True
+            calib_seconds = 0.0
+            logger.info(
+                "Reusing streamed source Hessians for %d linear layers",
+                len(calib.hessians),
+            )
+        else:
+            with Timer() as t:
+                if hessian_mode == "streamed":
+                    art.hessian_tempdir = tempfile.TemporaryDirectory(
+                        prefix="rotquant-hessians-"
+                    )
+                    calib = collect_hessians_streamed(
+                        model,
+                        calib_loader,
+                        device,
+                        include=pcfg.include,
+                        exclude=pcfg.exclude,
+                        damp_frac=0.0,
+                        layers_per_pass=int(cfg.get("hessian_layers_per_pass", 1)),
+                        offload_dir=art.hessian_tempdir.name,
+                    )
+                elif hessian_mode == "joint":
+                    calib = collect_hessians(
+                        model,
+                        calib_loader,
+                        device,
+                        include=pcfg.include,
+                        exclude=pcfg.exclude,
+                        damp_frac=0.0,
+                    )
+                else:
+                    raise ValueError(
+                        "hessian_collection must be 'streamed' or 'joint'"
+                    )
+            calib_seconds = t.elapsed
+            if hessian_cache_key is not None:
+                _HESSIAN_CALIBRATION_CACHE[hessian_cache_key] = (
+                    art.hessian_tempdir,
+                    calib,
                 )
         art.hessians = calib.hessians
         art.activation_means = calib.means
@@ -643,8 +695,10 @@ def _prepare_calibration(cfg: dict[str, Any], model, tokenizer, device: str,
             ),
             "layers": len(calib.hessians),
             "disk_offloaded": hessian_mode == "streamed",
+            "cache_hit": hessian_cache_hit,
+            "cache_key": hessian_cache_key,
         }
-        metrics["calib_seconds"] = t.elapsed
+        metrics["calib_seconds"] = calib_seconds
 
     if needs_means and art.activation_means is None:
         from rotquant.calibrate import collect_activation_means
