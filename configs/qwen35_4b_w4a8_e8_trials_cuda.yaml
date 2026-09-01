@@ -1,5 +1,7 @@
-# Focused algorithmic promotion run: shared learned rotations, Hessian objective,
-# learned signs, true 8-bit scales, W4A8 semantics, and finite-rate E8P KV.
+# Post-promotion composition run. The runner first reproduces the promoted
+# Gaussian FWHT+GPTQ W4/g128 recipe, then adds shared learned rotations, the
+# Hessian objective, learned signs, true 8-bit scales, mean-bias correction,
+# W4A8 semantics, and finally finite-rate E8P KV in separately paired arms.
 experiment: QWEN35_W4A8_E8_TRIALS_CUDA
 label: qwen35_4b_w4a8_e8_trials_cuda
 model: unsloth/Qwen3.5-4B
@@ -11,7 +13,9 @@ dtype: float16
 seed: 0
 calib_seq_len: 512
 rotation_n_calib: 32
-n_calib: 32
+# Match the promoted W4 calibration budget (65,536 tokens). The streamed
+# Hessian store is reused by every later arm in this stage.
+n_calib: 128
 hessian_collection: streamed
 hessian_layers_per_pass: 4
 quant:

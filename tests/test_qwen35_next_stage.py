@@ -40,6 +40,37 @@ def test_w4_ladder_has_source_and_matched_codebook_controls():
     assert controls["gptq_calibrated_w4"]["quant.codebook"] == "calibrated"
 
 
+def test_w4a8_ladder_anchors_each_composition_step_to_its_predecessor():
+    runner = _load_runner()
+    trials = runner.stage_trials("w4a8")
+    assert [trial.arm for trial in trials] == [
+        "source_fp16",
+        "promoted_w4",
+        "optimized_w4",
+        "w4a8",
+        "w4a8_e8",
+    ]
+    overrides = {trial.arm: dict(trial.overrides) for trial in trials}
+    promoted = overrides["promoted_w4"]
+    assert promoted["patch.rotation"] == "fwht"
+    assert promoted["patch.train_rotation"] is None
+    assert promoted["patch.share_rotations"] is False
+    assert promoted["patch.activation_bits"] is None
+    assert promoted["quant.scale_bits"] == 16
+    assert promoted["quant.bias_correction"] == "none"
+    resolved = runner._resolved_trial_config(trials[1], seed=0)
+    assert resolved["n_calib"] == 128
+    assert resolved["calib_seq_len"] == 512
+    assert resolved["quant"]["codebook"] == "gaussian"
+    assert resolved["quant"]["error_comp"] == "gptq"
+    assert resolved["quant"]["group_size"] == 128
+    assert runner.PAIRED_ARMS["w4a8"] == (
+        ("optimized_w4", "promoted_w4"),
+        ("w4a8", "optimized_w4"),
+        ("w4a8_e8", "w4a8"),
+    )
+
+
 def test_summary_uses_same_stage_seed_source_ppl():
     runner = _load_runner()
     source, candidate = runner.stage_trials("w4")[:2]

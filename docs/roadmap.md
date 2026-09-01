@@ -103,6 +103,10 @@ specialized around them:
   for matched calibrated/Gaussian W4 versus streamed GPTQ, with W4A8/E8,
   serious recovery, and 8k KV as separate opt-in stages; add a resumable
   source-Transformers/RotQuant collector for the registered divergence records;
+- [x] complete the three-seed Qwen3.5-4B W4 ladder and promote streamed GPTQ;
+  retain Gaussian as the provisional default because it has lower KL in every
+  seed and keep calibrated GPTQ as the 300-prompt challenger; anchor the W4A8
+  composition ladder on the exact promoted recipe;
 - [ ] build a pinned, calibration-disjoint 300-prompt/32-token free-running
   divergence suite spanning agentic, code, maths, multilingual, and long-document
   prompts; compare the source, RotQuant, same-size GGUF, and Unsloth baselines;

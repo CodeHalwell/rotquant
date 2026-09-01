@@ -40,7 +40,8 @@ PAIRED_ARMS = {
         ("gptq_calibrated_w4", "calibrated_w4_control"),
     ),
     "w4a8": (
-        ("w4a8", "w4_control"),
+        ("optimized_w4", "promoted_w4"),
+        ("w4a8", "optimized_w4"),
         ("w4a8_e8", "w4a8"),
     ),
     "recovery": (("recovered_w4", "unrecovered_w4"),),
@@ -104,7 +105,19 @@ def stage_trials(stage: str) -> tuple[Trial, ...]:
                 },
             ),
             _trial(
-                stage, "w4_control", config,
+                stage, "promoted_w4", config,
+                **{
+                    "quant.scale_bits": 16,
+                    "quant.bias_correction": "none",
+                    "patch.rotation": "fwht",
+                    "patch.share_rotations": False,
+                    "patch.train_rotation": None,
+                    "patch.activation_bits": None,
+                    "eval.kv_cache": False,
+                },
+            ),
+            _trial(
+                stage, "optimized_w4", config,
                 **{"patch.activation_bits": None, "eval.kv_cache": False},
             ),
             _trial(

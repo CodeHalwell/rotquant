@@ -622,6 +622,40 @@ source/candidate trajectory, and structured-failure records for Transformers
 or RotQuant checkpoints. No quality numbers were produced by this
 implementation pass.
 
+### 2026-09-01 — three-seed Qwen3.5-4B W4 promotion
+
+The focused W4 ladder completed at code revision
+`f1f2fb1734d5076a4f1f6916adb2b7e2ad02f3fb`, model revision
+`3764fa359b9082ea5a1e4a5e3ac3aaf6e9671636`, on an A100 40 GB. All arms used
+the same pinned, disjoint manifests. GPTQ used 128 C4 sequences of 512 tokens
+(65,536 calibration tokens), four disk-offloaded Hessians per pass, actorder,
+and scale recomputation. Evaluation used 64 paired windows on each of
+WikiText-2 and C4, 1,016 held-out teacher-forced tokens, and eight held-out
+32-token trajectories per rotation seed.
+
+| Three-seed mean | Gaussian W4 | Gaussian + GPTQ | Calibrated W4 | Calibrated + GPTQ |
+|---|---:|---:|---:|---:|
+| WikiText-2 PPL increase | +4.16% | **+2.11%** | +3.93% | **+2.07%** |
+| C4 PPL increase | +3.98% | **+1.82%** | +4.35% | **+1.94%** |
+| Mean teacher KL | 0.04467 | **0.02119** | 0.04482 | **0.02322** |
+| Top-1 agreement | 88.62% | **92.13%** | 89.07% | **92.26%** |
+| 32-token agreement | 36.46% | **52.47%** | 43.62% | **55.86%** |
+| Exact source trajectories | 0/24 | **5/24** | 0/24 | **3/24** |
+
+GPTQ improved WikiText-2, C4, teacher KL, and top-1 agreement against its
+matched non-GPTQ control in every seed at zero additional inference bits.
+Promote streamed GPTQ into the W4 recipe. Gaussian is the provisional default:
+its KL was lower in all three seeds (8.75% lower on the three-seed mean), its
+patch was 26% faster, and it retained more exact trajectories. Calibrated GPTQ
+remains a challenger because its mean top-1 and aligned-token agreement were
+slightly higher; none of the head-to-head PPL, top-1, or trajectory differences
+is decisive with only eight unique trajectory prompts.
+
+The post-promotion W4A8/E8 stage now starts from an exact Gaussian FWHT+GPTQ
+W4/g128 arm. It adds optimized weight-only composition, A8, and E8 KV in three
+separate paired steps rather than conflating them. The 300-prompt competitive
+suite remains the final Gaussian-versus-calibrated codebook gate.
+
 ## Entry template
 
 For each new run, append:
