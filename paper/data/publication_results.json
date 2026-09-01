@@ -1,14 +1,17 @@
 {
   "schema_version": 1,
   "study": "rotquant-joint-weight-kv-development",
-  "evidence_status": "development",
+  "evidence_status": "development; all cache-quality results withdrawn 2026-09-01",
   "models": {
     "source": {
       "model_id": "unsloth/Qwen3.5-4B",
       "revision": "3764fa359b9082ea5a1e4a5e3ac3aaf6e9671636",
       "tensor_bytes": 9319737856,
       "complete_snapshot_bytes": 9348509644,
-      "source": "source model.safetensors.index.json and cached snapshot"
+      "source": "source model.safetensors.index.json and cached snapshot",
+      "mtp_head_bytes": 241199104,
+      "tensor_bytes_excluding_mtp": 9078538752,
+      "mtp_note": "The safetensors index counts an mtp.* multi-token-prediction head that Qwen3_5ForConditionalGeneration never loads and the export never stores; like-for-like storage comparisons exclude it on both sides."
     },
     "rotquant": {
       "model_id": "HallD/qwen35-4b-rotquant-joint",
@@ -39,14 +42,20 @@
   "results": {
     "qwen_joint": {
       "source_ppl": 13.9001,
-      "candidate_ppl_by_seed": [14.7029, 14.6091, 14.3524],
+      "candidate_ppl_by_seed": [
+        14.7029,
+        14.6091,
+        14.3524
+      ],
       "reported_mean_ppl": 14.5548,
       "reported_mean_relative_ppl_pct": 4.71,
       "reported_worst_relative_ppl_pct": 5.78,
       "estimated_complete_weight_reduction_pct": 56.78,
       "effective_weight_bpw": 4.125,
       "effective_kv_bpv": 3.25,
-      "source": "docs/experiment_log.md:288-397"
+      "source": "docs/experiment_log.md:288-397",
+      "reported_like_for_like_tensor_reduction_pct": 58.26,
+      "reported_like_for_like_source": "tensor_bytes_excluding_mtp"
     },
     "cache_transfer": {
       "mixed_short_kl": 0.435155,
@@ -55,21 +64,54 @@
       "mixed_long_kl": 1.376698,
       "uniform_long_kl": 1.540281,
       "reported_long_reduction_pct": 10.6,
-      "source": "docs/experiment_log.md:256-276"
+      "source": "docs/experiment_log.md:256-276",
+      "status": "withdrawn 2026-09-01; retained as a record of the defective-simulator measurement"
     },
     "matched_cache": {
-      "candidate_kl_by_seed": [0.435155, 0.700824, 0.514957],
-      "control_k4v4_kl_by_seed": [0.541733, 0.839113, 0.670372],
-      "reported_reduction_pct_by_seed": [19.7, 16.5, 23.2],
+      "candidate_kl_by_seed": [
+        0.435155,
+        0.700824,
+        0.514957
+      ],
+      "control_k4v4_kl_by_seed": [
+        0.541733,
+        0.839113,
+        0.670372
+      ],
+      "reported_reduction_pct_by_seed": [
+        19.7,
+        16.5,
+        23.2
+      ],
       "reported_mean_ratio": 0.802209,
       "reported_worst_ratio": 0.835197,
-      "source": "docs/experiment_log.md:370-397"
+      "source": "docs/experiment_log.md:370-397",
+      "status": "withdrawn 2026-09-01; retained as a record of the defective-simulator measurement"
     }
   },
   "claim_boundary": {
     "quality": "development subsets; no state-of-the-art claim",
     "cuda_mps_fallback": "quality-only because dense reconstructed weights are cached",
     "native_runtime": "representation-preserving prototype; final fused performance study pending",
-    "model_scope": "Qwen3.5 language path only; vision quality is unevaluated"
+    "model_scope": "Qwen3.5 language path only; vision quality is unevaluated",
+    "cache_quality": "withdrawn; no cache-quality claim until the study is repeated with the endpoint-checked simulator",
+    "storage": "like-for-like tensor reduction excludes the unloaded MTP head on both sides"
+  },
+  "validity": {
+    "cache_results": "withdrawn",
+    "withdrawn_on": "2026-09-01",
+    "reason": "The Transformers cache simulator cloned only tensor-valued cache attributes; under transformers 5.16.x (installed by the cache notebooks) linear-attention conv/recurrent state lives in dict attributes updated in place, so the source and packed decode passes shared and corrupted that state and every K/V code width produced the same next-token KL (~0.5-0.9).",
+    "evidence": "Real Qwen3.5-4B, CPU bf16, prompt 256, source weights: fixed simulator gives K8/V8 KL 5.0e-4 / 3.6e-4, K4/V4 6.3e-3 / 6.9e-3, K2/V2 6.5e-2; the defective simulator under transformers 5.16.1 gives 0.877 at K8/V8 and 0.891 at K4/V4.",
+    "withdrawn_blocks": [
+      "results.cache_transfer",
+      "results.matched_cache",
+      "results.qwen_joint.effective_kv_bpv"
+    ],
+    "retained_blocks": [
+      "results.qwen_joint (weight perplexity only)",
+      "models",
+      "artifacts"
+    ],
+    "review": "docs/scientific_validity_review_2026-09-01.md"
   }
 }

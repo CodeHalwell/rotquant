@@ -345,20 +345,31 @@ class ButterflyRotation(Rotation):
             h = h.reshape(-1, self.n_blocks, self.block)
         return h.reshape(original_shape)
 
-    def enable_sign_training(self, temperature: float = 1.0) -> nn.Parameter:
+    def enable_sign_training(self, temperature: float = 1.0,
+                             init_magnitude: float = 0.1) -> nn.Parameter:
         """Make the input signs trainable through a hard-sign STE.
 
         The forward transform remains exactly orthogonal because it always uses
         values in ``{-1, +1}``.  ``tanh(logit / temperature)`` supplies the
         surrogate derivative; :meth:`commit_signs` folds the selected signs
         back into the ordinary one-bit sign buffer for inference/checkpointing.
+
+        Logits start at ``±init_magnitude``.  A sign can only flip once its
+        logit crosses zero, and Adam moves a logit by roughly the learning rate
+        per step, so the magnitude must be small compared with
+        ``lr * steps`` (with ``lr=1e-3`` and 200 steps that bound is 0.2).  The
+        earlier ``±1`` initialisation could never flip a sign under those
+        settings, making the learned-sign arm inert.
         """
 
         if temperature <= 0:
             raise ValueError("sign temperature must be positive")
+        if init_magnitude <= 0:
+            raise ValueError("sign init_magnitude must be positive")
         self._sign_temperature = float(temperature)
         if self.sign_logits is None:
-            self.sign_logits = nn.Parameter(self.signs.detach().float().clone())
+            self.sign_logits = nn.Parameter(
+                self.signs.detach().float().clone() * float(init_magnitude))
         return self.sign_logits
 
     def _signs(self, ref: torch.Tensor) -> torch.Tensor:

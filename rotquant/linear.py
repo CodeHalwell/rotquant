@@ -23,7 +23,7 @@ import torch.nn.functional as F
 from torch import nn
 
 from ._internal import (
-    encode_storage_scales,
+    encoded_storage_scales,
     expand_scales,
     generate_sketch_matrix,
     storage_scales,
@@ -205,15 +205,13 @@ class QuantLinear(nn.Module):
         if self._log_scale_multiplier is None:
             return
         scales = self._scale_training_base * self.scale_finetuning_multiplier()
-        stored = storage_scales(
-            scales,
-            self.qweight.scale_bits_main,
-            self.qweight.scale_quant_group_size,
-        )
-        (self.qweight.scales,
+        # One encode: the training forward used ``storage_scales(scales)``,
+        # which is exactly the decoded value of this triple.
+        (_decoded,
+         self.qweight.scales,
          self.qweight.scale_offsets,
-         self.qweight.scale_steps) = encode_storage_scales(
-            stored,
+         self.qweight.scale_steps) = encoded_storage_scales(
+            scales,
             self.qweight.scale_bits_main,
             self.qweight.scale_quant_group_size,
         )

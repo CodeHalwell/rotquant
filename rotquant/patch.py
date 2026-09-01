@@ -21,7 +21,7 @@ from dataclasses import dataclass, field
 import torch
 from torch import nn
 
-from ._internal import cpu_staging_linear, get_parent
+from ._internal import cpu_staging_linear, get_parent, rotate_hessian
 from .adapters import resolve_model_adapter
 from .linear import QuantLinear
 from .quantize import QuantConfig
@@ -117,24 +117,10 @@ def make_rotations(in_features: int, cfg: PatchConfig, layer_seed: int,
     return weight_rot, act_rot
 
 
-@torch.no_grad()
 def _rotate_hessian(rotation: Rotation, hessian: torch.Tensor) -> torch.Tensor:
-    """Return ``R H R^T`` without materialising a dense structured rotation.
+    """Return ``R H R^T`` (see :func:`rotquant._internal.rotate_hessian`)."""
 
-    ``rotate_activation(X)`` computes ``X R^T``.  Applying it once to ``H``
-    and once to the transpose therefore performs the two-sided transform in
-    O(d^2 log(block)) for FWHT/butterfly rotations, instead of the O(d^3)
-    dense matrix products that would dominate GPTQ patching.  Hessians are
-    accumulated in float32, which is also supported by the optional CUDA FWHT
-    kernel; the final symmetrisation removes harmless transform round-off.
-    """
-
-    work = hessian.to(dtype=torch.float32)
-    right_rotated = rotation.rotate_activation(work)
-    rotated = rotation.rotate_activation(
-        right_rotated.transpose(-1, -2)
-    ).transpose(-1, -2)
-    return ((rotated + rotated.transpose(-1, -2)) * 0.5).contiguous()
+    return rotate_hessian(rotation, hessian)
 
 
 def patch_model(model: nn.Module, cfg: PatchConfig,
@@ -261,6 +247,7 @@ def patch_model(model: nn.Module, cfg: PatchConfig,
             from .train_rotation import (
                 RotationTrainConfig,
                 select_butterfly_checkpoint,
+                select_butterfly_checkpoint_hessian,
                 train_layer_rotation,
             )
             train_cfg = RotationTrainConfig(**cfg.train_rotation)
@@ -337,6 +324,21 @@ def patch_model(model: nn.Module, cfg: PatchConfig,
                     min_improvement=train_cfg.selection_min_improvement)
                 stats.update(selection)
                 stats["selection_tokens"] = selection_tokens
+            elif isinstance(weight_rot, ButterflyRotation) \
+                    and train_cfg.objective == "hessian":
+                # The proxy objective (RMS assignment, no error compensation)
+                # is not the deployed quantizer.  Gate the trained rotation
+                # against seeded FWHT under the exact packed weight, including
+                # GPTQ, so a worse-than-FWHT basis is never deployed silently.
+                reference_rot = ButterflyRotation(
+                    work_linear.in_features, block=cfg.block,
+                    seed=cfg.seed + i, device=work_linear.weight.device)
+                selection = select_butterfly_checkpoint_hessian(
+                    weight_rot, reference_rot, selection_weight, layer_quant,
+                    source_hessian,
+                    min_improvement=train_cfg.selection_min_improvement)
+                stats.update(selection)
+                stats["selection_tokens"] = 0
             train_stats.append(stats)
             logger.info("trained %s rotation for %s: %.6f -> %.6f%s",
                         stats["objective"], name,

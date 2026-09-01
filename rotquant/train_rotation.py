@@ -42,7 +42,7 @@ from typing import Any
 
 import torch
 
-from ._internal import quantize_groups
+from ._internal import quantize_groups, rotate_hessian
 from .quantize import QuantConfig, Quantizer
 from .rotate import ButterflyRotation, LearnedRotation, Rotation
 from .utils import get_logger
@@ -68,6 +68,9 @@ class RotationTrainConfig:
     selection_min_improvement: float = 0.0
     learn_signs: bool = False
     sign_temperature: float = 1.0
+    # Initial |logit| of the trainable signs; must be reachable by lr * steps
+    # or no sign can ever flip (see ButterflyRotation.enable_sign_training).
+    sign_init_magnitude: float = 0.1
 
     def __post_init__(self) -> None:
         if self.steps < 1:
@@ -91,6 +94,64 @@ class RotationTrainConfig:
             raise TypeError("learn_signs must be boolean")
         if self.sign_temperature <= 0:
             raise ValueError("sign_temperature must be positive")
+        if self.sign_init_magnitude <= 0:
+            raise ValueError("sign_init_magnitude must be positive")
+
+
+@torch.no_grad()
+def hessian_reconstruction_error(rotation: Rotation, weight: torch.Tensor,
+                                 quant_cfg: QuantConfig,
+                                 hessian: torch.Tensor) -> float:
+    """Hessian-weighted layer-output error of the exact deployed quantizer.
+
+    Returns ``tr(E H E^T) / tr(W H W^T)`` for the un-rotated weight error
+    ``E = (W R^T - Q(W R^T)) R`` of the packed weight the experiment would
+    actually deploy, including GPTQ with the rotated Hessian when configured.
+    """
+    w = weight.detach().to(torch.float32)
+    H = hessian.detach().to(device=w.device, dtype=torch.float32)
+    if H.shape != (w.shape[1], w.shape[1]):
+        raise ValueError("rotation Hessian shape does not match weight input")
+    rotated = rotation.rotate_weight(w)
+    rotated_hessian = (
+        rotate_hessian(rotation, H) if quant_cfg.error_comp == "gptq" else None
+    )
+    q = Quantizer(quant_cfg).quantize_weight(
+        rotated, H=rotated_hessian).dequantize().to(w.device)
+    error = rotation.inverse_activation(rotated - q)
+    return ((error @ H * error).sum()
+            / (w @ H * w).sum().clamp_min(1e-12)).item()
+
+
+@torch.no_grad()
+def select_butterfly_checkpoint_hessian(rotation: ButterflyRotation,
+                                        reference: ButterflyRotation,
+                                        weight: torch.Tensor,
+                                        quant_cfg: QuantConfig,
+                                        hessian: torch.Tensor,
+                                        min_improvement: float = 0.0,
+                                        ) -> dict[str, Any]:
+    """Deployed-quantizer gate for Hessian-objective butterflies.
+
+    The training proxy (RMS assignment, no error compensation) is not the
+    deployed quantizer.  Keep the trained angles/signs only when the exact
+    packed weight beats the seeded FWHT reference on the Hessian-weighted
+    output error by the required margin; otherwise restore FWHT.
+    """
+    reference_error = hessian_reconstruction_error(
+        reference, weight, quant_cfg, hessian)
+    candidate_error = hessian_reconstruction_error(
+        rotation, weight, quant_cfg, hessian)
+    accepted = candidate_error <= reference_error * (1.0 - min_improvement)
+    if not accepted:
+        rotation.theta.copy_(reference.theta)
+        rotation.signs.copy_(reference.signs)
+    return {
+        "selection_reference_mse": reference_error,
+        "selection_candidate_mse": candidate_error,
+        "selection_accepted": bool(accepted),
+        "selection_objective": "hessian",
+    }
 
 
 @torch.no_grad()
@@ -173,7 +234,8 @@ def train_layer_rotation(rotation: Rotation, weight: torch.Tensor,
         if not isinstance(rotation, ButterflyRotation):
             raise TypeError("learned signs require a ButterflyRotation")
         initial_signs = rotation.signs.detach().clone()
-        rotation.enable_sign_training(cfg.sign_temperature)
+        rotation.enable_sign_training(
+            cfg.sign_temperature, cfg.sign_init_magnitude)
 
     x = target = target_power = None
     if cfg.objective == "activation":

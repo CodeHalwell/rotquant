@@ -150,7 +150,9 @@ def test_cache_eval_supplies_absolute_decode_positions_when_supported():
 
     evaluate_kv_cache(model, [{"input_ids": ids}], config, "cpu")
 
-    assert model.decode_positions == [8, 8, 9, 9, 10, 10]
+    # The mandatory 8-bit endpoint pass runs first on the same calls, then
+    # the candidate; both supply the absolute one-token position.
+    assert model.decode_positions == [8, 8, 9, 9, 10, 10] * 2
 
 
 def test_qwen35_multimodal_stale_rope_state_accepts_cached_decode():
@@ -365,3 +367,121 @@ def test_cache_eval_seed_is_forwarded_to_quant_config():
     assert config.quant_config().codebook == "spherical"
     assert config.quant_config().codebook_dim == 64
     assert config.quant_config().bias_correction == "length"
+
+
+def test_endpoint_check_runs_first_and_passes_on_a_faithful_simulator():
+    ids = torch.arange(1, 25).reshape(1, -1) % 31
+    config = KVCacheEvalConfig(
+        bits=2,
+        group_size=4,
+        rotation_block=8,
+        batches=1,
+        prompt_len=8,
+        continuation_len=4,
+        skip=0,
+    )
+    metrics = evaluate_kv_cache(
+        _CacheModel(), [{"input_ids": ids}], config, "cpu")
+
+    endpoint = metrics["endpoint_check"]
+    assert endpoint["bits"] == 8
+    assert endpoint["passed"]
+    assert endpoint["mean_teacher_kl"] <= config.endpoint_max_kl
+    assert endpoint["prefill_kv_nmse"] < metrics["prefill_kv_nmse"]
+
+
+def test_endpoint_check_fails_closed_on_a_bit_independent_floor(monkeypatch):
+    import rotquant.eval.kv_cache as module
+
+    faithful = module._evaluate_kv_cache
+
+    def corrupted(model, batches, config, device, layer_configs=None):
+        metrics = faithful(model, batches, config, device, layer_configs)
+        metrics["mean_teacher_kl"] = 0.5  # the same floor at every bit width
+        return metrics
+
+    monkeypatch.setattr(module, "_evaluate_kv_cache", corrupted)
+    ids = torch.arange(1, 25).reshape(1, -1) % 31
+    config = KVCacheEvalConfig(
+        bits=4,
+        group_size=4,
+        rotation_block=8,
+        batches=1,
+        prompt_len=8,
+        continuation_len=4,
+        skip=0,
+    )
+    with pytest.raises(RuntimeError, match="endpoint check failed"):
+        evaluate_kv_cache(_CacheModel(), [{"input_ids": ids}], config, "cpu")
+
+
+def test_endpoint_check_can_be_disabled_explicitly():
+    ids = torch.arange(1, 25).reshape(1, -1) % 31
+    config = KVCacheEvalConfig(
+        bits=4,
+        group_size=4,
+        rotation_block=8,
+        batches=1,
+        prompt_len=8,
+        continuation_len=4,
+        skip=0,
+        endpoint_check_bits=None,
+    )
+    metrics = evaluate_kv_cache(
+        _CacheModel(), [{"input_ids": ids}], config, "cpu")
+    assert "endpoint_check" not in metrics
+
+
+def test_tiered_cache_requantizes_rows_that_age_out_of_the_recent_window():
+    ids = torch.arange(1, 9).reshape(1, -1)
+    keys, values = (state.half() for state in _states(ids))
+    source_keys = keys.clone()
+    simulated, _metrics = simulate_packed_kv_cache(
+        _Cache(keys, values),
+        KVQuantConfig(bits=2, group_size=4, rotation_block=8,
+                      sink_tokens=1, recent_window=2),
+    )
+    layer = simulated.layers[0]
+
+    def exact(position: int) -> bool:
+        # fp16 tiers are stored in the rotated basis, so an "exact" row is
+        # exact up to one fp16 rounding of the rotation round trip (~1e-3);
+        # a 2-bit packed row differs by ~0.3.
+        gap = (layer.keys[..., position, :].float()
+               - source_keys[..., position, :].float()).abs().max().item()
+        return gap < 5e-3
+
+    # After prefill: the sink and the two newest rows are exact, the middle is packed.
+    assert exact(0) and exact(6) and exact(7)
+    assert not exact(3)
+
+    first_keys, first_values = (state.half() for state in _states(torch.tensor([[9]])))
+    simulated.update(first_keys, first_values, 0)
+    assert layer.keys.shape[-2] == 9
+    # Row 6 has left the two-row window and is packed exactly once; row 7 and
+    # the new row 8 remain exact; the sink is never packed.
+    assert not exact(6)
+    assert exact(7)
+    assert (layer.keys[..., 8, :].float() - first_keys[..., 0, :].float()).abs().max() < 5e-3
+    assert exact(0)
+
+    second_keys, second_values = (state.half() for state in _states(torch.tensor([[10]])))
+    simulated.update(second_keys, second_values, 0)
+    assert not exact(7)
+    assert (layer.keys[..., 8, :].float() - first_keys[..., 0, :].float()).abs().max() < 5e-3
+    assert (layer.keys[..., 9, :].float() - second_keys[..., 0, :].float()).abs().max() < 5e-3
+    assert exact(0)
+
+
+def test_decode_writes_without_tiers_are_packed_immediately():
+    ids = torch.arange(1, 9).reshape(1, -1)
+    keys, values = (state.half() for state in _states(ids))
+    simulated, _metrics = simulate_packed_kv_cache(
+        _Cache(keys, values),
+        KVQuantConfig(bits=2, group_size=4, rotation_block=8),
+    )
+    new_keys, new_values = (state.half() for state in _states(torch.tensor([[9]])))
+    simulated.update(new_keys, new_values, 0)
+    gap = (simulated.layers[0].keys[..., 8, :].float()
+           - new_keys[..., 0, :].float()).abs().max().item()
+    assert gap > 5e-2

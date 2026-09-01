@@ -318,6 +318,20 @@ runs rather than compressed-memory or throughput measurements. Vision serving
 will additionally require the checkpoint's `AutoProcessor`; WikiText/C4 text
 perplexity uses its tokenizer directly.
 
+> **Cache-result validity notice (2026-09-01).** Every Qwen3.5-4B cache KL
+> recorded before 2026-09-01 (uniform-versus-mixed tables, the three-seed
+> validation, the 1,024-token confirmation, frozen-map transfer, and the
+> matched K4/V4 controls) was measured with a simulator that shared
+> linear-attention state between its two decode passes under the Transformers
+> release those notebooks installed. The results were independent of the K/V
+> bit width and have been withdrawn; see
+> [`docs/scientific_validity_review_2026-09-01.md`](docs/scientific_validity_review_2026-09-01.md).
+> The simulator now clones all cache state, fails closed on shared storage,
+> and rejects any run whose uniform 8-bit cache does not reproduce the fp16
+> cache (`eval.kv_cache.endpoint_check_bits`). Notebooks pin
+> `transformers==5.9.0`. The notebooks below still run, but their earlier
+> conclusions must be re-established.
+
 Rotation-aware cache experiments use true post-RoPE K/V states. The uniform
 control and held-out dynamic allocator are separate configs:
 
@@ -334,7 +348,8 @@ one K/V state at a time by global teacher KL per exact byte saved, measures the
 joint recipe, and restores the best same-budget uniform recipe if interactions
 make it worse. For native Metal cache throughput across context depths, run
 `scripts/benchmark_rotquant_kv.sh` after building the pinned llama.cpp fork.
-The joint release GGUF embeds the validated frozen 3.25-bpv map. The patched
+The joint release GGUF embeds the frozen 3.25-bpv map selected by the earlier
+cache study; that selection is withdrawn pending re-measurement. The patched
 runtime stores its eight full-attention K/V layers in true Gaussian 2/3/4-bit
 rows with fp16 group scales and rejects non-flash-attention execution rather
 than silently replacing the recipe.
@@ -376,7 +391,8 @@ passes its predeclared PPL, cache, size, and no-adapter gates.
 Once those matched gates pass, open
 [`notebooks/qwen35_4b_joint_winner_export_colab.ipynb`](notebooks/qwen35_4b_joint_winner_export_colab.ipynb).
 It reconstructs the released uniform-W4/FWHT seed-0 weights, pins the current
-Hub revision, embeds the validated frozen mixed 3.25-bpv Gaussian K/V map in
+Hub revision, embeds the frozen mixed 3.25-bpv Gaussian K/V map (selection
+withdrawn; see the validity review) in
 the packed manifest, confirms the released seed-0 perplexity, audits actual
 safetensors bytes and forbidden fallback keys, writes SHA-256 checksums, and
 reloads the checkpoint in a fresh process before it can be published.
@@ -415,7 +431,7 @@ python scripts/run_experiment.py configs/qwen35_4b_lora_qat_cuda.yaml \
 
 Use `--export-deployment-metadata deployment.json` to embed a plain JSON object
 in `rotquant_config.json`. This is used by the joint-winner export notebook to
-keep its validated K/V cache map and release provenance with the weight
+keep its K/V cache map and release provenance with the weight
 artifact. Metadata is declarative: consumers must still apply the K/V recipe
 in their cache runtime.
 

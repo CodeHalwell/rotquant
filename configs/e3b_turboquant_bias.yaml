@@ -1,5 +1,11 @@
 # E3b: TurboQuant Stage-2 QJL correction (this row).
 #
+# STATUS: null control, not a candidate. The estimator is exactly unbiased but
+# its variance multiplies the squared output error by ~pi*d/(2k) relative to
+# no correction (measured x104 at d=4096 and x270 at d=11008 with k=64; see
+# docs/scientific_validity_review_2026-09-01.md). It is retained to confirm
+# the E3 hypothesis that a stochastic residual loses to a deterministic one.
+#
 # scale=turboquant: per-row RMS scale (one per output neuron), much lower metadata
 # overhead than per-group (scale_bits/in_features vs scale_bits/group_size bpw).
 # error_comp=turboquant: Stage-2 QJL sketch (sketch_k=64 sign-projections of the

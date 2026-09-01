@@ -2,6 +2,7 @@
 the Cayley parameters must actually reduce rotated-domain quantisation MSE,
 stay exactly orthogonal, and preserve the linear map end to end.
 """
+import pytest
 import torch
 from torch import nn
 
@@ -212,3 +213,84 @@ def test_butterfly_learned_signs_commit_to_exact_orthogonal_buffer():
         x,
         atol=2e-5,
     )
+
+
+def test_sign_training_starts_at_configured_magnitude_and_commits_flips():
+    from rotquant.rotate import ButterflyRotation
+
+    rotation = ButterflyRotation(64, block=32, seed=3)
+    x = torch.randn(4, 64)
+    before = rotation.rotate_activation(x)
+    original_signs = rotation.signs.clone()
+    logits = rotation.enable_sign_training(1.0, init_magnitude=0.05)
+    assert torch.allclose(logits.abs(), torch.full_like(logits, 0.05))
+    # Hard signs in the forward pass: enabling training changes nothing.
+    assert torch.allclose(rotation.rotate_activation(x), before)
+    with torch.no_grad():
+        logits[0] = -logits[0]
+    rotation.commit_signs()
+    assert rotation.signs[0] == -original_signs[0]
+    assert torch.equal(rotation.signs[1:], original_signs[1:])
+    with pytest.raises(ValueError, match="init_magnitude"):
+        ButterflyRotation(64, block=32, seed=3).enable_sign_training(1.0, 0.0)
+
+
+def test_hessian_gate_restores_fwht_for_a_worse_candidate_and_keeps_an_equal_one():
+    from rotquant.rotate import ButterflyRotation
+    from rotquant.train_rotation import (
+        hessian_reconstruction_error,
+        select_butterfly_checkpoint_hessian,
+    )
+
+    torch.manual_seed(5)
+    d, out = 64, 32
+    weight = torch.randn(out, d)
+    weight[:, :4] *= 20.0  # outlier input channels that only mixing tames
+    x = torch.randn(512, d) * torch.linspace(0.5, 2.0, d)
+    hessian = x.T @ x / 512
+    quant_cfg = QuantConfig(bits=3, group_size=32)
+
+    reference = ButterflyRotation(d, block=32, seed=7)
+    candidate = ButterflyRotation(d, block=32, seed=7)
+    with torch.no_grad():
+        candidate.theta.zero_()  # theta=0 stages do not mix coordinates
+    stats = select_butterfly_checkpoint_hessian(
+        candidate, reference, weight, quant_cfg, hessian)
+    assert stats["selection_objective"] == "hessian"
+    assert not stats["selection_accepted"]
+    assert stats["selection_candidate_mse"] > stats["selection_reference_mse"]
+    assert torch.equal(candidate.theta, reference.theta)
+
+    same = ButterflyRotation(d, block=32, seed=7)
+    stats = select_butterfly_checkpoint_hessian(
+        same, reference, weight, quant_cfg, hessian)
+    assert stats["selection_accepted"]
+
+    plain = hessian_reconstruction_error(reference, weight, quant_cfg, hessian)
+    gptq = hessian_reconstruction_error(
+        reference, weight, QuantConfig(bits=3, group_size=32, error_comp="gptq"),
+        hessian)
+    assert 0 < gptq <= plain * 1.001
+
+
+def test_patch_model_gates_hessian_objective_against_fwht():
+    from rotquant.patch import PatchConfig, patch_model
+
+    torch.manual_seed(9)
+    model = torch.nn.Sequential(torch.nn.Linear(64, 16), torch.nn.Linear(16, 8))
+    x = torch.randn(256, 64) * torch.linspace(0.5, 2.0, 64)
+    hessians = {"0": x.T @ x / 256}
+    config = PatchConfig(
+        quant=QuantConfig(bits=3, group_size=32),
+        rotation="butterfly",
+        block=32,
+        include=["0"],
+        train_rotation={"steps": 2, "lr": 1e-3, "objective": "hessian",
+                        "assignment_scale": "rms"},
+    )
+    stats = {}
+    patch_model(model, config, hessians=hessians, stats_out=stats)
+    train = stats["rotation_train"]
+    assert train["objective"] == "hessian"
+    assert "selection_acceptance_rate" in train
+    assert train["mean_selection_deployed_mse"] <= train["mean_selection_reference_mse"]

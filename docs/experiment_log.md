@@ -434,6 +434,14 @@ and 56.78% figures remain useful logical CUDA estimates, but actual tensor-file
 bytes now supersede them for storage reporting. Resident and peak transient
 memory are still unmeasured.
 
+Review note (2026-09-01): the source index total includes a 241,199,104-byte
+`mtp.*` multi-token-prediction head that `Qwen3_5ForConditionalGeneration`
+never loads and the export therefore never stores. That head is the 238 MB gap
+between the logical estimate and the exported files. Against the 9,078,538,752
+bytes of source tensors that are actually loaded, the like-for-like tensor
+reduction is **58.26%**; quote that figure, not 59.34%, unless both sides
+count the head.
+
 The joint native GGUF is 3,146,308,736 bytes with SHA-256
 `ac70480575ce94d482402ac575e75e12bd01125a85cc32711af13bbd4491ecba`.
 `scripts/verify_rotquant_gguf.py` compared it with the exact joint producer

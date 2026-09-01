@@ -48,16 +48,16 @@ block reconstruction. For the cache, it searches key and value precision
 independently per layer on held-out calibration calls, then freezes the selected
 map for deployment and cross-context evaluation.
 
-In a development study on Qwen3.5-4B, a uniform 4-bit weight profile combined
-with a frozen mixed 3.25-bit-per-value cache obtains mean WikiText-2 perplexity
-\QwenJointMeanPPL{} across three seeds, a \QwenJointMeanRelativePct\% relative
-increase over matched high-precision references. The exported checkpoint's
-tensor files are \ActualTensorReductionPct\% smaller than those of the pinned
-source checkpoint. At every seed, the 3.25-bit cache produces lower teacher KL
-divergence than a matched uniform 4-bit cache, reducing KL by 16.5--23.2\%.
-On held-out 256- and 1,024-token contexts, one frozen map reduces KL by
-\CacheShortReductionPct\% and \CacheLongReductionPct\%, respectively, relative
-to a same-size uniform 3-bit cache. Negative
+In a development study on Qwen3.5-4B, a uniform 4-bit weight profile obtains
+mean WikiText-2 perplexity \QwenJointMeanPPL{} across three seeds, a
+\QwenJointMeanRelativePct\% relative increase over matched high-precision
+references. The exported checkpoint's tensor files are
+\LikeForLikeTensorReductionPct\% smaller than the pinned source checkpoint's
+loaded tensors, counting the same tensor set on both sides. All key--value
+cache quality results in earlier drafts were measured with a cache simulator
+that shared linear-attention state between its two decode passes; they are
+withdrawn pending re-measurement (Section~\ref{sec:validity}), and no cache
+claim is made here. Negative
 results show that learned rotations, block recovery, and LoRA-based
 quantization-aware recovery do not improve every model or operating point.
 We additionally implement a self-describing GGUF extension and llama.cpp/Metal
@@ -98,10 +98,14 @@ This paper makes four contributions:
   codebooks, and exact storage accounting.
   \item We introduce a held-out mixed-precision cache allocator that treats key
   and value sensitivity independently at each layer, measures global teacher
-  divergence per exact byte, and freezes the selected deployment map.
+  divergence per exact byte, and freezes the selected deployment map. Its
+  recorded evaluation on Qwen3.5-4B is withdrawn (Section~\ref{sec:validity});
+  the evaluator now fails closed unless a near-lossless 8-bit cache reproduces
+  the full-precision cache on the same calls.
   \item We report a joint development study on OPT and Qwen3.5-4B, including
   multiple seeds, matched controls, cross-context transfer, negative recovery
-  results, and a documented correction to an initially confounded protocol.
+  results, and two documented protocol corrections, the second of which
+  withdraws every previously reported cache result.
   \item We implement a versioned packed artifact and native llama.cpp/Metal
   path for weights and the selected cache profile, establishing the system
   boundary needed for honest memory and performance measurement.
@@ -279,7 +283,10 @@ Its objective is global teacher KL reduction per exact byte relative to a
 lower-rate state. It constructs a recipe under a target byte budget, measures
 the assembled recipe jointly, and falls back to the best same-budget uniform
 profile if interactions overturn the predicted gain. Candidate construction
-uses no final evaluation calls.
+uses no final evaluation calls. Before any candidate is scored, a uniform
+8-bit Gaussian cache must reproduce the full-precision cache on the same
+held-out calls (teacher KL below $10^{-2}$); otherwise the run is rejected,
+because a floor that survives 8-bit codes cannot be quantization error.
 
 The final Qwen map contains eight full-attention layers. Mean selected
 key/value code widths are not constrained to be equal. A mixed-context map is
@@ -297,11 +304,16 @@ cache map. It also represents the tied input embedding and output projection
 once.
 
 The audited exported Transformers checkpoint contains 200 quantized modules,
-no retained LoRA adapter, and \RotQuantTensorGB{}~GB of tensor files, compared
-with \SourceTensorGB{}~GB for the pinned source checkpoint. This is a measured
-\ActualTensorReductionPct\% tensor-storage reduction and a
-\ActualSnapshotReductionPct\% reduction after including the tokenizer and
-configuration files in both cached snapshots. The native language-path GGUF is
+no retained LoRA adapter, and \RotQuantTensorGB{}~GB of tensor files. The
+pinned source checkpoint holds \SourceTensorGB{}~GB of tensors, of which
+0.241~GB is a multi-token-prediction head (\texttt{mtp.*}) that the
+Transformers model class never loads and the export therefore never stores.
+Against the \SourceTensorExclMtpGB{}~GB of source tensors that are actually
+loaded, the export is a measured \LikeForLikeTensorReductionPct\%
+tensor-storage reduction; the whole-file figures
+(\ActualTensorReductionPct\% for tensor files, \ActualSnapshotReductionPct\%
+for complete snapshots) overstate the reduction because they count the dropped
+head on the source side only. The native language-path GGUF is
 \NativeGGUFGB{}~GB, but it omits the vision tower and is therefore not used for
 the like-for-like storage comparison.
 
@@ -361,6 +373,34 @@ used different C4 calls. The discrepancy was revealed because nominally
 identical uniform-8-bit and restricted-dynamic-8-bit endpoints disagreed. We
 discarded the cross-profile ranking, corrected the evaluation offset, and added
 an endpoint-equivalence regression test. Only corrected runs appear below.
+
+\subsection{Validity notice: cache results withdrawn}
+\label{sec:validity}
+
+A second, more serious protocol failure was found after the cache study was
+complete. The Transformers cache simulator cloned only tensor-valued cache
+attributes. The Transformers release that the cache notebooks installed
+(5.16.x) keeps each linear-attention layer's convolution and recurrent state in
+dictionary attributes that are updated in place, so the ``source'' and
+``packed'' decode passes shared that state and corrupted each other. The
+resulting next-token KL was independent of the code width: uniform 8-bit,
+4-bit, and 2-bit caches all reported KL of roughly 0.55, and 4-bit was worse
+than 2-bit in two of three seeds. Replicating the protocol on the pinned
+Qwen3.5-4B weights with the corrected simulator gives KL of $5\times10^{-4}$,
+$6\times10^{-3}$, and $6.5\times10^{-2}$ for 8-, 4-, and 2-bit caches, whereas
+the defective simulator under the same Transformers release reproduces the
+recorded floor ($0.88$ at 8 bits).
+
+Every cache KL previously reported by this draft, including the
+uniform-versus-mixed tables, the cross-context transfer table, the matched
+K4/V4 controls, and the selection of the frozen 3.25-bpv map, is therefore
+withdrawn. Tables~\ref{tab:cache-transfer} and~\ref{tab:matched} are retained
+only as a record of the withdrawn numbers. Weight-only perplexity results do
+not use the simulator and stand. The simulator now clones all cache state,
+fails closed on shared storage, and evaluates a uniform 8-bit cache on the same
+held-out calls before any candidate; a run whose 8-bit KL exceeds $10^{-2}$ is
+rejected. The cache study will be repeated under that protocol before any
+cache claim is made.
 
 \section{Results}
 
@@ -438,19 +478,21 @@ increasing perplexity by a further 2.00\%. This illustrates why a layerwise
 sensitivity search should not be retained merely because it returns a valid
 mixed recipe.
 
-\subsection{One frozen cache map transfers across contexts}
+\subsection{Frozen cache-map transfer (withdrawn)}
 
-Table~\ref{tab:cache-transfer} compares three frozen mixed maps with uniform
-K3/V3 at the identical 3.25-bpv storage rate. The mixed-context map has the
-lowest worst regret relative to the context-specific optima. It reduces KL by
+\textbf{Withdrawn (Section~\ref{sec:validity}).}
+Table~\ref{tab:cache-transfer} compared three frozen mixed maps with uniform
+K3/V3 at the identical 3.25-bpv storage rate and reported KL reductions of
 \CacheShortReductionPct\% at 256 tokens and \CacheLongReductionPct\% at
-1,024 tokens relative to uniform K3/V3.
+1,024 tokens relative to uniform K3/V3. These values were produced by the
+defective simulator and do not measure quantization error; the table is kept
+only as a record.
 
 \begin{table}[t]
 \centering
 \small
-\caption{Frozen 3.25-bpv cache-map transfer. No map is recalibrated on the
-reported evaluation calls.}
+\caption{Withdrawn: frozen 3.25-bpv cache-map transfer as measured by the
+defective simulator (Section~\ref{sec:validity}). Retained as a record only.}
 \label{tab:cache-transfer}
 \begin{tabular}{lrr}
 \toprule
@@ -464,31 +506,33 @@ Uniform K3/V3 & 0.572441 & 1.540281 \\
 \end{tabular}
 \end{table}
 
-The independently selected context-specific recipes reverse their average
-key/value emphasis: the 256-token allocator selects mean K2.875/V3.125, whereas
-the 1,024-token allocator selects K3.375/V2.625. Key/value sensitivity therefore
-changes with context, motivating mixed-context selection rather than assuming
-that one short-context allocation transfers automatically.
+The apparent reversal of key/value emphasis between the 256-token
+(K2.875/V3.125) and 1,024-token (K3.375/V2.625) allocations was derived from
+the same withdrawn measurements and must not be read as evidence that
+key/value sensitivity changes with context length.
 
 \subsection{Joint profile and matched controls}
 
-Across three seeds, uniform W4 plus the frozen mixed cache obtains perplexities
-14.7029, 14.6091, and 14.3524. The mean is \QwenJointMeanPPL{}, with mean
-relative degradation \QwenJointMeanRelativePct\% and worst-seed degradation
-\QwenJointWorstRelativePct\%. It passes the
-predeclared 5\% mean and 10\% worst development gates.
+Across three seeds, uniform W4 weights obtain perplexities 14.7029, 14.6091,
+and 14.3524 (weight perplexity does not depend on the cache recipe). The mean
+is \QwenJointMeanPPL{}, with mean relative degradation
+\QwenJointMeanRelativePct\% and worst-seed degradation
+\QwenJointWorstRelativePct\%. It passes the predeclared 5\% mean and 10\%
+worst development gates.
 
-An initially proposed cache gate compared the worst candidate seed with a
-seed-0 control and was therefore inconclusive. We ran missing K4/V4 controls at
-seeds 1 and 2 and replaced it with within-seed ratios. Table~\ref{tab:matched}
-shows that the 3.25-bpv candidate has lower KL than the 4.25-bpv K4/V4 control
-in every seed, with 16.5--23.2\% KL reduction.
+\textbf{Withdrawn (Section~\ref{sec:validity}).} An initially proposed cache
+gate compared the worst candidate seed with a seed-0 control and was therefore
+inconclusive; missing K4/V4 controls were run at seeds 1 and 2 and replaced it
+with within-seed ratios. Table~\ref{tab:matched} recorded the 3.25-bpv
+candidate below the 4.25-bpv K4/V4 control in every seed, with 16.5--23.2\% KL
+reduction. Those measurements came from the defective simulator and are
+withdrawn together with the selection of the map itself.
 
 \begin{table}[t]
 \centering
 \small
-\caption{Matched cache comparison on uniform W4 weights. Candidate and control
-share the weight model, seed, and held-out calls.}
+\caption{Withdrawn: matched cache comparison as measured by the defective
+simulator (Section~\ref{sec:validity}). Retained as a record only.}
 \label{tab:matched}
 \begin{tabular}{rrrr}
 \toprule
@@ -501,11 +545,11 @@ Seed & Mixed 3.25 KL & K4/V4 KL & Reduction \\
 \end{tabular}
 \end{table}
 
-The candidate/control KL ratio averages \MatchedCacheMeanRatio{} and is at most
-\MatchedCacheWorstRatio{}. The result
-is notable because the mixed profile uses one fewer logical bit per stored cache
-value than the uniform control. However, the continuation trajectories are
-short, and no long-context perplexity or retrieval benchmark has yet been run.
+The recorded candidate/control KL ratio averaged \MatchedCacheMeanRatio{} with
+a maximum of \MatchedCacheWorstRatio{}. Under the corrected simulator the
+K4/V4 control itself costs only about $6\times10^{-3}$ nats on the source
+model, so differences between 3.25-bpv recipes will be at the $10^{-3}$ level
+and will need far more than 64 evaluated tokens per seed to resolve.
 
 \subsection{Recovery can be actively unhelpful}
 
@@ -595,11 +639,19 @@ supports an internal method comparison, not state-of-the-art superiority.
 
 \paragraph{Storage is measured; resident memory is not.}
 The exported Transformers tensor files measure \RotQuantTensorGB{}~GB versus
-\SourceTensorGB{}~GB for the pinned source, a \ActualTensorReductionPct\%
-reduction. This supersedes the earlier \EstimatedWeightReductionPct\% logical
-estimate for storage reporting. Publication still requires resident and peak
-transient-memory measurements. The native GGUF omits the vision tower, so its
-file size cannot serve as the like-for-like multimodal comparison.
+\SourceTensorExclMtpGB{}~GB of loaded source tensors, a
+\LikeForLikeTensorReductionPct\% reduction; the raw file-to-file figure of
+\ActualTensorReductionPct\% counts the unloaded multi-token-prediction head on
+the source side only. This supersedes the earlier
+\EstimatedWeightReductionPct\% logical estimate for storage reporting.
+Publication still requires resident and peak transient-memory measurements.
+The native GGUF omits the vision tower, so its file size cannot serve as the
+like-for-like multimodal comparison.
+
+\paragraph{Cache quality is unmeasured.}
+Every cache KL in earlier drafts is withdrawn (Section~\ref{sec:validity}).
+The frozen map embedded in the released artifact is unvalidated until the
+cache study is repeated with the endpoint-checked simulator.
 
 \paragraph{Fallback is not deployment.}
 CUDA and MPS quality experiments cache reconstructed FP16 weights for speed.
@@ -621,15 +673,16 @@ The paper must not characterize the present result as full multimodal support.
 
 \method treats low-bit inference as a joint selection-and-deployment problem.
 Structured rotations and Gaussian scalar codes make a simple 4-bit weight
-profile viable, while held-out layerwise allocation yields a frozen 3.25-bpv
-cache map that outperforms equal-size uniform cache quantization across short
-and longer contexts. The final profile passes matched three-seed development
-gates, and a native format preserves its representation through loading and
-execution. Equally important, several plausible recovery and dynamic-weight
-strategies fail their gates, demonstrating the value of rollback and matched
-controls. The next stage is not to add more optimization knobs; it is to run the
-missing baseline, task, long-context, resident-memory, and fused-runtime study
-needed to establish external validity.
+profile viable, and a native format preserves its representation through
+loading and execution. The cache half of the study must be repeated: its
+recorded results were produced by a simulator defect that no recipe comparison
+could have exposed without a near-lossless endpoint, which the protocol now
+requires. Equally important, several plausible recovery and dynamic-weight
+strategies fail their gates, demonstrating the value of rollback, matched
+controls, and endpoint checks. The next stage is not to add more optimization
+knobs; it is to re-run the cache study and the missing baseline, task,
+long-context, resident-memory, and fused-runtime evaluations needed to
+establish external validity.
 
 \section*{Reproducibility Statement}
 
@@ -677,8 +730,10 @@ $K$ bits & 2 \\
 $V$ bits & 4 \\
 \bottomrule
 \end{tabular}
-\caption{Frozen mixed-context deployment map. Adding 0.25 bpv for FP16 scales
-amortized over groups of 64 gives 3.25 effective bpv.}
+\caption{Frozen mixed-context deployment map as embedded in the released
+artifact. It was selected under the withdrawn measurements
+(Section~\ref{sec:validity}) and is unvalidated. Adding 0.25 bpv for FP16
+scales amortized over groups of 64 gives 3.25 effective bpv.}
 \end{table}
 
 \section{Publication Completion Checklist}

@@ -171,6 +171,23 @@ and stand.
   simulator must report non-zero recurrent state, KL < 10⁻⁴ at 8 bits, and
   strictly decreasing KL from 2 to 4 to 8 bits. It fails on the previous code
   under 5.16.1 and passes with the fix under both 5.9.0 and 5.16.1.
+- Mandatory endpoint check (`KVCacheEvalConfig.endpoint_check_bits=8`,
+  `endpoint_max_kl=0.01`): a uniform 8-bit Gaussian cache is evaluated on the
+  held-out calls before any candidate or allocator; a run whose endpoint KL
+  exceeds the limit raises. `endpoint_check_bits: null` disables it
+  explicitly.
+- Every Colab notebook pins `transformers==5.9.0`.
+- The tiered simulator tracks absolute positions: decode writes are no
+  longer their own sequence, sinks are decided by absolute position, and rows
+  are packed once when they leave the recent window (§3.3).
+- GPTQ with 8-bit scales snaps refit scales onto the frozen affine grid and
+  every path retains its encoded scale triple verbatim (§3.2).
+- The Hessian rotation objective is gated against seeded FWHT under the exact
+  deployed quantizer, and learned-sign logits start at ±0.1 (§3.2).
+- The publication manifest, paper draft, README, experiment log and science
+  guide mark the cache results as withdrawn and report like-for-like storage
+  (§3.1). `docs/roadmap.md` reserves the name QRAT for the future
+  quantization-and-rotation-aware training method.
 
 ### 2.6 What must happen before any cache claim is made again
 
@@ -302,20 +319,27 @@ it so.
 
 ## 4. Recommended order of work
 
-1. Merge the simulator fix and regression test; pin Transformers in every
-   notebook; add the K8/V8 endpoint row to each cache protocol.
+Items 1, 3 (code side) and 4 are done on this branch (§2.5); the GPU work
+remains.
+
+1. Merge the simulator fix, endpoint check and regression tests; the
+   notebooks now pin Transformers.
 2. Re-run the cache matrix, transfer and matched-control studies with the
    fixed simulator and ≥10⁴ evaluated tokens per seed; re-select and re-embed
    the deployment map; update the experiment log, publication manifest and
-   paper. Until then, mark every cache number as invalid rather than
-   "development".
-3. Fix the GPTQ/8-bit scale inconsistency and make the learned-sign arm able
-   to flip; add the packed-versus-FWHT gate to the Hessian objective; then run
-   the factor ablation.
-4. Quote 58.3 % (MTP excluded on both sides) for storage, or export the MTP
-   head and quote a true whole-file number.
+   paper. Until then every cache number is marked withdrawn.
+3. Run the factor ablation now that the GPTQ/8-bit scale path is exact, the
+   learned-sign arm can flip, and the Hessian objective is gated.
+4. Storage is now quoted like-for-like (58.26 %); exporting the MTP head
+   would allow a true whole-file number instead.
 5. Replace token-level intervals with document-level (cluster) bootstraps and
-   never report a bootstrap on four samples.
+   never report a bootstrap on four samples; the stage summary now flags
+   intervals below 20 paired samples as unreliable.
+6. Reserve the name QRAT for the future quantization-and-rotation-aware
+   training method (roadmap entry added); the properly budgeted recovery
+   study in `configs/qwen35_4b_recovery_cuda.yaml` is its first candidate,
+   and the STE-through-rotation question from the 2026-08-31 review belongs
+   to its design.
 
 ## 5. Reproduction notes
 

@@ -36,8 +36,58 @@ software.
 - `scripts/run_experiment.py`'s `run()` is decomposed into documented stage
   functions.
 
+### Added
+
+- `rotquant.eval.kv_cache`: a mandatory validity endpoint
+  (`KVCacheEvalConfig.endpoint_check_bits`, default 8, and
+  `endpoint_max_kl`, default 0.01). A uniform Gaussian cache at that width is
+  evaluated on the held-out calls before any candidate or allocator; a run
+  whose endpoint KL exceeds the limit is rejected, because a floor that
+  survives 8-bit codes is not quantization error. The report is stored under
+  `metrics["kv_cache"]["endpoint_check"]`.
+- Tiered cache simulation now tracks absolute positions: a decode write is no
+  longer treated as its own sequence, sink rows are decided by absolute
+  position, and rows are packed exactly once when they leave the recent
+  window (previously every decode write stayed fp16 forever).
+- `train_rotation.select_butterfly_checkpoint_hessian` and
+  `hessian_reconstruction_error`: the Hessian rotation objective is now gated
+  against seeded FWHT under the exact deployed quantizer (including GPTQ), as
+  the activation objective already was.
+- `ButterflyRotation.enable_sign_training(init_magnitude=...)` and
+  `RotationTrainConfig.sign_init_magnitude` (default 0.1): the previous ±1
+  logit initialisation could never cross zero under the shipped learning
+  rates, so the learned-sign arm was inert.
+- `rotquant._internal.rotate_hessian` and `encoded_storage_scales`.
+- Tests: KV bit-monotonicity on a hybrid model, endpoint-check plumbing,
+  tiered ageing, exact code/scale storage consistency, sign initialisation,
+  and the Hessian gate.
+- `docs/scientific_validity_review_2026-09-01.md` and
+  `docs/change_report_2026-09-01.md` (every change on the review branch, its
+  reason and evidence, what is withdrawn, and what future generations must
+  implement).
+
+### Changed
+
+- Every Colab notebook now pins `transformers==5.9.0`; the unpinned
+  `>=5.9,<6` range resolved to 5.16.x on 2026-08-29 and exposed the cache
+  simulator defect below.
+- `scripts/run_qwen35_next_stage.py` paired intervals carry
+  `interval_reliable` (false below 20 paired samples; a percentile bootstrap
+  of four prompts is not a 95 % interval).
+- Publication manifest and paper: all cache-quality results are marked
+  withdrawn; storage is reported like-for-like against the loaded source
+  tensors (the source index includes a 241 MB MTP head that the model never
+  loads), 58.26 % rather than 59.34 %.
+- `docs/roadmap.md` reserves the name QRAT for a future
+  quantization-and-rotation-aware training method.
+
 ### Fixed
 
+- With 8-bit double-quantised scales, GPTQ's lazily refit group scales were
+  encoded per group column while the stored scales were encoded row-major, so
+  packed codes were assigned against values the artifact did not store
+  (~1e-3 relative). Every path now encodes scales exactly once and retains
+  that triple verbatim; GPTQ snaps refit scales onto the frozen grid.
 - `rotquant.eval.kv_cache` cloned only tensor-valued cache attributes, so on
   Transformers releases that keep linear-attention conv/recurrent state in
   `dict` attributes (5.16.x) the simulated packed cache shared, and the two

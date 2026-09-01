@@ -145,7 +145,23 @@ def validate_numerical_claims(manifest: dict[str, Any]) -> tuple[list[dict[str, 
     rotquant_tensor_bytes = int(models["rotquant"]["tensor_bytes"])
     source_artifact_bytes = int(models["source"]["complete_snapshot_bytes"])
     rotquant_artifact_bytes = int(models["rotquant"]["complete_snapshot_bytes"])
+    # Like-for-like storage: the source index counts an MTP head that the
+    # Transformers model never loads and the export never stores.  Compare
+    # against the loaded tensors only, and check the reported figure.
+    loaded_source_bytes = int(
+        models["source"].get("tensor_bytes_excluding_mtp", source_tensor_bytes)
+    )
+    like_for_like = 100.0 * (1.0 - rotquant_tensor_bytes / loaded_source_bytes)
+    if "reported_like_for_like_tensor_reduction_pct" in joint:
+        checks.append(_close(
+            like_for_like,
+            float(joint["reported_like_for_like_tensor_reduction_pct"]),
+            0.005,
+            "like-for-like tensor storage reduction",
+        ))
     derived = {
+        "like_for_like_tensor_storage_reduction_pct": like_for_like,
+        "loaded_source_tensor_bytes": loaded_source_bytes,
         "joint_mean_ppl": mean_ppl,
         "joint_mean_relative_ppl_pct": mean_relative,
         "joint_worst_relative_ppl_pct": worst_relative,
@@ -221,6 +237,8 @@ def render_tex_macros(manifest: dict[str, Any], derived: dict[str, float]) -> st
         f"\\newcommand{{\\ActualTensorReductionPct}}{{{_tex_number(derived['actual_tensor_storage_reduction_pct'], 2)}}}",
         f"\\newcommand{{\\ActualSnapshotReductionPct}}{{{_tex_number(derived['actual_snapshot_storage_reduction_pct'], 2)}}}",
         f"\\newcommand{{\\SourceTensorGB}}{{{int(models['source']['tensor_bytes']) / 1e9:.4f}}}",
+        f"\\newcommand{{\\SourceTensorExclMtpGB}}{{{derived['loaded_source_tensor_bytes'] / 1e9:.4f}}}",
+        f"\\newcommand{{\\LikeForLikeTensorReductionPct}}{{{_tex_number(derived['like_for_like_tensor_storage_reduction_pct'], 2)}}}",
         f"\\newcommand{{\\RotQuantTensorGB}}{{{int(models['rotquant']['tensor_bytes']) / 1e9:.4f}}}",
         f"\\newcommand{{\\CacheShortReductionPct}}{{{_tex_number(float(transfer['reported_short_reduction_pct']), 1)}}}",
         f"\\newcommand{{\\CacheLongReductionPct}}{{{_tex_number(float(transfer['reported_long_reduction_pct']), 1)}}}",
