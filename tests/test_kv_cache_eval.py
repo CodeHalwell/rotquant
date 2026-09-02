@@ -150,7 +150,9 @@ def test_cache_eval_supplies_absolute_decode_positions_when_supported():
 
     evaluate_kv_cache(model, [{"input_ids": ids}], config, "cpu")
 
-    assert model.decode_positions == [8, 8, 9, 9, 10, 10]
+    # The mandatory 8-bit endpoint pass runs first on the same calls, then
+    # the candidate; both supply the absolute one-token position.
+    assert model.decode_positions == [8, 8, 9, 9, 10, 10] * 2
 
 
 def test_qwen35_multimodal_stale_rope_state_accepts_cached_decode():
@@ -365,3 +367,241 @@ def test_cache_eval_seed_is_forwarded_to_quant_config():
     assert config.quant_config().codebook == "spherical"
     assert config.quant_config().codebook_dim == 64
     assert config.quant_config().bias_correction == "length"
+
+
+def test_endpoint_check_runs_first_and_passes_on_a_faithful_simulator():
+    ids = torch.arange(1, 25).reshape(1, -1) % 31
+    config = KVCacheEvalConfig(
+        bits=2,
+        group_size=4,
+        rotation_block=8,
+        batches=1,
+        prompt_len=8,
+        continuation_len=4,
+        skip=0,
+    )
+    metrics = evaluate_kv_cache(
+        _CacheModel(), [{"input_ids": ids}], config, "cpu")
+
+    endpoint = metrics["endpoint_check"]
+    assert endpoint["bits"] == 8
+    assert endpoint["passed"]
+    assert endpoint["mean_teacher_kl"] <= config.endpoint_max_kl
+    assert endpoint["prefill_kv_nmse"] < metrics["prefill_kv_nmse"]
+
+
+def test_endpoint_check_fails_closed_on_a_bit_independent_floor(monkeypatch):
+    import rotquant.eval.kv_cache as module
+
+    faithful = module._evaluate_kv_cache
+
+    def corrupted(model, batches, config, device, layer_configs=None):
+        metrics = faithful(model, batches, config, device, layer_configs)
+        metrics["mean_teacher_kl"] = 0.5  # the same floor at every bit width
+        return metrics
+
+    monkeypatch.setattr(module, "_evaluate_kv_cache", corrupted)
+    ids = torch.arange(1, 25).reshape(1, -1) % 31
+    config = KVCacheEvalConfig(
+        bits=4,
+        group_size=4,
+        rotation_block=8,
+        batches=1,
+        prompt_len=8,
+        continuation_len=4,
+        skip=0,
+    )
+    with pytest.raises(RuntimeError, match="endpoint check failed"):
+        evaluate_kv_cache(_CacheModel(), [{"input_ids": ids}], config, "cpu")
+
+
+def test_endpoint_check_can_be_disabled_explicitly():
+    ids = torch.arange(1, 25).reshape(1, -1) % 31
+    config = KVCacheEvalConfig(
+        bits=4,
+        group_size=4,
+        rotation_block=8,
+        batches=1,
+        prompt_len=8,
+        continuation_len=4,
+        skip=0,
+        endpoint_check_bits=None,
+    )
+    metrics = evaluate_kv_cache(
+        _CacheModel(), [{"input_ids": ids}], config, "cpu")
+    assert "endpoint_check" not in metrics
+
+
+def test_tiered_cache_requantizes_rows_that_age_out_of_the_recent_window():
+    ids = torch.arange(1, 9).reshape(1, -1)
+    keys, values = (state.half() for state in _states(ids))
+    source_keys = keys.clone()
+    simulated, _metrics = simulate_packed_kv_cache(
+        _Cache(keys, values),
+        KVQuantConfig(bits=2, group_size=4, rotation_block=8,
+                      sink_tokens=1, recent_window=2),
+    )
+    layer = simulated.layers[0]
+
+    def exact(position: int) -> bool:
+        # fp16 tiers are stored in the rotated basis, so an "exact" row is
+        # exact up to one fp16 rounding of the rotation round trip (~1e-3);
+        # a 2-bit packed row differs by ~0.3.
+        gap = (layer.keys[..., position, :].float()
+               - source_keys[..., position, :].float()).abs().max().item()
+        return gap < 5e-3
+
+    # After prefill: the sink and the two newest rows are exact, the middle is packed.
+    assert exact(0) and exact(6) and exact(7)
+    assert not exact(3)
+
+    first_keys, first_values = (state.half() for state in _states(torch.tensor([[9]])))
+    simulated.update(first_keys, first_values, 0)
+    assert layer.keys.shape[-2] == 9
+    # Row 6 has left the two-row window and is packed exactly once; row 7 and
+    # the new row 8 remain exact; the sink is never packed.
+    assert not exact(6)
+    assert exact(7)
+    assert (layer.keys[..., 8, :].float() - first_keys[..., 0, :].float()).abs().max() < 5e-3
+    assert exact(0)
+
+    second_keys, second_values = (state.half() for state in _states(torch.tensor([[10]])))
+    simulated.update(second_keys, second_values, 0)
+    assert not exact(7)
+    assert (layer.keys[..., 8, :].float() - first_keys[..., 0, :].float()).abs().max() < 5e-3
+    assert (layer.keys[..., 9, :].float() - second_keys[..., 0, :].float()).abs().max() < 5e-3
+    assert exact(0)
+
+
+def test_decode_writes_without_tiers_are_packed_immediately():
+    ids = torch.arange(1, 9).reshape(1, -1)
+    keys, values = (state.half() for state in _states(ids))
+    simulated, _metrics = simulate_packed_kv_cache(
+        _Cache(keys, values),
+        KVQuantConfig(bits=2, group_size=4, rotation_block=8),
+    )
+    new_keys, new_values = (state.half() for state in _states(torch.tensor([[9]])))
+    simulated.update(new_keys, new_values, 0)
+    gap = (simulated.layers[0].keys[..., 8, :].float()
+           - new_keys[..., 0, :].float()).abs().max().item()
+    assert gap > 5e-2
+
+
+def _chunk_and_stepwise(prefill_ids, new_ids, quant):
+    keys, values = (state.half() for state in _states(prefill_ids))
+    chunked, _metrics = simulate_packed_kv_cache(
+        _Cache(keys.clone(), values.clone()), quant)
+    stepwise, _metrics = simulate_packed_kv_cache(
+        _Cache(keys.clone(), values.clone()), quant)
+    new_keys, new_values = (state.half() for state in _states(new_ids))
+    chunked.update(new_keys, new_values, 0)
+    for column in range(new_ids.shape[1]):
+        stepwise.update(new_keys[..., column:column + 1, :],
+                        new_values[..., column:column + 1, :], 0)
+    return chunked, stepwise, new_keys
+
+
+def _row_gap(cache, position: int, reference: torch.Tensor) -> float:
+    return (cache.layers[0].keys[..., position, :].float()
+            - reference.float()).abs().max().item()
+
+
+def test_chunked_tiered_writes_pack_each_row_exactly_once():
+    quant = KVQuantConfig(bits=2, group_size=4, rotation_block=8,
+                          sink_tokens=1, recent_window=2)
+    new_ids = torch.tensor([[9, 10, 11, 12, 13]])
+    chunked, stepwise, new_keys = _chunk_and_stepwise(
+        torch.arange(1, 9).reshape(1, -1), new_ids, quant)
+
+    assert chunked.layers[0].keys.shape[-2] == 13
+    # A five-row write whose first three rows leave the two-row window at
+    # once must produce the same cache as the same rows written one at a time
+    # (each row rotated, held in fp16 and packed exactly once).
+    assert torch.equal(chunked.layers[0].keys, stepwise.layers[0].keys)
+    assert torch.equal(chunked.layers[0].values, stepwise.layers[0].values)
+    # Rows that left the window are packed; rows inside it are exact up to
+    # the fp16 rotation round trip.
+    assert _row_gap(chunked, 8, new_keys[..., 0, :]) > 5e-2
+    assert _row_gap(chunked, 10, new_keys[..., 2, :]) > 5e-2
+    assert _row_gap(chunked, 11, new_keys[..., 3, :]) < 5e-3
+    assert _row_gap(chunked, 12, new_keys[..., 4, :]) < 5e-3
+
+
+def test_chunked_tiered_writes_are_invariant_to_artifact_wide_quantizer_state():
+    """Ageing must not group rows by how the decode happened to be chunked.
+
+    8-bit affine scale blocks and a calibrated codebook are fitted across the
+    matrix being packed, so quantizing a whole aged slice at once would make
+    the cache depend on chunk size. The repository's cache configurations use
+    ``scale_bits: 8``, which the 16-bit case above cannot detect.
+    """
+    base = torch.arange(1, 9).reshape(1, -1)
+    for new_ids, overrides in (
+        (torch.tensor([[9, 10, 11, 12, 13]]),
+         {"scale_bits": 8, "scale_quant_group_size": 4}),
+        (torch.tensor([[9, 10, 11, 12, 13, 14, 15, 16, 17]]),
+         {"scale_bits": 8, "scale_quant_group_size": 4}),
+        (torch.tensor([[9, 10, 11, 12, 13]]),
+         {"scale_bits": 8, "scale_quant_group_size": 4,
+          "codebook": "calibrated"}),
+    ):
+        quant = KVQuantConfig(bits=2, group_size=4, rotation_block=8,
+                              sink_tokens=1, recent_window=2, **overrides)
+        chunked, stepwise, _ = _chunk_and_stepwise(base, new_ids, quant)
+        assert torch.equal(chunked.layers[0].keys, stepwise.layers[0].keys), overrides
+        assert torch.equal(
+            chunked.layers[0].values, stepwise.layers[0].values), overrides
+
+def test_chunked_tiered_writes_decide_sinks_by_absolute_position():
+    quant = KVQuantConfig(bits=2, group_size=4, rotation_block=8,
+                          sink_tokens=3, recent_window=2)
+    new_ids = torch.tensor([[3, 4, 5, 6]])
+    # The two-row prefill is shorter than the sink prefix, so the write's
+    # first row (absolute position 2) is a sink and stays exact; position 3
+    # ages out of the window immediately; positions 4 and 5 stay exact.
+    chunked, stepwise, new_keys = _chunk_and_stepwise(
+        torch.arange(1, 3).reshape(1, -1), new_ids, quant)
+
+    assert chunked.layers[0].keys.shape[-2] == 6
+    assert torch.equal(chunked.layers[0].keys, stepwise.layers[0].keys)
+    assert torch.equal(chunked.layers[0].values, stepwise.layers[0].values)
+    assert _row_gap(chunked, 2, new_keys[..., 0, :]) < 5e-3
+    assert _row_gap(chunked, 3, new_keys[..., 1, :]) > 5e-2
+    assert _row_gap(chunked, 4, new_keys[..., 2, :]) < 5e-3
+    assert _row_gap(chunked, 5, new_keys[..., 3, :]) < 5e-3
+
+
+def test_cache_level_state_is_counted_in_the_byte_accounting():
+    """State stored on the cache, not in a layer, is still an unpacked cost.
+
+    ``_clone_cache`` clones it and the shared-storage check sees it, so the
+    byte accounting must see it too; otherwise it vanishes from
+    ``non_kv_state_bytes`` and the whole-cache ratio reads too favourably.
+    """
+    ids = torch.arange(1, 9).reshape(1, -1)
+    keys, values = _states(ids)
+
+    baseline = _Cache(keys.clone(), values.clone())
+    _plain, plain_metrics = simulate_packed_kv_cache(
+        baseline, KVQuantConfig(bits=4, group_size=4, rotation_block=8))
+
+    source = _Cache(keys.clone(), values.clone())
+    # Some Transformers caches hold conv/recurrent state on the cache object.
+    source.global_state = torch.ones(2, 64)
+    source.grouped_state = {0: torch.ones(3, 32)}
+    extra = (source.global_state.numel() * source.global_state.element_size()
+             + 3 * 32 * source.grouped_state[0].element_size())
+
+    packed, metrics = simulate_packed_kv_cache(
+        source, KVQuantConfig(bits=4, group_size=4, rotation_block=8))
+
+    assert metrics["non_kv_state_bytes"] == plain_metrics["non_kv_state_bytes"] + extra
+    assert (metrics["source_total_cache_bytes"]
+            == plain_metrics["source_total_cache_bytes"] + extra)
+    # Unpacked state is added to both sides, so the ratio can only fall.
+    assert (metrics["total_cache_compression_ratio"]
+            < plain_metrics["total_cache_compression_ratio"])
+
+    # And the clone still isolates it.
+    assert packed.global_state is not source.global_state
+    assert packed.grouped_state[0] is not source.grouped_state[0]

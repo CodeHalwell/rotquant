@@ -21,6 +21,7 @@ import torch
 from torch import nn
 
 from .quantize import _encode_storage_scales as encode_storage_scales
+from .quantize import _encoded_storage_scales as encoded_storage_scales
 from .quantize import _expand_scales as expand_scales
 from .quantize import _generate_sketch_matrix as generate_sketch_matrix
 from .quantize import _group_scales_rms as group_scales_rms
@@ -30,13 +31,33 @@ from .quantize import _storage_scales as storage_scales
 __all__ = [
     "cpu_staging_linear",
     "encode_storage_scales",
+    "encoded_storage_scales",
     "expand_scales",
     "generate_sketch_matrix",
     "get_parent",
     "group_scales_rms",
     "quantize_groups",
+    "rotate_hessian",
     "storage_scales",
 ]
+
+
+@torch.no_grad()
+def rotate_hessian(rotation, hessian: torch.Tensor) -> torch.Tensor:
+    """Return ``R H R^T`` without materialising a dense structured rotation.
+
+    ``rotate_activation(X)`` computes ``X R^T``.  Applying it once to ``H`` and
+    once to the transpose performs the two-sided transform in
+    O(d^2 log(block)) for FWHT/butterfly rotations instead of the O(d^3) dense
+    products that would dominate GPTQ patching.  The final symmetrisation
+    removes harmless transform round-off.
+    """
+    work = hessian.to(dtype=torch.float32)
+    right_rotated = rotation.rotate_activation(work)
+    rotated = rotation.rotate_activation(
+        right_rotated.transpose(-1, -2)
+    ).transpose(-1, -2)
+    return ((rotated + rotated.transpose(-1, -2)) * 0.5).contiguous()
 
 
 def get_parent(model: nn.Module, dotted: str) -> tuple[nn.Module, str]:

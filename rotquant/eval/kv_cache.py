@@ -55,10 +55,26 @@ class KVCacheEvalConfig:
     recent_window: int = 0
     bootstrap_draws: int = 2_000
     bootstrap_seed: int = 17
+    # Mandatory validity endpoint: a uniform Gaussian cache at this code width
+    # is evaluated on the same held-out calls first and must reproduce the
+    # full-precision cache almost exactly.  A floor that survives 8-bit codes
+    # means the two decode passes differ by something other than quantization
+    # and every recipe comparison built on the metric is void.  ``None``
+    # disables the check explicitly.
+    endpoint_check_bits: int | None = 8
+    endpoint_max_kl: float = 0.01
 
     def __post_init__(self) -> None:
         if self.batches < 1:
             raise ValueError("KV-cache evaluation requires batches >= 1")
+        if self.endpoint_check_bits is not None and (
+            isinstance(self.endpoint_check_bits, bool)
+            or not isinstance(self.endpoint_check_bits, int)
+            or not 1 <= self.endpoint_check_bits <= 16
+        ):
+            raise ValueError("endpoint_check_bits must be None or an integer in [1, 16]")
+        if self.endpoint_max_kl < 0:
+            raise ValueError("endpoint_max_kl must be nonnegative")
         if self.prompt_len < 2 or self.continuation_len < 1:
             raise ValueError("KV-cache prompt/continuation lengths are too small")
         if self.eval_offset_batches < 0:
@@ -128,30 +144,89 @@ class KVDynamicConfig:
         return self.candidate_bits if selected is None else selected
 
 
+def _clone_tree(value):
+    """Clone every tensor reachable through plain containers.
+
+    Transformers cache layers have stored linear-attention conv/recurrent
+    state both as direct tensor attributes (5.9) and as ``dict[int, Tensor]``
+    attributes (5.16).  Those states are updated *in place* during decode, so a
+    shallow container copy would silently share them between the source and
+    packed caches and the second decode pass would see state already advanced
+    by the first.  Every tensor must therefore be cloned wherever it lives.
+    """
+    if isinstance(value, torch.Tensor):
+        return value.clone()
+    if isinstance(value, dict):
+        return {key: _clone_tree(item) for key, item in value.items()}
+    if isinstance(value, list):
+        return [_clone_tree(item) for item in value]
+    if isinstance(value, tuple):
+        return tuple(_clone_tree(item) for item in value)
+    return copy.copy(value)
+
+
+def _iter_tensors(value):
+    if isinstance(value, torch.Tensor):
+        yield value
+    elif isinstance(value, dict):
+        for item in value.values():
+            yield from _iter_tensors(item)
+    elif isinstance(value, (list, tuple)):
+        for item in value:
+            yield from _iter_tensors(item)
+
+
+def _iter_cache_tensors(cache):
+    """Every tensor the cache owns, in its layers and on the cache itself.
+
+    Sharing detection, cloning and byte accounting must all see the same
+    tensors: state counted by one and missed by another is exactly how an
+    unmeasured cache cost hides inside a compression ratio.
+    """
+    for layer in cache.layers:
+        yield from _iter_tensors(vars(layer))
+    for name, value in vars(cache).items():
+        if name == "layers":
+            continue
+        yield from _iter_tensors(value)
+
+
+def _storage_keys(cache) -> set[tuple[str, int]]:
+    return {
+        (str(tensor.device), tensor.untyped_storage().data_ptr())
+        for tensor in _iter_cache_tensors(cache) if tensor.numel()
+    }
+
+
 def _clone_cache(cache):
-    """Clone tensor state without relying on deepcopy of non-leaf tensors."""
+    """Clone all cache state so source and packed decode passes never interact."""
     cloned = copy.copy(cache)
     cloned.layers = []
     for layer in cache.layers:
         layer_copy = copy.copy(layer)
         for name, value in vars(layer).items():
-            if isinstance(value, torch.Tensor):
-                setattr(layer_copy, name, value.clone())
-            else:
-                setattr(layer_copy, name, copy.copy(value))
+            setattr(layer_copy, name, _clone_tree(value))
         cloned.layers.append(layer_copy)
+    for name, value in vars(cache).items():
+        if name != "layers" and isinstance(value, (torch.Tensor, dict, list, tuple)):
+            setattr(cloned, name, _clone_tree(value))
+    shared = _storage_keys(cache) & _storage_keys(cloned)
+    if shared:
+        raise RuntimeError(
+            "cloned cache still shares tensor storage with the source cache; "
+            "the source/packed decode passes would corrupt each other"
+        )
     return cloned
 
 
 def _cache_tensor_bytes(cache) -> int:
     storages: dict[tuple[str, int], int] = {}
-    for layer in cache.layers:
-        for value in vars(layer).values():
-            if not isinstance(value, torch.Tensor) or value.numel() == 0:
-                continue
-            storage = value.untyped_storage()
-            key = (str(value.device), storage.data_ptr())
-            storages[key] = storage.nbytes()
+    for value in _iter_cache_tensors(cache):
+        if value.numel() == 0:
+            continue
+        storage = value.untyped_storage()
+        key = (str(value.device), storage.data_ptr())
+        storages[key] = storage.nbytes()
     return sum(storages.values())
 
 
@@ -188,6 +263,12 @@ def simulate_packed_kv_cache(
     packed_kv_bytes = 0
     full_precision_kv_elements = 0
     rotations: dict[int, tuple[Any, Any]] = {}
+    # Position tiers are absolute.  ``pending_start`` is the first position
+    # still held in fp16 only because it is inside the recent window; rows
+    # below it (except the sink prefix) are packed, and rows are re-packed
+    # exactly once when they age out of the window during decode.
+    tiers: dict[int, tuple[int, int]] = {}
+    pending_start: dict[int, int] = {}
     n_kv_layers = 0
 
     for layer_idx, layer in enumerate(simulated.layers):
@@ -208,6 +289,10 @@ def simulate_packed_kv_cache(
         packed_keys = quantize_kv(keys, key_rotation, layer_config)
         packed_values = quantize_kv(
             values, value_rotation, layer_config, value=True)
+        sinks, recent = layer_config.sink_tokens, layer_config.recent_window
+        sequence = int(keys.shape[-2])
+        tiers[layer_idx] = (sinks, recent)
+        pending_start[layer_idx] = max(sinks, sequence - recent) if recent else sequence
         reconstructed_keys = _reconstruct(packed_keys, keys)
         reconstructed_values = _reconstruct(packed_values, values)
         key_squared_error += float((
@@ -240,18 +325,62 @@ def simulate_packed_kv_cache(
 
     original_update = simulated.update
 
+    def requantize_aged_rows(layer, layer_idx, pair, layer_config, new_length):
+        _sinks, recent = tiers[layer_idx]
+        aged_start = pending_start[layer_idx]
+        aged_end = new_length - recent
+        if aged_end <= aged_start:
+            return
+        plain = replace(layer_config, sink_tokens=0, recent_window=0)
+        for name, rotation, value in (
+            ("keys", pair[0], False), ("values", pair[1], True)
+        ):
+            stored = getattr(layer, name)
+            # One position at a time.  Packing the whole aged slice at once
+            # would fit artifact-wide state -- 8-bit affine scale blocks, a
+            # calibrated codebook -- across whichever rows happened to age
+            # together, so the cache would depend on how the decode was
+            # chunked.  A one-token decode ages one row, so this loop runs
+            # once on the measured path.
+            for position in range(aged_start, aged_end):
+                row = stored[..., position:position + 1, :]
+                packed = quantize_kv(row, rotation, plain, value=value)
+                stored[..., position:position + 1, :] = _reconstruct(packed, row)
+        pending_start[layer_idx] = aged_end
+
     def quantized_update(_self, key_states, value_states, layer_idx, *args, **kwargs):
         pair = rotations.get(layer_idx)
-        if pair is not None:
-            selected = ((layer_configs or {}).get(layer_idx, config))
-            layer_config = replace(selected, seed=config.seed + 2 * layer_idx)
-            packed_keys = quantize_kv(key_states, pair[0], layer_config)
-            packed_values = quantize_kv(
-                value_states, pair[1], layer_config, value=True)
-            key_states = _reconstruct(packed_keys, key_states)
-            value_states = _reconstruct(packed_values, value_states)
-        return original_update(
+        if pair is None:
+            return original_update(
+                key_states, value_states, layer_idx, *args, **kwargs)
+        selected = ((layer_configs or {}).get(layer_idx, config))
+        layer_config = replace(selected, seed=config.seed + 2 * layer_idx)
+        sinks, recent = tiers[layer_idx]
+        layer = _self.layers[layer_idx]
+        start = int(layer.keys.shape[-2])
+        written = int(key_states.shape[-2])
+        # Only rows whose absolute position falls inside the sink prefix stay
+        # fp16 permanently.  With a recent window, every incoming row first
+        # enters the fp16 recent tier (``recent_window=written``) and the
+        # ageing pass below packs each row exactly once when it leaves the
+        # window, so a chunked write is packed identically to the same rows
+        # written one token at a time.  A one-token write is not its own
+        # sequence.
+        local_sinks = max(0, min(written, sinks - start))
+        local_recent = written if recent else 0
+        packed_keys = quantize_kv(
+            key_states, pair[0], layer_config,
+            sink_tokens=local_sinks, recent_window=local_recent)
+        packed_values = quantize_kv(
+            value_states, pair[1], layer_config, value=True,
+            sink_tokens=local_sinks, recent_window=local_recent)
+        key_states = _reconstruct(packed_keys, key_states)
+        value_states = _reconstruct(packed_values, value_states)
+        result = original_update(
             key_states, value_states, layer_idx, *args, **kwargs)
+        if recent:
+            requantize_aged_rows(layer, layer_idx, pair, layer_config, start + written)
+        return result
 
     simulated.update = types.MethodType(quantized_update, simulated)
     non_kv_state_bytes = max(source_total_bytes - source_kv_bytes, 0)
@@ -676,6 +805,61 @@ def select_dynamic_kv_quantization(
 
 
 @torch.inference_mode()
+def _endpoint_check(
+    model: torch.nn.Module,
+    evaluation: list[dict[str, torch.Tensor]],
+    config: KVCacheEvalConfig,
+    device,
+) -> dict[str, Any] | None:
+    """Fail closed unless a near-lossless cache reproduces the fp16 cache.
+
+    The endpoint uses a uniform Gaussian scalar cache at
+    ``config.endpoint_check_bits`` with the same tiers, group size, scale
+    precision and held-out calls as the candidate.  It runs before any
+    candidate or allocator so an invalid simulator cannot spend hours scoring
+    recipes against a metric that does not measure quantization.
+    """
+    bits = config.endpoint_check_bits
+    if bits is None:
+        return None
+    endpoint_config = replace(
+        config,
+        bits=bits,
+        key_bits=bits,
+        value_bits=bits,
+        codebook="gaussian",
+        codebook_dim=None,
+        bias_correction="none",
+        dynamic=None,
+        frozen_recipe=None,
+        eval_offset_batches=0,
+        endpoint_check_bits=None,
+    )
+    metrics = _evaluate_kv_cache(model, evaluation, endpoint_config, device, None)
+    report = {
+        "bits": bits,
+        "max_kl": config.endpoint_max_kl,
+        "mean_teacher_kl": float(metrics["mean_teacher_kl"]),
+        "top1_agreement": float(metrics["top1_agreement"]),
+        "prefill_kv_nmse": float(metrics["prefill_kv_nmse"]),
+        "non_kv_state_bytes": float(metrics["non_kv_state_bytes"]),
+        "passed": float(metrics["mean_teacher_kl"]) <= config.endpoint_max_kl,
+    }
+    if not report["passed"]:
+        raise RuntimeError(
+            f"KV-cache endpoint check failed: a uniform {bits}-bit Gaussian cache "
+            f"gives mean teacher KL {report['mean_teacher_kl']:.4g} "
+            f"(limit {config.endpoint_max_kl:g}); the source and packed decode "
+            "passes differ by more than quantization error, so no recipe "
+            "comparison on this metric is valid"
+        )
+    logger.info(
+        "KV endpoint check passed: %d-bit cache KL %.3g <= %.3g",
+        bits, report["mean_teacher_kl"], config.endpoint_max_kl)
+    return report
+
+
+@torch.inference_mode()
 def evaluate_kv_cache(
     model: torch.nn.Module,
     batches: list[dict[str, torch.Tensor]],
@@ -690,6 +874,7 @@ def evaluate_kv_cache(
                 f"KV evaluation requires {required} batches, got {len(batches)}")
         evaluation = batches[config.eval_offset_batches:required]
         evaluation_config = replace(config, eval_offset_batches=0)
+        endpoint = _endpoint_check(model, evaluation, evaluation_config, device)
         layer_configs = None
         if config.frozen_recipe is not None:
             layers = _discover_kv_layers(
@@ -703,6 +888,8 @@ def evaluate_kv_cache(
                 "recipe": [dict(record) for record in config.frozen_recipe],
                 "validated_layers": len(layer_configs or {}),
             }
+        if endpoint is not None:
+            metrics["endpoint_check"] = endpoint
         return metrics
     dynamic = KVDynamicConfig(**config.dynamic)
     evaluation_offset = max(
@@ -713,10 +900,15 @@ def evaluate_kv_cache(
             f"dynamic KV evaluation requires {required} batches, got {len(batches)}")
     selection = batches[:dynamic.selection_batches]
     evaluation = batches[evaluation_offset:required]
+    endpoint = _endpoint_check(
+        model, evaluation, replace(config, dynamic=None, eval_offset_batches=0),
+        device)
     recipe, stats = select_dynamic_kv_quantization(
         model, selection, config, device)
     final: dict[str, Any] = _evaluate_kv_cache(
         model, evaluation,
         replace(config, dynamic=None, eval_offset_batches=0), device, recipe)
     final["dynamic"] = stats
+    if endpoint is not None:
+        final["endpoint_check"] = endpoint
     return final

@@ -434,6 +434,14 @@ and 56.78% figures remain useful logical CUDA estimates, but actual tensor-file
 bytes now supersede them for storage reporting. Resident and peak transient
 memory are still unmeasured.
 
+Review note (2026-09-01): the source index total includes a 241,199,104-byte
+`mtp.*` multi-token-prediction head that `Qwen3_5ForConditionalGeneration`
+never loads and the export therefore never stores. That head is the 238 MB gap
+between the logical estimate and the exported files. Against the 9,078,538,752
+bytes of source tensors that are actually loaded, the like-for-like tensor
+reduction is **58.26%**; quote that figure, not 59.34%, unless both sides
+count the head.
+
 The joint native GGUF is 3,146,308,736 bytes with SHA-256
 `ac70480575ce94d482402ac575e75e12bd01125a85cc32711af13bbd4491ecba`.
 `scripts/verify_rotquant_gguf.py` compared it with the exact joint producer
@@ -729,6 +737,18 @@ E8P on four disjoint 8k-prefill/64-token confirmations.
 No free-running trajectory block was enabled in this composition profile.
 Accordingly, none of these arms advances directly to a release claim.
 
+Review note (2026-09-02): the `optimized_w4` arm's `scale_bits: 8` path used
+an encoder that pulled every scale in a narrow-range block toward the block
+minimum (subnormal fp16 step; up to −35 % on down-projection-like scales,
++73 % weight quantization error in synthetic replication), and its GPTQ codes
+were assigned against scales the artifact did not store. The arm also set
+`share_rotations: true`, and the rotation checkpoint gate scored the
+concatenated q/k/v weight while the patcher packs each projection separately,
+which with `scale_bits: 8` is not the deployed artifact. All three are fixed on
+the review branch; the planned single-factor ablation must use the fixed
+encoder and the per-member gate before 8-bit scales, sharing or learned
+rotations can be blamed or cleared.
+
 ### 2026-09-02 — Unsloth anchor and four-prompt 8k E8 confirmation
 
 The pinned Unsloth comparator and corrected long-context stage completed at
@@ -772,6 +792,112 @@ W4/W4A8 plus E8 divergence from one FP16 full-cache model, and they cannot be
 added to the short-context weight KL. The next long-context collector must
 persist one fixed FP16 full-cache teacher and score every combined system
 against it before making an end-to-end quality claim.
+
+### 2026-09-01 — KV-cache simulator state sharing invalidates all earlier cache KL results
+
+An independent validity review (`docs/scientific_validity_review_2026-09-01.md`)
+found that every cache KL recorded above this entry (seed-0 matrix, three-seed
+validation, 1,024-token confirmation, frozen-map transfer, whole-system joint
+matrix, and the matched K4/V4 follow-up) is independent of the K/V code width:
+uniform K8/V8 reported 0.5827, K2/V2 0.5752, K4/V4 0.5483, and K4/V4 was worse
+than K2/V2 in two of three seeds, which quantization error cannot produce.
+
+Replication on the pinned `unsloth/Qwen3.5-4B` weights (CPU, bf16, source
+weights, prompt 256, 16 evaluated tokens, Gaussian g64, no tiers) with the
+committed simulator:
+
+| Transformers | K8/V8 KL | K4/V4 KL | K2/V2 KL | `non_kv_state_bytes` |
+|---|---:|---:|---:|---:|
+| 5.9.0 (pinned in `uv.lock`) | 5.0e-4 | 6.3e-3 | 6.5e-2 | 26,738,688 |
+| 5.16.1 (what `pip install -U "transformers>=5.9,<6"` resolved to on 2026-08-29/30) | 0.877 | 0.891 | — | 0 |
+| 5.16.1 with the fixed clone | 3.6e-4 | 6.9e-3 | — | 51,904,512 |
+
+Cause: Transformers 5.16 keeps linear-attention conv/recurrent state in
+`dict` attributes that are updated in place; `_clone_cache` shallow-copied
+them, so the source and packed decode passes shared and corrupted each other's
+state. The 2026-09-01 W4A8/E8 stage pinned 5.9.0 and is unaffected.
+
+Decision: withdraw the cache-KL conclusions listed in the review (including
+the 3.25-bpv frozen map's advantage over K4/V4 and the context-length
+sensitivity reversal); keep the weight-only PPL/KL/trajectory results; re-run
+the cache studies with the fixed simulator, an explicit Transformers pin, a
+mandatory K8/V8 near-zero endpoint row, and at least 10^4 evaluated tokens per
+seed before re-selecting the deployment map.
+
+### 2026-09-02 — validity assessment of the 8k E8P confirmation
+
+Assessment of the run recorded in the entry above, made against its versioned
+artifacts (`research/results/raw/qwen35_4b_long_kv_unsloth_06c1e73eeae9/`) at
+review revision `06c1e73eeae97aa0bfae432ea7f10d88fb70817f`. Two of the three
+defects found by `docs/scientific_validity_review_2026-09-01.md` are settled
+from the artifacts; one still applies.
+
+**Cache accounting is exact.** Every reported figure reproduces from the config
+and from the earlier 2,048-token smoke:
+
+- `16 / 2.188 = 7.313`, the reported raw ratio (as `16 / 2.371 = 6.748` matched
+  the smoke's 6.749).
+- The smoke's 2.558x whole-cache ratio implies non-K/V state at 0.3986x the
+  source K/V bytes at 2,048 tokens. That state is length independent, so at
+  8,192 tokens it is 0.0996x, predicting 4.652x — the reported figure. The run
+  records 26,738,688 bytes of recurrent state directly.
+- Solving the two effective-bit figures for a fixed fp16 row count gives 2.127
+  bits per value and 36.0 rows: 2-bit E8P plus 8-bit scales at group 64
+  (`2 + 8/64 = 2.125`), with `sink_tokens: 4` and `recent_window: 32`. The run
+  records `full_precision_kv_fraction: 0.00439453125`, which is exactly
+  36/8192.
+
+The context-length improvement is this identity, not a measured quality effect:
+the fp16 tier is a fixed 36 rows, so its share falls as 1/length.
+
+**Cleared: the clone defect does not apply.** The run records
+`non_kv_state_bytes: 26,738,688`, matching the Transformers 5.9.0 row of the
+replication table above; the 5.16.x failure mode reports 0. The run used the
+pinned 5.9.0, so source and packed decode passes did not share linear-attention
+state, and the KL is bit-dependent.
+
+**Still applies: tiered ageing.** The run predates the ageing fix, and its
+`continuation_len: 64` exceeds the 32-row recent window, so 32 of every 64
+decode rows should have been packed on ageing out and instead stayed fp16
+permanently. Consequences:
+
+- the reported 2.188 bpv / 7.313x is prefill accounting, which the fixed
+  simulator would also produce. The end-of-decode cache actually held
+  4 + 32 + 64 = 100 fp16 rows of 8,256, i.e. 2.293 bpv and 6.98x. Under the
+  fixed simulator it would hold 36 rows, 2.186 bpv and 7.32x. The deployed
+  compression is therefore overstated by about 5%;
+- the KL is optimistic by an unquantified amount, because up to 32 of the most
+  recently written and most heavily attended rows were never quantized.
+
+**No endpoint check.** The run's `metrics["kv_cache"]` has no `endpoint_check`
+key, so it predates
+`KVCacheEvalConfig.endpoint_check_bits`. Nothing rules out a bit-independent
+floor from its own record; the argument above rests on the recorded
+`non_kv_state_bytes` instead. The 8.79% `prefill_kv_nmse` is consistent with
+genuine 2-bit error.
+
+**Intervals.** `paired_token_bootstrap` resamples the 256 evaluated tokens
+independently, but they come from 4 prompts sharing a prefill cache and one
+quantization draw, so every interval in the entry above is narrower than a
+prompt-clustered one. The conclusions drawn from them — that the arms are
+indistinguishable and that A8 is not selected — are conservative and survive a
+wider interval, but the intervals must not be published as 95% intervals. With
+4 clusters no interval is reliable; report the point estimate and the prompt
+count. The K/V evaluator has no cluster bootstrap and no `interval_reliable`
+flag; `scripts/run_qwen35_next_stage.py` has the flag but counts samples rather
+than clusters.
+
+**K/V scales share the fixed encoder.** `quantize_kv` builds a `QuantConfig`
+and calls `Quantizer.quantize_weight`, and the long-context config sets
+`scale_bits: 8` with `scale_quant_group_size: 256`. This run predates
+`c94cd57`, so any 256-scale block spanning less than about 0.0156 was
+compressed toward its minimum. Decidable from the run's own scale blocks and
+not yet checked.
+
+**Status.** Retaining E8P for the next stage is reasonable on this evidence.
+The 7.313x compression figure should not be published until the configuration
+is repeated on the fixed simulator with the endpoint check recorded, because
+the deployed figure is 6.98x on the code that produced it.
 
 ## Entry template
 

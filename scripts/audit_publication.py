@@ -11,6 +11,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import struct
 from pathlib import Path
 from typing import Any
 
@@ -145,7 +146,29 @@ def validate_numerical_claims(manifest: dict[str, Any]) -> tuple[list[dict[str, 
     rotquant_tensor_bytes = int(models["rotquant"]["tensor_bytes"])
     source_artifact_bytes = int(models["source"]["complete_snapshot_bytes"])
     rotquant_artifact_bytes = int(models["rotquant"]["complete_snapshot_bytes"])
+    # Like-for-like storage: the source index counts an MTP head that the
+    # Transformers model never loads and the export never stores.  Compare
+    # against the loaded tensors only, and check the reported figure.
+    loaded_source_bytes = int(
+        models["source"].get("tensor_bytes_excluding_mtp", source_tensor_bytes)
+    )
+    if "mtp_head_bytes" in models["source"]:
+        checks.append(_exact(
+            source_tensor_bytes - int(models["source"]["mtp_head_bytes"]),
+            loaded_source_bytes,
+            "source loaded bytes equal total minus MTP head",
+        ))
+    like_for_like = 100.0 * (1.0 - rotquant_tensor_bytes / loaded_source_bytes)
+    if "reported_like_for_like_tensor_reduction_pct" in joint:
+        checks.append(_close(
+            like_for_like,
+            float(joint["reported_like_for_like_tensor_reduction_pct"]),
+            0.005,
+            "like-for-like tensor storage reduction",
+        ))
     derived = {
+        "like_for_like_tensor_storage_reduction_pct": like_for_like,
+        "loaded_source_tensor_bytes": loaded_source_bytes,
         "joint_mean_ppl": mean_ppl,
         "joint_mean_relative_ppl_pct": mean_relative,
         "joint_worst_relative_ppl_pct": worst_relative,
@@ -161,6 +184,28 @@ def validate_numerical_claims(manifest: dict[str, Any]) -> tuple[list[dict[str, 
     return checks, derived
 
 
+def _safetensors_tensor_bytes(path: Path) -> dict[str, int]:
+    """Tensor byte sizes from a safetensors header, without reading the data."""
+    with path.open("rb") as handle:
+        header_size = struct.unpack("<Q", handle.read(8))[0]
+        header = json.loads(handle.read(header_size))
+    sizes: dict[str, int] = {}
+    for name, spec in header.items():
+        if name == "__metadata__":
+            continue
+        begin, end = spec["data_offsets"]
+        sizes[name] = int(end) - int(begin)
+    return sizes
+
+
+def source_tensor_sizes(path: Path, index: dict[str, Any]) -> dict[str, int]:
+    """Per-tensor byte sizes of every shard named by the safetensors index."""
+    sizes: dict[str, int] = {}
+    for shard in sorted(set(index.get("weight_map", {}).values())):
+        sizes.update(_safetensors_tensor_bytes(path / shard))
+    return sizes
+
+
 def audit_source_checkpoint(path: Path, entry: dict[str, Any]) -> list[dict[str, Any]]:
     index_path = path / "model.safetensors.index.json"
     if not index_path.is_file():
@@ -168,10 +213,27 @@ def audit_source_checkpoint(path: Path, entry: dict[str, Any]) -> list[dict[str,
     index = json.loads(index_path.read_text())
     tensor_bytes = int(index["metadata"]["total_size"])
     snapshot_bytes = sum(item.stat().st_size for item in path.iterdir() if item.is_file())
-    return [
+    checks = [
         _exact(tensor_bytes, int(entry["tensor_bytes"]), "source tensor bytes"),
         _exact(snapshot_bytes, int(entry["complete_snapshot_bytes"]), "source snapshot bytes"),
     ]
+    if "mtp_head_bytes" in entry or "tensor_bytes_excluding_mtp" in entry:
+        # The like-for-like denominator must be derived from the shards, not
+        # copied from the manifest: a stale declared MTP subtraction with a
+        # matching reported percentage would otherwise audit as passing.
+        sizes = source_tensor_sizes(path, index)
+        header_bytes = sum(sizes.values())
+        mtp_bytes = sum(size for name, size in sizes.items() if name.startswith("mtp."))
+        checks.append(_exact(header_bytes, tensor_bytes, "source header tensor bytes"))
+        if "mtp_head_bytes" in entry:
+            checks.append(_exact(mtp_bytes, int(entry["mtp_head_bytes"]), "source MTP head bytes"))
+        if "tensor_bytes_excluding_mtp" in entry:
+            checks.append(_exact(
+                header_bytes - mtp_bytes,
+                int(entry["tensor_bytes_excluding_mtp"]),
+                "source loaded tensor bytes",
+            ))
+    return checks
 
 
 def audit_rotquant_checkpoint(path: Path, entry: dict[str, Any]) -> list[dict[str, Any]]:
@@ -221,6 +283,8 @@ def render_tex_macros(manifest: dict[str, Any], derived: dict[str, float]) -> st
         f"\\newcommand{{\\ActualTensorReductionPct}}{{{_tex_number(derived['actual_tensor_storage_reduction_pct'], 2)}}}",
         f"\\newcommand{{\\ActualSnapshotReductionPct}}{{{_tex_number(derived['actual_snapshot_storage_reduction_pct'], 2)}}}",
         f"\\newcommand{{\\SourceTensorGB}}{{{int(models['source']['tensor_bytes']) / 1e9:.4f}}}",
+        f"\\newcommand{{\\SourceTensorExclMtpGB}}{{{derived['loaded_source_tensor_bytes'] / 1e9:.4f}}}",
+        f"\\newcommand{{\\LikeForLikeTensorReductionPct}}{{{_tex_number(derived['like_for_like_tensor_storage_reduction_pct'], 2)}}}",
         f"\\newcommand{{\\RotQuantTensorGB}}{{{int(models['rotquant']['tensor_bytes']) / 1e9:.4f}}}",
         f"\\newcommand{{\\CacheShortReductionPct}}{{{_tex_number(float(transfer['reported_short_reduction_pct']), 1)}}}",
         f"\\newcommand{{\\CacheLongReductionPct}}{{{_tex_number(float(transfer['reported_long_reduction_pct']), 1)}}}",

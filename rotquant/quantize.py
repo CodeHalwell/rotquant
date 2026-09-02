@@ -427,14 +427,21 @@ def _encode_storage_scales(
         torch.finfo(torch.float16).smallest_normal)
     steps = ((maximum - offsets.float()).clamp_min(0.0) / 255.0).to(
         torch.float16)
-    safe_steps = steps.float().clamp_min(torch.finfo(torch.float16).smallest_normal)
-    codes = torch.round(
-        (grouped - offsets.float().unsqueeze(1)) / safe_steps.unsqueeze(1)
-    ).clamp_(0, 255).to(torch.uint8)
     # A constant block has no range; a zero step is an exact compact encoding.
-    constant = maximum <= offsets.float()
-    codes[constant] = 0
+    # A range too small for even a subnormal fp16 step is treated the same way.
+    constant = (maximum <= offsets.float()) | (steps.float() == 0)
     steps[constant] = 0
+    # Divide by exactly the fp16 step that decoding multiplies by.  Subnormal
+    # fp16 steps are legitimate for narrow-range blocks (a range below 0.0156
+    # gives a step below the smallest normal).  Clamping the divisor to the
+    # smallest normal, as an earlier version did, encoded such blocks with a
+    # larger step than decoding used and pulled every scale toward the block
+    # minimum by the subnormal ratio.
+    divisor = torch.where(constant, torch.ones_like(steps.float()), steps.float())
+    codes = torch.round(
+        (grouped - offsets.float().unsqueeze(1)) / divisor.unsqueeze(1)
+    ).clamp_(0, 255).to(torch.uint8)
+    codes[constant] = 0
     return codes.reshape(-1)[:flat.numel()].reshape(scales.shape), offsets, steps
 
 
@@ -457,6 +464,30 @@ def _decode_storage_scales(
         offsets.to(device=flat.device, dtype=torch.float32)[block_ids]
         + flat * steps.to(device=flat.device, dtype=torch.float32)[block_ids]
     ).reshape(stored.shape)
+
+
+def _encoded_storage_scales(
+    scales: torch.Tensor | None,
+    scale_bits: float,
+    scale_quant_group_size: int = 256,
+) -> tuple[torch.Tensor | None, torch.Tensor | None,
+           torch.Tensor | None, torch.Tensor | None]:
+    """Encode scales once and return ``(decoded, stored, offsets, steps)``.
+
+    Codes must be assigned against ``decoded`` and the artifact must retain
+    exactly this ``stored``/``offsets``/``steps`` triple.  Re-encoding the
+    decoded values later is not guaranteed to reproduce the same affine grid
+    (a block whose extreme codes are not 0 and 255 gets a new step), which would
+    silently desynchronise the stored scales from the packed codes.
+    """
+
+    if scales is None:
+        return None, None, None, None
+    stored, offsets, steps = _encode_storage_scales(
+        scales, scale_bits, scale_quant_group_size)
+    decoded = _decode_storage_scales(
+        stored, scale_bits, offsets, steps, scale_quant_group_size)
+    return decoded, stored, offsets, steps
 
 
 def _group_scales_rms(w: torch.Tensor, group_size: int) -> torch.Tensor:
@@ -755,7 +786,10 @@ class Quantizer:
             if (not torch.isfinite(selected_scales).all()
                     or (selected_scales <= 0).any()):
                 raise ValueError("scales_override must be finite and positive")
-        scales = _storage_scales(
+        # The encoded triple is retained verbatim: every code below is assigned
+        # against ``scales`` (the decoded values) so that pack-time assignment
+        # and deployed dequantization agree exactly on every path.
+        scales, stored_scales, scale_offsets, scale_steps = _encoded_storage_scales(
             selected_scales,
             self.cfg.scale_bits,
             self.cfg.scale_quant_group_size,
@@ -772,7 +806,13 @@ class Quantizer:
                     "GPTQ requires per-group scales with group_size < in_features; "
                     "set scale='rms' or 'mse_search' when error_comp='gptq'."
                 )
-            q_w, idx, scales = self._gptq(w, scales, H)
+            scale_grid = (
+                (stored_scales, scale_offsets, scale_steps)
+                if self.cfg.scale_bits == 8.0 else None
+            )
+            q_w, idx, scales, encoded = self._gptq_with_scale_grid(
+                w, scales, H, scale_grid)
+            stored_scales, scale_offsets, scale_steps = encoded
         else:
             q_w, idx = _quantize_groups(w, scales, self.codebook, self.cfg.group_size)
 
@@ -787,7 +827,8 @@ class Quantizer:
             usable = (energy > 0) & (alignment > torch.finfo(w.dtype).eps * energy)
             correction = torch.ones_like(energy)
             correction[usable] = energy[usable] / alignment[usable]
-            corrected_scales = _storage_scales(
+            (corrected_scales, stored_scales,
+             scale_offsets, scale_steps) = _encoded_storage_scales(
                 scales.float() * correction.unsqueeze(1),
                 self.cfg.scale_bits,
                 self.cfg.scale_quant_group_size,
@@ -810,8 +851,6 @@ class Quantizer:
         # TurboQuant uses one scale per output row; pass scale_group_size=in_features
         # so dequantize() and bit_budget() use the right expansion factor.
         scale_group_size = inf if self.cfg.scale == "turboquant" else None
-        stored_scales, scale_offsets, scale_steps = _encode_storage_scales(
-            scales, self.cfg.scale_bits, self.cfg.scale_quant_group_size)
         qw = QuantizedWeight(
             packed=packed, scales=stored_scales, codebook=self.codebook,
             group_size=self.cfg.group_size, out_features=out, in_features=inf,
@@ -834,6 +873,16 @@ class Quantizer:
     def _gptq(self, w: torch.Tensor, scales: torch.Tensor,
               H: torch.Tensor | None,
               ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+        """Blocked GPTQ returning ``(dequantized, indices, decoded scales)``."""
+        q_w, idx, decoded, _encoded = self._gptq_with_scale_grid(w, scales, H, None)
+        return q_w, idx, decoded
+
+    def _gptq_with_scale_grid(
+        self, w: torch.Tensor, scales: torch.Tensor,
+        H: torch.Tensor | None,
+        scale_grid: tuple[torch.Tensor, torch.Tensor, torch.Tensor] | None,
+    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor,
+               tuple[torch.Tensor, torch.Tensor | None, torch.Tensor | None]]:
         """Blocked GPTQ (lazy batch updates, as in the reference implementation).
 
         Columns inside a ``gptq_block``-wide block are processed sequentially with
@@ -843,6 +892,18 @@ class Quantizer:
         column-at-a-time loop (the update is linear in the errors), but turns
         O(in_features) full-width rank-1 kernels into O(in_features/block)
         matmuls -- the difference between minutes and hours on a 7B model.
+
+        With 8-bit scales, ``scale_grid`` carries the retained encoding of the
+        initial scale selection: the uint8 codes and the blockwise affine grid
+        (offsets, steps).  The codes are used as they are rather than being
+        re-derived from decoded values, and lazily refit group scales are
+        snapped onto the same frozen grid, so the value each code is assigned
+        against is exactly the value the artifact stores; encoding refit scales
+        with their own per-group blocks and re-encoding the whole matrix
+        afterwards would place them on two different grids.
+
+        Returns ``(dequantized, indices, decoded scales, (stored, offsets,
+        steps))``.
         """
         out, inf = w.shape
         if H is None:
@@ -878,6 +939,27 @@ class Quantizer:
         centroids = self.codebook.centroids.to(w.device)
         bounds = (centroids[:-1] + centroids[1:]) / 2.0
 
+        grid_offsets = grid_steps = grid_codes = safe_steps = None
+        if scale_grid is not None:
+            if self.cfg.scale_bits != 8.0:
+                raise ValueError("a scale grid is only meaningful for 8-bit scales")
+            codes, offsets, steps = scale_grid
+            n_groups = working_scales.shape[1]
+            if tuple(codes.shape) != (out, n_groups):
+                raise ValueError("scale grid codes must match the scale matrix shape")
+            block_ids = (
+                torch.arange(out * n_groups, device=W.device)
+                // self.cfg.scale_quant_group_size
+            ).reshape(out, n_groups)
+            grid_offsets = offsets.to(device=W.device, dtype=torch.float32)[block_ids]
+            grid_steps = steps.to(device=W.device, dtype=torch.float32)[block_ids]
+            # Divide by the exact (possibly subnormal) fp16 step that decoding
+            # multiplies by; a zero step marks a constant block.
+            safe_steps = torch.where(
+                grid_steps == 0, torch.ones_like(grid_steps), grid_steps)
+            grid_codes = codes.to(device=W.device, dtype=torch.float32)
+            working_scales = grid_offsets + grid_codes * grid_steps
+
         for i1 in range(0, inf, bs):
             i2 = min(i1 + bs, inf)
             Err = torch.zeros(out, i2 - i1, device=W.device, dtype=W.dtype)
@@ -898,11 +980,22 @@ class Quantizer:
                         if self.cfg.scale == "rms"
                         else self._mse_search_scales(group_weight, group_rms)
                     )
-                    working_scales[:, group] = _storage_scales(
-                        selected,
-                        self.cfg.scale_bits,
-                        self.cfg.scale_quant_group_size,
-                    )[:, 0]
+                    if grid_codes is not None:
+                        code = torch.round(
+                            (selected[:, 0] - grid_offsets[:, group])
+                            / safe_steps[:, group]
+                        ).clamp_(0, 255)
+                        code[grid_steps[:, group] == 0] = 0
+                        grid_codes[:, group] = code
+                        working_scales[:, group] = (
+                            grid_offsets[:, group] + code * grid_steps[:, group]
+                        )
+                    else:
+                        working_scales[:, group] = _storage_scales(
+                            selected,
+                            self.cfg.scale_bits,
+                            self.cfg.scale_quant_group_size,
+                        )[:, 0]
                     scale_ready[group] = True
                 sc = working_scales[:, group].clamp_min(1e-12)
                 idx = torch.bucketize(col / sc, bounds)
@@ -917,11 +1010,18 @@ class Quantizer:
                 W[:, i2:] -= Err @ Hinv[i1:i2, i2:]
         inverse = torch.empty_like(permutation)
         inverse[permutation] = torch.arange(inf, device=permutation.device)
-        return Q[:, inverse], Idx[:, inverse], _storage_scales(
-            working_scales,
-            self.cfg.scale_bits,
-            self.cfg.scale_quant_group_size,
-        )
+        if grid_codes is not None:
+            _initial_codes, offsets, steps = scale_grid
+            encoded = (grid_codes.to(torch.uint8), offsets, steps)
+            decoded = working_scales
+        else:
+            decoded, stored, offsets, steps = _encoded_storage_scales(
+                working_scales,
+                self.cfg.scale_bits,
+                self.cfg.scale_quant_group_size,
+            )
+            encoded = (stored, offsets, steps)
+        return Q[:, inverse], Idx[:, inverse], decoded, encoded
 
     def _stable_hinv(self, H: torch.Tensor) -> torch.Tensor:
         """Upper-triangular Cholesky factor of H^{-1}, with auto-increasing damping."""
@@ -948,7 +1048,8 @@ class Quantizer:
     def _add_residual(self, qw: QuantizedWeight, w: torch.Tensor,
                       q_w: torch.Tensor) -> None:
         r = w - q_w
-        rscales = _storage_scales(
+        (rscales, stored_rscales,
+         residual_offsets, residual_steps) = _encoded_storage_scales(
             _group_scales_rms(r, self.cfg.group_size),
             self.cfg.scale_bits,
             self.cfg.scale_quant_group_size,
@@ -960,10 +1061,9 @@ class Quantizer:
         else:  # qjl: stochastic 1-bit residual (the deliberate loser)
             rcb, ridx = self._qjl_residual(r, rscales)
         qw.residual_packed = pack_indices(ridx.reshape(-1), self.cfg.residual_bits)
-        (qw.residual_scales,
-         qw.residual_scale_offsets,
-         qw.residual_scale_steps) = _encode_storage_scales(
-            rscales, self.cfg.scale_bits, self.cfg.scale_quant_group_size)
+        qw.residual_scales = stored_rscales
+        qw.residual_scale_offsets = residual_offsets
+        qw.residual_scale_steps = residual_steps
         qw.residual_codebook = rcb
         qw.scale_bits_residual = self.cfg.scale_bits
 

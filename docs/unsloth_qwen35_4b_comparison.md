@@ -22,7 +22,11 @@ contains the following files used by the new comparator:
 
 The complete released candidate bundle is 3,584,533,344 bytes (3.338 GiB).
 RotQuant's current complete W4 accounting is 3,787,286,336 bytes (3.527 GiB),
-5.66% larger relative to Unsloth. The nearest released Q4 artifact is useful as
+5.66% larger relative to Unsloth. Both totals exclude the Qwen3.5
+multi-token-prediction head: RotQuant's accounting counts only loaded tensors
+and the GGUF exporter drops the MTP layers. Keep that policy explicit whenever
+bytes are compared, because the raw source safetensors index includes the
+241 MB head. The nearest released Q4 artifact is useful as
 a quality anchor but fails RotQuant's registered <=1% matched-byte comparison
 gate. A competitive win/loss cannot be declared from this pair.
 

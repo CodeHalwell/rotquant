@@ -32,6 +32,7 @@ from rotquant.utils import enable_default_logging, write_result
 from scripts import run_experiment
 
 PROTOCOL_VERSION = "qwen35-next-stage-v2"
+MIN_RELIABLE_BOOTSTRAP_SAMPLES = 20
 DEFAULT_STAGES = ("w4",)
 REGISTERED_STAGES = ("w4", "w4a8", "ablation", "recovery", "long-kv")
 PAIRED_ARMS = {
@@ -389,6 +390,10 @@ def _bootstrap_delta(
         "mean_delta": float(delta.mean()),
         "bootstrap_95_ci": [float(lower), float(upper)],
         "paired_samples": len(delta),
+        # A percentile bootstrap of a handful of prompts cannot reach nominal
+        # coverage; the interval is reported for completeness but must not be
+        # quoted as a 95% interval below this sample count.
+        "interval_reliable": len(delta) >= MIN_RELIABLE_BOOTSTRAP_SAMPLES,
     }
 
 

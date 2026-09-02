@@ -21,7 +21,7 @@ from dataclasses import dataclass, field
 import torch
 from torch import nn
 
-from ._internal import cpu_staging_linear, get_parent
+from ._internal import cpu_staging_linear, get_parent, rotate_hessian
 from .adapters import resolve_model_adapter
 from .linear import QuantLinear
 from .quantize import QuantConfig
@@ -117,35 +117,29 @@ def make_rotations(in_features: int, cfg: PatchConfig, layer_seed: int,
     return weight_rot, act_rot
 
 
-@torch.no_grad()
 def _rotate_hessian(rotation: Rotation, hessian: torch.Tensor) -> torch.Tensor:
-    """Return ``R H R^T`` without materialising a dense structured rotation.
+    """Return ``R H R^T`` (see :func:`rotquant._internal.rotate_hessian`)."""
 
-    ``rotate_activation(X)`` computes ``X R^T``.  Applying it once to ``H``
-    and once to the transpose therefore performs the two-sided transform in
-    O(d^2 log(block)) for FWHT/butterfly rotations, instead of the O(d^3)
-    dense matrix products that would dominate GPTQ patching.  Hessians are
-    accumulated in float32, which is also supported by the optional CUDA FWHT
-    kernel; the final symmetrisation removes harmless transform round-off.
-    """
-
-    work = hessian.to(dtype=torch.float32)
-    right_rotated = rotation.rotate_activation(work)
-    rotated = rotation.rotate_activation(
-        right_rotated.transpose(-1, -2)
-    ).transpose(-1, -2)
-    return ((rotated + rotated.transpose(-1, -2)) * 0.5).contiguous()
+    return rotate_hessian(rotation, hessian)
 
 
 def patch_model(model: nn.Module, cfg: PatchConfig,
                 hessians: Mapping[str, torch.Tensor] | None = None,
                 activations: dict[str, torch.Tensor] | None = None,
                 activation_means: Mapping[str, torch.Tensor] | None = None,
-                stats_out: dict | None = None) -> nn.Module:
+                stats_out: dict | None = None,
+                *,
+                hessian_damp_frac: float = 0.0) -> nn.Module:
     """Replace targeted ``nn.Linear`` layers with ``QuantLinear`` in-place.
 
     ``stats_out``: optional dict filled with patching side-info (currently
     per-run rotation-training aggregates under ``"rotation_train"``).
+
+    ``hessian_damp_frac`` is keyword-only, and new options should stay that
+    way: ``stats_out`` is the sixth positional parameter of the public API, so
+    inserting ahead of it silently rebinds a caller's dict.  Pass the
+    ``damp_frac`` used to collect ``hessians`` (``CalibrationResult.damp_frac``)
+    so the rotation gate scores the undamped second moment.
     """
     if not cfg.enabled:
         logger.info("Quantization disabled; evaluating the source model unchanged")
@@ -261,6 +255,7 @@ def patch_model(model: nn.Module, cfg: PatchConfig,
             from .train_rotation import (
                 RotationTrainConfig,
                 select_butterfly_checkpoint,
+                select_butterfly_checkpoint_hessian,
                 train_layer_rotation,
             )
             train_cfg = RotationTrainConfig(**cfg.train_rotation)
@@ -271,7 +266,7 @@ def patch_model(model: nn.Module, cfg: PatchConfig,
                     f"activation-aware rotation training requires captured "
                     f"activations for {name}"
                 )
-            selection_weight = train_weight
+            selection_members = [train_weight]
             site_members = [name]
             if share_key is not None:
                 members = [
@@ -296,8 +291,11 @@ def patch_model(model: nn.Module, cfg: PatchConfig,
                             f"shared rotation dimension mismatch at {member_name}")
                     member_weights.append(member_linear.weight.detach().to(
                         device=train_weight.device, dtype=train_weight.dtype))
-                selection_weight = torch.cat(member_weights, dim=0)
-                train_weight = selection_weight
+                # One rotation is trained over the concatenation, but each
+                # projection is packed separately below, so the gates score the
+                # members rather than the concatenation.
+                selection_members = member_weights
+                train_weight = torch.cat(member_weights, dim=0)
                 site_members = [member_name for _, member_name, _ in members]
                 trained_shared_sites.add(share_key)
             stats = train_layer_rotation(
@@ -307,8 +305,10 @@ def patch_model(model: nn.Module, cfg: PatchConfig,
             stats["site_members"] = site_members
             if train_on_source:
                 weight_rot.to(device=work_linear.weight.device, dtype=torch.float32)
-                selection_weight = selection_weight.to(
-                    device=work_linear.weight.device, dtype=torch.float32)
+                selection_members = [
+                    member.to(device=work_linear.weight.device,
+                              dtype=torch.float32)
+                    for member in selection_members]
             if isinstance(weight_rot, ButterflyRotation) \
                     and train_cfg.objective == "activation":
                 if layer_acts is None:
@@ -332,11 +332,34 @@ def patch_model(model: nn.Module, cfg: PatchConfig,
                     selection_acts = layer_acts
                     selection_tokens = train_cfg.max_tokens
                 selection = select_butterfly_checkpoint(
-                    weight_rot, reference_rot, selection_weight, layer_quant,
+                    weight_rot, reference_rot, selection_members, layer_quant,
                     selection_acts, max_tokens=selection_tokens,
                     min_improvement=train_cfg.selection_min_improvement)
                 stats.update(selection)
                 stats["selection_tokens"] = selection_tokens
+            elif isinstance(weight_rot, ButterflyRotation) \
+                    and train_cfg.objective == "hessian":
+                # The proxy objective (RMS assignment, no error compensation)
+                # is not the deployed quantizer.  Gate the trained rotation
+                # against seeded FWHT under the exact packed weight, including
+                # GPTQ, so a worse-than-FWHT basis is never deployed silently.
+                reference_rot = ButterflyRotation(
+                    work_linear.in_features, block=cfg.block,
+                    seed=cfg.seed + i, device=work_linear.weight.device)
+                # Score both arms on the error that survives the deployed
+                # mean bias correction; otherwise the gate ranks a component
+                # that apply_mean_bias_correction cancels.
+                selection = select_butterfly_checkpoint_hessian(
+                    weight_rot, reference_rot, selection_members, layer_quant,
+                    source_hessian,
+                    min_improvement=train_cfg.selection_min_improvement,
+                    activation_mean=(
+                        activation_means.get(name)
+                        if layer_quant.bias_correction in {"mean", "length_mean"}
+                        else None),
+                    damp_frac=hessian_damp_frac)
+                stats.update(selection)
+                stats["selection_tokens"] = 0
             train_stats.append(stats)
             logger.info("trained %s rotation for %s: %.6f -> %.6f%s",
                         stats["objective"], name,

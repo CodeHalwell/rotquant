@@ -302,3 +302,22 @@ Stage 2 is complete when:
   documentation, and release qualification comparable to mature optimization
   libraries. (Licensing, packaging metadata, and the first-release checklist
   moved forward into Stage 2.0c: they gate adoption, not polish.)
+
+## Reserved name: QRAT
+
+`QRAT` (Quantization-and-Rotation-Aware Training) is reserved for a future
+method that trains rotations, scales, or recovery parameters under simulated
+quantization at a genuine training budget: block-wise reconstruction over
+thousands of sequences followed by end-to-end distillation over at least a
+million tokens, with the straight-through estimator carried through the
+rotation as well as the codes, validation on tens of thousands of held-out
+tokens, and the same fail-closed rollback used by the calibration stages. None
+of the current stages is QRAT. The layerwise butterfly fits, the block
+reconstruction and learned-scale stages, the end-to-end distillation and
+LoRA-QAT arms, and the Hessian-objective rotation training are calibration-time
+procedures with token budgets far below that bar, and they must not be
+labelled QRAT in configs, results, or documents. The
+[validity review](scientific_validity_review_2026-09-01.md) lists the
+prerequisites (a bit-monotone cache simulator, exact code/scale storage, a
+flippable learned-sign arm, and a deployed-quantizer gate on every trained
+rotation) that QRAT will build on.

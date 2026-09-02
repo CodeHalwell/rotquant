@@ -635,7 +635,13 @@ The current Transformers KV path is a fidelity simulator. It quantizes real
 post-RoPE cache writes, reconstructs them for the unchanged attention
 implementation, and measures next-token KL, top-1 agreement, NLL, NMSE, and
 actual packed code/scale cache bytes. It proves semantic integration, not
-runtime speed.
+runtime speed. Before any candidate is scored it must reproduce the
+full-precision cache with a uniform 8-bit Gaussian cache on the same held-out
+calls; a floor that survives 8-bit codes is not quantization error. The
+Qwen3.5-4B cache results recorded before that check existed were withdrawn on
+2026-09-01 because the simulator had shared linear-attention state between
+its decode passes (see the
+[validity review](scientific_validity_review_2026-09-01.md)).
 A production path must rotate and pack before persistent cache storage and
 consume the packed representation inside attention without constructing a full
 dense cache.
@@ -810,6 +816,11 @@ it into training data.
 The following are development results, not universal conclusions or the final
 competitive claim:
 
+- The Qwen3.5-4B cache results recorded before 2026-09-01 (uniform-versus-mixed
+  K/V tables, frozen-map transfer, matched K4/V4 controls, and the 3.25-bpv
+  map selection) are withdrawn: the simulator shared linear-attention state
+  between its two decode passes and reported the same KL at every bit width.
+  No cache-quality claim stands until the study is repeated.
 - Randomized Hadamard rotation prevented catastrophic low-bit degradation on
   the early OPT weight-only experiments.
 - Learned butterfly/block recovery improved small-model development results,

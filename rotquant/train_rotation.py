@@ -37,12 +37,13 @@ than full-model fine-tuning.
 """
 from __future__ import annotations
 
+from collections.abc import Sequence
 from dataclasses import dataclass, replace
 from typing import Any
 
 import torch
 
-from ._internal import quantize_groups
+from ._internal import quantize_groups, rotate_hessian
 from .quantize import QuantConfig, Quantizer
 from .rotate import ButterflyRotation, LearnedRotation, Rotation
 from .utils import get_logger
@@ -68,6 +69,9 @@ class RotationTrainConfig:
     selection_min_improvement: float = 0.0
     learn_signs: bool = False
     sign_temperature: float = 1.0
+    # Initial |logit| of the trainable signs; must be reachable by lr * steps
+    # or no sign can ever flip (see ButterflyRotation.enable_sign_training).
+    sign_init_magnitude: float = 0.1
 
     def __post_init__(self) -> None:
         if self.steps < 1:
@@ -91,10 +95,136 @@ class RotationTrainConfig:
             raise TypeError("learn_signs must be boolean")
         if self.sign_temperature <= 0:
             raise ValueError("sign_temperature must be positive")
+        if self.sign_init_magnitude <= 0:
+            raise ValueError("sign_init_magnitude must be positive")
+
+
+def _selection_members(weight) -> list[torch.Tensor]:
+    """The weights a site deploys as separate packed artifacts.
+
+    A shared-rotation site trains one rotation over the concatenation of its
+    sibling projections, but ``patch_model`` packs each projection on its own.
+    Scoring the concatenation would fit one calibrated codebook across all
+    siblings and let 8-bit scale blocks straddle their boundaries, neither of
+    which the deployed artifact does, so a gate must score the members.
+    """
+    if isinstance(weight, torch.Tensor):
+        return [weight]
+    members = list(weight)
+    if not members:
+        raise ValueError("selection needs at least one weight")
+    return members
 
 
 @torch.no_grad()
-def activation_reconstruction_error(rotation: Rotation, weight: torch.Tensor,
+def hessian_reconstruction_error(rotation: Rotation,
+                                 weight: torch.Tensor | Sequence[torch.Tensor],
+                                 quant_cfg: QuantConfig,
+                                 hessian: torch.Tensor,
+                                 activation_mean: torch.Tensor | None = None,
+                                 damp_frac: float = 0.0,
+                                 ) -> float:
+    """Hessian-weighted layer-output error of the exact deployed quantizer.
+
+    Returns ``tr(E H E^T) / tr(W H W^T)`` for the un-rotated weight error
+    ``E = (W R^T - Q(W R^T)) R`` of the packed weight the experiment would
+    actually deploy, including GPTQ with the rotated Hessian when configured.
+
+    Under ``mean``/``length_mean`` bias correction the deployed layer adds
+    ``mu_r E_r^T`` to its bias, so its output error is ``-(x - mu) E^T`` rather
+    than ``-x E^T``: the deployed error is weighted by the centered second
+    moment ``H - mu^T mu``, not by ``H``.  Passing ``activation_mean`` scores
+    that quantity instead, since ``tr(E mu^T mu E^T) = ||mu E^T||^2`` and the
+    rotation cancels.  Omit it for ``none``/``length`` correction, where no
+    mean is folded into the bias.  (``length`` needs no special handling: it is
+    applied inside ``quantize_weight`` and is already in ``E``.)
+
+    ``damp_frac`` is the value passed to ``collect_hessians``, whose
+    ``finalize`` adds ``damp_frac * mean(diag(H_raw)) * I``.  GPTQ wants that
+    ridge for Cholesky stability, but scoring through it measures
+    ``tr(E Sigma E^T) + lambda ||E||^2`` rather than the deployed error, so it
+    is removed here using ``lambda = damp_frac * mean(diag(H)) / (1 +
+    damp_frac)``.  The default 0.0 matches ``scripts/run_experiment.py``, which
+    damps only inside the GPTQ solver.
+    """
+    members = [w.detach().to(torch.float32) for w in _selection_members(weight)]
+    in_features = members[0].shape[1]
+    H = hessian.detach().to(device=members[0].device, dtype=torch.float32)
+    if H.shape != (in_features, in_features):
+        raise ValueError("rotation Hessian shape does not match weight input")
+    # The rotated Hessian and the ridge depend only on the rotation and H, so
+    # they are shared across the site's members.
+    rotated_hessian = (
+        rotate_hessian(rotation, H) if quant_cfg.error_comp == "gptq" else None
+    )
+    ridge = (damp_frac * torch.diagonal(H).mean() / (1.0 + damp_frac)
+             if damp_frac else None)
+    mean = (activation_mean.detach().reshape(1, in_features).to(
+        device=members[0].device, dtype=torch.float32)
+        if activation_mean is not None else None)
+
+    numerator = H.new_zeros(())
+    denominator = H.new_zeros(())
+    for w in members:
+        if w.shape[1] != in_features:
+            raise ValueError("shared-site weights disagree on input features")
+        rotated = rotation.rotate_weight(w)
+        # A fresh quantizer per member: a calibrated grid is fitted to the
+        # matrix it packs, exactly as QuantLinear.from_linear does per layer.
+        q = Quantizer(quant_cfg).quantize_weight(
+            rotated, H=rotated_hessian).dequantize().to(w.device)
+        error = rotation.inverse_activation(rotated - q)
+        numerator = numerator + (error @ H * error).sum()
+        denominator = denominator + (w @ H * w).sum()
+        if ridge is not None:
+            numerator = numerator - ridge * error.square().sum()
+            denominator = denominator - ridge * w.square().sum()
+        if mean is not None:
+            numerator = numerator - (mean @ error.T).square().sum()
+            denominator = denominator - (mean @ w.T).square().sum()
+    return (numerator.clamp_min(0.0)
+            / denominator.clamp_min(1e-12)).item()
+
+
+@torch.no_grad()
+def select_butterfly_checkpoint_hessian(rotation: ButterflyRotation,
+                                        reference: ButterflyRotation,
+                                        weight: torch.Tensor | Sequence[torch.Tensor],
+                                        quant_cfg: QuantConfig,
+                                        hessian: torch.Tensor,
+                                        min_improvement: float = 0.0,
+                                        activation_mean: torch.Tensor | None = None,
+                                        damp_frac: float = 0.0,
+                                        ) -> dict[str, Any]:
+    """Deployed-quantizer gate for Hessian-objective butterflies.
+
+    The training proxy (RMS assignment, no error compensation) is not the
+    deployed quantizer.  Keep the trained angles/signs only when the exact
+    packed weight beats the seeded FWHT reference on the Hessian-weighted
+    output error by the required margin; otherwise restore FWHT.
+
+    Pass ``activation_mean`` whenever the layer deploys ``mean``/``length_mean``
+    bias correction, so both arms are scored on the error that survives it.
+    """
+    reference_error = hessian_reconstruction_error(
+        reference, weight, quant_cfg, hessian, activation_mean, damp_frac)
+    candidate_error = hessian_reconstruction_error(
+        rotation, weight, quant_cfg, hessian, activation_mean, damp_frac)
+    accepted = candidate_error <= reference_error * (1.0 - min_improvement)
+    if not accepted:
+        rotation.theta.copy_(reference.theta)
+        rotation.signs.copy_(reference.signs)
+    return {
+        "selection_reference_mse": reference_error,
+        "selection_candidate_mse": candidate_error,
+        "selection_accepted": bool(accepted),
+        "selection_objective": "hessian",
+    }
+
+
+@torch.no_grad()
+def activation_reconstruction_error(rotation: Rotation,
+                                    weight: torch.Tensor | Sequence[torch.Tensor],
                                     quant_cfg: QuantConfig,
                                     activations: torch.Tensor,
                                     max_tokens: int = 64) -> float:
@@ -102,21 +232,30 @@ def activation_reconstruction_error(rotation: Rotation, weight: torch.Tensor,
     if quant_cfg.error_comp == "gptq":
         raise ValueError(
             "exact rotation checkpoint selection with GPTQ requires a Hessian")
-    w = weight.detach().to(torch.float32)
-    x = activations.detach().reshape(-1, w.shape[1])[:max_tokens]
-    x = x.to(device=w.device, dtype=torch.float32)
-    rotated = rotation.rotate_weight(w)
-    q = Quantizer(quant_cfg).quantize_weight(rotated).dequantize().to(w.device)
-    target = x @ w.T
-    pred = rotation.rotate_activation(x) @ q.T
-    return ((pred - target).pow(2).mean()
-            / target.pow(2).mean().clamp_min(1e-12)).item()
+    members = [w.detach().to(torch.float32) for w in _selection_members(weight)]
+    in_features = members[0].shape[1]
+    x = activations.detach().reshape(-1, in_features)[:max_tokens]
+    x = x.to(device=members[0].device, dtype=torch.float32)
+    rotated_x = rotation.rotate_activation(x)
+    # Summed rather than averaged so members of different output widths
+    # aggregate by energy; for a single member the ratio is unchanged.
+    error_energy = x.new_zeros(())
+    signal_energy = x.new_zeros(())
+    for w in members:
+        if w.shape[1] != in_features:
+            raise ValueError("shared-site weights disagree on input features")
+        rotated = rotation.rotate_weight(w)
+        q = Quantizer(quant_cfg).quantize_weight(rotated).dequantize().to(w.device)
+        target = x @ w.T
+        error_energy = error_energy + (rotated_x @ q.T - target).pow(2).sum()
+        signal_energy = signal_energy + target.pow(2).sum()
+    return (error_energy / signal_energy.clamp_min(1e-12)).item()
 
 
 @torch.no_grad()
 def select_butterfly_checkpoint(rotation: ButterflyRotation,
                                 reference: ButterflyRotation,
-                                weight: torch.Tensor,
+                                weight: torch.Tensor | Sequence[torch.Tensor],
                                 quant_cfg: QuantConfig,
                                 activations: torch.Tensor,
                                 max_tokens: int = 64,
@@ -173,7 +312,8 @@ def train_layer_rotation(rotation: Rotation, weight: torch.Tensor,
         if not isinstance(rotation, ButterflyRotation):
             raise TypeError("learned signs require a ButterflyRotation")
         initial_signs = rotation.signs.detach().clone()
-        rotation.enable_sign_training(cfg.sign_temperature)
+        rotation.enable_sign_training(
+            cfg.sign_temperature, cfg.sign_init_magnitude)
 
     x = target = target_power = None
     if cfg.objective == "activation":

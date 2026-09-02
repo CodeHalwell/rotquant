@@ -103,6 +103,20 @@
       "check": "native packed conformance status",
       "expected": "pass",
       "passed": true
+    },
+    {
+      "actual": 9078538752,
+      "check": "source loaded bytes equal total minus MTP head",
+      "expected": 9078538752,
+      "passed": true
+    },
+    {
+      "absolute_difference": 0.00405885710537035,
+      "actual": 58.25594114289463,
+      "check": "like-for-like tensor storage reduction",
+      "expected": 58.26,
+      "passed": true,
+      "tolerance": 0.005
     }
   ],
   "derived": {
@@ -111,6 +125,8 @@
     "joint_mean_ppl": 14.5548,
     "joint_mean_relative_ppl_pct": 4.710038057280164,
     "joint_worst_relative_ppl_pct": 5.775498017999858,
+    "like_for_like_tensor_storage_reduction_pct": 58.25594114289463,
+    "loaded_source_tensor_bytes": 9078538752,
     "long_cache_kl_reduction_pct": 10.620334860976666,
     "matched_cache_mean_ratio": 0.8022089847409393,
     "matched_cache_worst_ratio": 0.8351962131441176,
