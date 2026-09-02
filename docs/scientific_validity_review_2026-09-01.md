@@ -238,6 +238,20 @@ and mean-bias correction. Mechanisms checked here:
   path). Small, but it breaks the "codes are assigned against stored scales"
   invariant and should be fixed before the `scale8_w4` ablation arm runs,
   otherwise that arm conflates the bug with the method.
+- **The 8-bit scale encoder itself biased narrow-range blocks (found during
+  PR review, 2026-09-02).** A block of 256 scales whose range is below 0.0156
+  gets an fp16 step below the smallest normal value. The encoder divided by a
+  divisor clamped to the smallest normal while decoding multiplied by the true
+  subnormal step, so every scale in such a block was pulled toward the block
+  minimum by the subnormal ratio. Measured on synthetic 4-bit `mse_search`
+  scales with 256-scale blocks: for down-projection-like weights (σ ≈ 0.008)
+  every block was subnormal, the mean scale error was −18 % (worst −35 %), and
+  weight NMSE rose from 0.00779 to 0.01345 (+73 %); q/k/v-like weights
+  (σ ≈ 0.02) were unaffected; a 3× row spread gave 3.8 % subnormal blocks and
+  a −2.9 % worst error. This applied to every `scale_bits: 8` run, including
+  the bundled "optimized W4" arm, and is another reason that arm cannot be
+  interpreted. Fixed by dividing by the exact fp16 step and, in GPTQ, by
+  reusing the retained codes instead of re-deriving them.
 - **Mean-bias correction did not misbehave in a synthetic sink test**
   (typical-token output MSE ×1.00 with 1/512 tokens carrying a 400× channel
   outlier), so it is not an obvious suspect, but its benefit will also be

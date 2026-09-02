@@ -105,6 +105,12 @@
       "passed": true
     },
     {
+      "actual": 9078538752,
+      "check": "source loaded bytes equal total minus MTP head",
+      "expected": 9078538752,
+      "passed": true
+    },
+    {
       "absolute_difference": 0.00405885710537035,
       "actual": 58.25594114289463,
       "check": "like-for-like tensor storage reduction",

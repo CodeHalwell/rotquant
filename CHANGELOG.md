@@ -84,6 +84,16 @@ software.
 
 ### Fixed
 
+- The 8-bit scale encoder divided by a divisor clamped to the smallest normal
+  fp16 value while decoding multiplied by the true step. Blocks whose 256
+  scales span less than 0.0156 have a subnormal step, so every scale in them
+  was pulled toward the block minimum (measured −18 % mean and −35 % worst on
+  down-projection-like scales, +73 % weight quantization error). The encoder
+  now divides by the exact step; GPTQ reuses the retained scale codes instead
+  of re-deriving them. Found by the Codex review of the follow-up PR.
+- `scripts/audit_publication.py` derives the MTP head bytes and the loaded
+  tensor total from the source safetensors shard headers and checks them
+  against the manifest, and always checks the manifest's own MTP arithmetic.
 - With 8-bit double-quantised scales, GPTQ's lazily refit group scales were
   encoded per group column while the stored scales were encoded row-major, so
   packed codes were assigned against values the artifact did not store

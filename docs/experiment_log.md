@@ -737,6 +737,14 @@ E8P on four disjoint 8k-prefill/64-token confirmations.
 No free-running trajectory block was enabled in this composition profile.
 Accordingly, none of these arms advances directly to a release claim.
 
+Review note (2026-09-02): the `optimized_w4` arm's `scale_bits: 8` path used
+an encoder that pulled every scale in a narrow-range block toward the block
+minimum (subnormal fp16 step; up to −35 % on down-projection-like scales,
++73 % weight quantization error in synthetic replication), and its GPTQ codes
+were assigned against scales the artifact did not store. Both are fixed on the
+review branch; the planned single-factor ablation must use the fixed encoder
+before 8-bit scales can be blamed or cleared.
+
 ### 2026-09-01 — pinned Unsloth Qwen3.5-4B KL comparator (run pending)
 
 Implemented a resumable same-engine BF16-GGUF versus released

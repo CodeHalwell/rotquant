@@ -53,9 +53,9 @@ def test_gptq_codes_match_stored_scales_with_lazy_refit(scale_bits):
         error_comp="gptq", gptq_actorder=True, gptq_recompute_scales=True,
         scale_bits=scale_bits, scale_quant_group_size=256))
     selected = quantizer.select_scales(w)
-    decoded, _stored, offsets, steps = _encoded_storage_scales(
+    decoded, stored, offsets, steps = _encoded_storage_scales(
         selected, scale_bits, 256)
-    grid = (offsets, steps) if scale_bits == 8.0 else None
+    grid = (stored, offsets, steps) if scale_bits == 8.0 else None
     q_assigned, idx, _decoded, _encoded = quantizer._gptq_with_scale_grid(
         w.clone(), decoded, hessian.clone(), grid)
     qw = quantizer.quantize_weight(w, H=hessian)
@@ -70,11 +70,11 @@ def test_gptq_rejects_scale_grid_for_wide_scales():
     w = _weight(out=8, d=128)
     quantizer = Quantizer(QuantConfig(
         bits=3, group_size=32, error_comp="gptq", scale_bits=16.0))
-    decoded, _stored, offsets, steps = _encoded_storage_scales(
+    decoded, stored, offsets, steps = _encoded_storage_scales(
         quantizer.select_scales(w), 8.0, 256)
     with pytest.raises(ValueError, match="only meaningful for 8-bit"):
         quantizer._gptq_with_scale_grid(
-            w.clone(), decoded, torch.eye(128), (offsets, steps))
+            w.clone(), decoded, torch.eye(128), (stored, offsets, steps))
 
 
 @pytest.mark.parametrize("scale_bits", [8.0, 16.0])
@@ -103,3 +103,54 @@ def test_encoded_scales_are_retained_verbatim_rather_than_re_encoded():
         + stored.float()
         * steps.float()[torch.arange(scales.numel()) // 256].reshape_as(scales),
     )
+
+
+@pytest.mark.parametrize("centre,half_range", [(0.011, 0.001), (0.004, 0.0005), (0.02, 0.006)])
+def test_eight_bit_encoder_is_accurate_for_narrow_range_blocks(centre, half_range):
+    """Blocks whose fp16 step is subnormal must still decode to within half a step.
+
+    A block of 256 scales with a range below 0.0156 has a step below the
+    smallest normal fp16 value.  The previous encoder divided by a divisor
+    clamped to the smallest normal while decoding multiplied by the true
+    (smaller) step, pulling every scale toward the block minimum by up to
+    the subnormal ratio.  Typical LLM group scales (~0.01) hit this regime.
+    """
+    generator = torch.Generator().manual_seed(3)
+    scales = centre + (torch.rand(256, 20, generator=generator) * 2 - 1) * half_range
+    decoded, _stored, offsets, steps = _encoded_storage_scales(scales, 8.0, 256)
+    assert (steps.float() > 0).all()
+    assert (steps.float() < torch.finfo(torch.float16).smallest_normal).any()
+    # Achievable error: half a step, plus the fp16 rounding of the step
+    # (half an ulp, 2^-25 for subnormals) accumulated over up to 255 codes,
+    # plus the fp16 rounding of the offset.
+    step_max = steps.float().max().item()
+    tolerance = (0.5 * step_max
+                 + 255 * max(2.0 ** -25, step_max * 2.0 ** -11)
+                 + offsets.float().max().item() * 2.0 ** -11)
+    assert (decoded - scales).abs().max().item() <= tolerance
+    # No systematic pull toward the block minimum (the old encoder gave -18%).
+    assert (decoded - scales).mean().abs().item() < 2e-3 * scales.mean().item()
+
+
+def test_gptq_scale_grid_reuses_retained_codes_for_narrow_range_blocks():
+    generator = torch.Generator().manual_seed(4)
+    out, d = 256, 512
+    # Row scales concentrated around 0.01 so the 8-bit blocks are narrow.
+    w = torch.randn(out, d, generator=generator) * (
+        0.01 + 0.001 * torch.rand(out, 1, generator=generator))
+    hessian = _hessian(d, seed=4)
+    quantizer = Quantizer(QuantConfig(
+        bits=4, codebook="gaussian", scale="mse_search", group_size=128,
+        error_comp="gptq", gptq_actorder=True, gptq_recompute_scales=False,
+        scale_bits=8.0, scale_quant_group_size=256))
+    decoded, stored, offsets, steps = _encoded_storage_scales(
+        quantizer.select_scales(w), 8.0, 256)
+    assert (steps.float() < torch.finfo(torch.float16).smallest_normal).any()
+    _q, _idx, refit_decoded, (codes, _o, _s) = quantizer._gptq_with_scale_grid(
+        w.clone(), decoded, hessian.clone(), (stored, offsets, steps))
+    # Without lazy refits the retained codes and decoded scales pass through
+    # unchanged; re-deriving them would have shrunk subnormal-step blocks.
+    assert torch.equal(codes, stored)
+    assert torch.equal(refit_decoded, decoded)
+    qw = quantizer.quantize_weight(w, H=hessian)
+    assert torch.equal(qw.scales, stored)

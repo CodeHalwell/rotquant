@@ -22,6 +22,8 @@ pins, tests, and documents.
 | KV simulator | `rotquant/eval/kv_cache.py` | Mandatory endpoint check: a uniform 8-bit Gaussian cache must give KL ≤ 0.01 on the held-out calls before any candidate or allocator runs. | A floor that survives 8-bit codes cannot be quantization error; this would have caught the defect on the first run. |
 | KV simulator | `rotquant/eval/kv_cache.py` | Absolute-position tiers: decode writes are no longer their own sequence, sink rows are decided by absolute position, rows are packed once when they leave the recent window. | Previously every decode write stayed fp16 forever, so tiered results were optimistic beyond the recent window. |
 | Quantizer | `rotquant/quantize.py`, `rotquant/_internal.py`, `rotquant/linear.py` | `_encoded_storage_scales` encodes scales exactly once and every path retains that triple; GPTQ snaps lazily refit scales onto the frozen 8-bit grid. | With 8-bit scales, GPTQ assigned codes against per-group-encoded scales but stored row-major-encoded ones (1.1×10⁻³ relative mismatch); other paths re-encoded decoded values, which is not guaranteed idempotent. |
+| Quantizer (PR review follow-up) | `rotquant/quantize.py` | The 8-bit scale encoder divides by the exact fp16 step (subnormal steps allowed, zero step marks a constant block); the GPTQ grid path reuses the retained uint8 codes instead of re-deriving them. | Narrow-range blocks (range < 0.0156, typical for scales ≈ 0.01) had a subnormal step; the clamped divisor pulled every scale toward the block minimum (−18 % mean, −35 % worst on down-projection-like scales; weight NMSE +73 %). Raised as a P1 by the Codex review. |
+| Audit script (PR review follow-up) | `scripts/audit_publication.py` | `audit_source_checkpoint` derives the MTP head bytes and the loaded-tensor total from the safetensors shard headers and checks them against the manifest; the manifest's own MTP arithmetic is checked always. | Codex P2: a stale declared subtraction with a matching reported percentage would otherwise audit as passing. |
 | Rotation training | `rotquant/train_rotation.py`, `rotquant/patch.py` | `hessian_reconstruction_error` and `select_butterfly_checkpoint_hessian`; `patch_model` gates the Hessian objective against seeded FWHT under the deployed quantizer. | The Hessian objective trained under a proxy (RMS assignment, no GPTQ) and deployed the best proxy step with no packed-versus-FWHT comparison, unlike the activation objective. |
 | Rotation training | `rotquant/rotate.py`, `rotquant/train_rotation.py` | Learned-sign logits start at ±`init_magnitude` (default 0.1) instead of ±1. | With lr 10⁻³ and 200 Adam steps a logit moves at most ≈0.2, so ±1 could never cross zero: the arm was inert (measured flip rate 0). |
 | Notebooks | eight `notebooks/*.ipynb` | `transformers>=5.9,<6` → `transformers==5.9.0`. | The open range resolved to 5.16.x on 2026-08-29 and exposed the simulator defect; the pinned stages already used 5.9.0. |
@@ -157,6 +159,52 @@ scales, that plain rounding, GPTQ with act-order and lazy refit, and the
 residual pass all reproduce their packed codes from the stored scales and that
 `dequantize()` equals the GPTQ assignment reconstruction exactly.
 
+### 2.4b Follow-up from PR review: subnormal-step scale blocks (2026-09-02)
+
+**What was wrong.** `_encode_storage_scales` computed each 256-scale block's
+fp16 step as `(max − min)/255`. When a block's range is below 0.0156 that step
+is a subnormal fp16 value (below 6.1×10⁻⁵). The encoder divided by a divisor
+clamped to the smallest normal value, but `_decode_storage_scales` multiplies
+by the true subnormal step, so the decoded value of every scale above the
+block minimum was compressed by the ratio `step / 6.1e-5`. The Codex review
+spotted the same clamp in the new GPTQ grid path, where it would additionally
+have shrunk already-encoded codes a second time.
+
+**How much it mattered.** Measured on synthetic 4-bit `mse_search` scales from
+Gaussian weights, 256-scale row-major blocks:
+
+| Scale distribution | Subnormal-step blocks | Mean scale error (old) | Worst (old) | Weight NMSE fp16 / old 8-bit / fixed 8-bit |
+|---|---:|---:|---:|---|
+| q/k/v-like, σ ≈ 0.02 | 0 % | −0.001 % | −0.44 % | 0.00780 / 0.00780 / 0.00780 |
+| down-projection-like, σ ≈ 0.008 | 100 % | −18.1 % | −34.6 % | 0.00779 / 0.01345 / 0.00779 |
+| 3× row spread, σ ≈ 0.02 | 3.8 % | −0.04 % | −2.9 % | 0.00778 / 0.00779 / 0.00778 |
+
+Every `scale_bits: 8` run to date used this encoder, including the bundled
+"optimized W4" arm and the E8P cache smoke's scale metadata, so the factor
+ablation must be run with the fixed encoder before "8-bit scales" can be
+blamed or cleared.
+
+**Fix.** The encoder divides by exactly the fp16 step that decoding uses,
+treating only a zero step (constant block, or a range too small for even a
+subnormal step) specially. `_gptq_with_scale_grid` now receives the retained
+uint8 codes with the grid and uses them directly; refit scales are snapped
+with the same unclamped divisor. No storage layout, dtype or bitstream change.
+
+**Tests.** `test_eight_bit_encoder_is_accurate_for_narrow_range_blocks`
+(decoded scales within half a step for three narrow distributions) and
+`test_gptq_scale_grid_reuses_retained_codes_for_narrow_range_blocks` (codes and
+decoded scales pass through unchanged without refits and match the stored
+artifact).
+
+### 2.4c Follow-up from PR review: shard-derived MTP verification (2026-09-02)
+
+`audit_source_checkpoint` now reads every shard's safetensors header, checks
+the header total against the index, derives the `mtp.*` byte total, and checks
+both it and the loaded-tensor total against the manifest; `validate_numerical_claims`
+always checks that `tensor_bytes − mtp_head_bytes` equals
+`tensor_bytes_excluding_mtp`. Tests cover a two-shard fixture with correct and
+stale declarations.
+
 ### 2.5 Gate for the Hessian rotation objective
 
 **What was wrong.** `train_layer_rotation` with `objective: hessian` optimises
@@ -265,6 +313,8 @@ is labelled a null control with the measured ×πd/2k penalty.
   QJL variance ratio (×104 at d=4096, ×270 at d=11008, matching πd/2k), the
   sign-flip impossibility, the tiered write semantics, the GPTQ/8-bit mismatch
   (1.1×10⁻³ before, 0 after), and the Lloyd–Max anchors.
+- Old-versus-fixed 8-bit scale encoder on synthetic scale distributions as
+  tabulated in §2.4b.
 - Source checkpoint audit from the safetensors headers: 3,565,158,400
   quantisable weights × 4.125 bpw / 8 = 1,838,284,800 bytes, equal to the
   recorded `packed_weight_bytes`; `mtp.*` = 241,199,104 bytes.

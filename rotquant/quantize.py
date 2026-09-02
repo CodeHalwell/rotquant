@@ -427,14 +427,21 @@ def _encode_storage_scales(
         torch.finfo(torch.float16).smallest_normal)
     steps = ((maximum - offsets.float()).clamp_min(0.0) / 255.0).to(
         torch.float16)
-    safe_steps = steps.float().clamp_min(torch.finfo(torch.float16).smallest_normal)
-    codes = torch.round(
-        (grouped - offsets.float().unsqueeze(1)) / safe_steps.unsqueeze(1)
-    ).clamp_(0, 255).to(torch.uint8)
     # A constant block has no range; a zero step is an exact compact encoding.
-    constant = maximum <= offsets.float()
-    codes[constant] = 0
+    # A range too small for even a subnormal fp16 step is treated the same way.
+    constant = (maximum <= offsets.float()) | (steps.float() == 0)
     steps[constant] = 0
+    # Divide by exactly the fp16 step that decoding multiplies by.  Subnormal
+    # fp16 steps are legitimate for narrow-range blocks (a range below 0.0156
+    # gives a step below the smallest normal).  Clamping the divisor to the
+    # smallest normal, as an earlier version did, encoded such blocks with a
+    # larger step than decoding used and pulled every scale toward the block
+    # minimum by the subnormal ratio.
+    divisor = torch.where(constant, torch.ones_like(steps.float()), steps.float())
+    codes = torch.round(
+        (grouped - offsets.float().unsqueeze(1)) / divisor.unsqueeze(1)
+    ).clamp_(0, 255).to(torch.uint8)
+    codes[constant] = 0
     return codes.reshape(-1)[:flat.numel()].reshape(scales.shape), offsets, steps
 
 
@@ -800,7 +807,7 @@ class Quantizer:
                     "set scale='rms' or 'mse_search' when error_comp='gptq'."
                 )
             scale_grid = (
-                (scale_offsets, scale_steps)
+                (stored_scales, scale_offsets, scale_steps)
                 if self.cfg.scale_bits == 8.0 else None
             )
             q_w, idx, scales, encoded = self._gptq_with_scale_grid(
@@ -873,7 +880,7 @@ class Quantizer:
     def _gptq_with_scale_grid(
         self, w: torch.Tensor, scales: torch.Tensor,
         H: torch.Tensor | None,
-        scale_grid: tuple[torch.Tensor, torch.Tensor] | None,
+        scale_grid: tuple[torch.Tensor, torch.Tensor, torch.Tensor] | None,
     ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor,
                tuple[torch.Tensor, torch.Tensor | None, torch.Tensor | None]]:
         """Blocked GPTQ (lazy batch updates, as in the reference implementation).
@@ -886,12 +893,14 @@ class Quantizer:
         O(in_features) full-width rank-1 kernels into O(in_features/block)
         matmuls -- the difference between minutes and hours on a 7B model.
 
-        With 8-bit scales, ``scale_grid`` carries the blockwise affine grid
-        (offsets, steps) fixed from the initial scale selection.  Lazily refit
-        group scales are snapped onto that frozen grid, so the value each code
-        is assigned against is exactly the value the artifact stores; encoding
-        refit scales with their own per-group blocks and re-encoding the whole
-        matrix afterwards would place them on two different grids.
+        With 8-bit scales, ``scale_grid`` carries the retained encoding of the
+        initial scale selection: the uint8 codes and the blockwise affine grid
+        (offsets, steps).  The codes are used as they are rather than being
+        re-derived from decoded values, and lazily refit group scales are
+        snapped onto the same frozen grid, so the value each code is assigned
+        against is exactly the value the artifact stores; encoding refit scales
+        with their own per-group blocks and re-encoding the whole matrix
+        afterwards would place them on two different grids.
 
         Returns ``(dequantized, indices, decoded scales, (stored, offsets,
         steps))``.
@@ -934,19 +943,21 @@ class Quantizer:
         if scale_grid is not None:
             if self.cfg.scale_bits != 8.0:
                 raise ValueError("a scale grid is only meaningful for 8-bit scales")
-            offsets, steps = scale_grid
+            codes, offsets, steps = scale_grid
             n_groups = working_scales.shape[1]
+            if tuple(codes.shape) != (out, n_groups):
+                raise ValueError("scale grid codes must match the scale matrix shape")
             block_ids = (
                 torch.arange(out * n_groups, device=W.device)
                 // self.cfg.scale_quant_group_size
             ).reshape(out, n_groups)
             grid_offsets = offsets.to(device=W.device, dtype=torch.float32)[block_ids]
             grid_steps = steps.to(device=W.device, dtype=torch.float32)[block_ids]
-            safe_steps = grid_steps.clamp_min(torch.finfo(torch.float16).smallest_normal)
-            grid_codes = torch.round(
-                (working_scales - grid_offsets) / safe_steps
-            ).clamp_(0, 255)
-            grid_codes[grid_steps == 0] = 0
+            # Divide by the exact (possibly subnormal) fp16 step that decoding
+            # multiplies by; a zero step marks a constant block.
+            safe_steps = torch.where(
+                grid_steps == 0, torch.ones_like(grid_steps), grid_steps)
+            grid_codes = codes.to(device=W.device, dtype=torch.float32)
             working_scales = grid_offsets + grid_codes * grid_steps
 
         for i1 in range(0, inf, bs):
@@ -1000,7 +1011,7 @@ class Quantizer:
         inverse = torch.empty_like(permutation)
         inverse[permutation] = torch.arange(inf, device=permutation.device)
         if grid_codes is not None:
-            offsets, steps = scale_grid
+            _initial_codes, offsets, steps = scale_grid
             encoded = (grid_codes.to(torch.uint8), offsets, steps)
             decoded = working_scales
         else:
