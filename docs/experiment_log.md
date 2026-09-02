@@ -787,6 +787,99 @@ the cache studies with the fixed simulator, an explicit Transformers pin, a
 mandatory K8/V8 near-zero endpoint row, and at least 10^4 evaluated tokens per
 seed before re-selecting the deployment map.
 
+### 2026-09-02 — long-context W4/W4A8 + 2-bit E8P cache result (provisional)
+
+Reported from a GPU run outside this container; no result JSON is versioned in
+the repository yet, so this entry records the numbers and the checks they must
+still pass. Four 8,192-token prompts, 256 continuation tokens (1,024 evaluated
+tokens). `configs/qwen35_4b_long_context_kv_cuda.yaml` ships
+`continuation_len: 64`, so the run used a modified continuation length.
+
+| Arm | Cache KL | Top-1 agreement |
+|---|---:|---:|
+| FP16 + E8P | 0.01920 | 92.97% (952/1024) |
+| W4 + E8P | 0.02000 | 92.97% (952/1024) |
+| W4A8 + E8P | 0.02074 | 92.58% (948/1024) |
+
+Reported cache accounting: 2.188 effective KV bits, 7.313x raw K/V
+compression, 4.652x whole-cache compression after non-K/V recurrent state;
+W4A8+E8P KL interval `[0.01727, 0.02452]`.
+
+**Internal consistency.** The accounting reproduces exactly from the config and
+from the earlier 2,048-token smoke, so it is arithmetically sound:
+
+- `16 / 2.188 = 7.313`, matching the reported raw ratio (as `16 / 2.371 =
+  6.748` matched the smoke's 6.749).
+- The smoke's 2.558x whole-cache ratio implies non-K/V state equal to 0.3986x
+  the source K/V bytes at 2,048 tokens. That state is length independent, so at
+  8,192 tokens it is 0.0996x, predicting a whole-cache ratio of 4.652 — the
+  reported figure.
+- Solving the two effective-bit figures for a fixed fp16 row count gives a base
+  packed cost of 2.127 bits per value and 36.0 fp16 rows. The config is 2-bit
+  E8P with 8-bit scales at group 64 (`2 + 8/64 = 2.125`), `sink_tokens: 4` and
+  `recent_window: 32` (36 rows).
+
+The context-length claim follows from the same identity: the fp16 tier is a
+fixed 36 rows, so its share falls as 1/length. That is amortisation of a known
+overhead, not a measured quality effect.
+
+**Blocking check: which simulator.** This is exactly the configuration the
+2026-09-01 review flagged. 256 continuation tokens against a 32-row recent
+window means 224 decode rows must age out and be packed. On the pre-fix
+simulator every decode write was treated as its own sequence and stayed fp16
+permanently, so:
+
+- the KL is optimistic — the most recently written and most heavily attended
+  rows were never quantized;
+- 2.188 bits / 7.313x is prefill-only accounting either way (the metrics are
+  produced by `simulate_packed_kv_cache` during prefill), but on the pre-fix
+  simulator the end-of-decode cache really holds 292 fp16 rows of 8,448, which
+  is 2.605 effective bits and 6.14x — 19% worse than reported. On the fixed
+  simulator the end state is 36 rows of 8,448, 2.184 bits and 7.33x, so the
+  reported figure is the honest steady state.
+
+The run is admissible only if its result JSON carries
+`metrics["kv_cache"]["endpoint_check"]` with `passed: true`. If that key is
+absent the run predates the fix and must be repeated.
+
+**Second check: the K/V path shares the 8-bit scale encoder.** `quantize_kv`
+builds a `QuantConfig` and calls `Quantizer.quantize_weight`, and the
+long-context config sets `scale_bits: 8` with `scale_quant_group_size: 256`.
+A run predating `c94cd57` therefore compressed any 256-scale block spanning
+less than about 0.0156 toward its minimum. Whether that bit here is decidable
+from the run's own scale blocks and should be checked.
+
+**Statistics.** `paired_token_bootstrap` resamples the 1,024 tokens
+independently, but they come from 4 prompts sharing a prefill cache and one
+quantization draw, so `[0.01727, 0.02452]` is narrower than a prompt-clustered
+interval. The conclusion drawn from it — that the arms are indistinguishable —
+is conservative and survives a wider interval, but the interval itself must not
+be published as a 95% CI. With 4 clusters no interval is reliable; report the
+point estimate and the prompt count. The K/V evaluator has no cluster bootstrap
+and no `interval_reliable` flag; `scripts/run_qwen35_next_stage.py` has the
+flag but counts samples rather than clusters.
+
+**Wording.** This supersedes rather than confirms the 64-token E8P smoke: 0.02960
+on 64 tokens against 0.02074 on 1,024, at a different prefill and continuation
+length. What genuinely replicates is the compression accounting, shown above.
+
+**Accepted limitation (as reported).** Each arm compares its own compressed
+cache with its own full-precision cache, so this isolates E8P cache damage but
+does not measure cumulative divergence from one fixed FP16 teacher. These KLs
+cannot be added to the weight-only KLs. Cross-arm comparison remains valid for
+the question actually asked — whether weight precision changes cache
+sensitivity — and the answer here is that it is not demonstrated to.
+
+**Unsloth figures.** "5.35% smaller" and the 5.66% in
+`docs/unsloth_qwen35_4b_comparison.md` are the same 202,752,992 bytes over
+different denominators (RotQuant's 3,787,286,336 and Unsloth's 3,584,533,344).
+Both are correct; state the denominator when quoting either. The comparison is
+weight-only and is unaffected by the cache findings above.
+
+**Next decision.** Re-run this configuration on the fixed simulator with the
+endpoint check recorded, version the result JSON under `research/results/`, and
+only then promote any of these numbers out of provisional status.
+
 ## Entry template
 
 For each new run, append:
