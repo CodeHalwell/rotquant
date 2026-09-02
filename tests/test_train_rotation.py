@@ -294,3 +294,123 @@ def test_patch_model_gates_hessian_objective_against_fwht():
     assert train["objective"] == "hessian"
     assert "selection_acceptance_rate" in train
     assert train["mean_selection_deployed_mse"] <= train["mean_selection_reference_mse"]
+
+
+def test_hessian_error_with_a_mean_matches_the_deployed_bias_corrected_layer():
+    """The gate's score must be the error that survives the deployed bias."""
+    from rotquant.quantize import Quantizer
+    from rotquant.train_rotation import hessian_reconstruction_error
+
+    torch.manual_seed(0)
+    out, d, n = 16, 32, 4096
+    # Post-attention inputs carry a substantial per-channel mean; that is the
+    # component apply_mean_bias_correction cancels.
+    x = torch.randn(n, d) * 0.6 + torch.randn(d) * 1.5
+    weight = torch.randn(out, d) * 0.1
+    hessian = x.T @ x / n
+    mean = x.mean(dim=0)
+    quant_cfg = QuantConfig(bits=4, group_size=8, bias_correction="mean")
+    rotation = RandomizedHadamard(d, block=d, seed=0)
+
+    # Reproduce exactly what patch_model deploys for this layer.
+    rotated = rotation.rotate_weight(weight)
+    packed = Quantizer(quant_cfg).quantize_weight(rotated).dequantize()
+    correction = (rotation.rotate_activation(mean.reshape(1, -1))
+                  @ (rotated - packed).T).reshape(-1)
+    deployed = rotation.rotate_activation(x) @ packed.T + correction
+    empirical = (deployed - x @ weight.T).pow(2).sum(dim=1).mean()
+
+    centered_signal = ((weight @ hessian * weight).sum()
+                       - (mean.reshape(1, -1) @ weight.T).square().sum())
+    scored = hessian_reconstruction_error(
+        rotation, weight, quant_cfg, hessian, mean) * centered_signal
+    assert scored == pytest.approx(empirical.item(), rel=1e-4)
+
+    # Without the mean the gate scores a component the deployment removes.
+    uncentered = hessian_reconstruction_error(
+        rotation, weight, quant_cfg, hessian) * (
+            weight @ hessian * weight).sum()
+    assert uncentered > empirical * 2
+
+
+def test_hessian_gate_decision_follows_the_mean_corrected_error():
+    from rotquant.train_rotation import (
+        hessian_reconstruction_error,
+        select_butterfly_checkpoint_hessian,
+    )
+
+    torch.manual_seed(0)
+    out, d, n = 16, 32, 4096
+    x = torch.randn(n, d) * 0.5 + torch.randn(d) * 2.0
+    weight = torch.randn(out, d) * 0.1
+    hessian, mean = x.T @ x / n, x.mean(dim=0)
+    quant_cfg = QuantConfig(bits=3, group_size=8, bias_correction="mean")
+
+    reference = ButterflyRotation(d, block=d, seed=0)
+    candidate = ButterflyRotation(d, block=d, seed=500)
+    with torch.no_grad():
+        candidate.theta.add_(0.3)
+    trained_theta = candidate.theta.detach().clone()
+
+    # This pair ranks one way on H and the other way on H - mean^T mean.
+    assert (hessian_reconstruction_error(candidate, weight, quant_cfg, hessian)
+            > hessian_reconstruction_error(
+                reference, weight, quant_cfg, hessian))
+    assert (hessian_reconstruction_error(
+        candidate, weight, quant_cfg, hessian, mean)
+        < hessian_reconstruction_error(
+            reference, weight, quant_cfg, hessian, mean))
+
+    stats = select_butterfly_checkpoint_hessian(
+        candidate, reference, weight, quant_cfg, hessian,
+        activation_mean=mean)
+    assert stats["selection_accepted"]
+    assert torch.equal(candidate.theta, trained_theta)
+
+    # The same pair without the mean discards the better deployed rotation.
+    reverted = ButterflyRotation(d, block=d, seed=500)
+    with torch.no_grad():
+        reverted.theta.add_(0.3)
+    assert not select_butterfly_checkpoint_hessian(
+        reverted, reference, weight, quant_cfg, hessian)["selection_accepted"]
+
+
+def test_patch_model_passes_the_activation_mean_to_the_hessian_gate():
+    import rotquant.train_rotation as train_module
+
+    seen = {}
+    original = train_module.select_butterfly_checkpoint_hessian
+
+    def spy(*args, **kwargs):
+        seen[args[2].shape] = kwargs.get("activation_mean")
+        return original(*args, **kwargs)
+
+    torch.manual_seed(9)
+    x = torch.randn(256, 64) * torch.linspace(0.5, 2.0, 64)
+    hessians = {"0": x.T @ x / 256}
+    means = {"0": x.mean(dim=0)}
+
+    def run(bias_correction):
+        seen.clear()
+        model = torch.nn.Sequential(nn.Linear(64, 16), nn.Linear(16, 8))
+        config = PatchConfig(
+            quant=QuantConfig(bits=3, group_size=32,
+                              bias_correction=bias_correction),
+            rotation="butterfly", block=32, include=["0"],
+            train_rotation={"steps": 2, "lr": 1e-3, "objective": "hessian",
+                            "assignment_scale": "rms"},
+        )
+        patch_model(model, config, hessians=hessians, activation_means=means)
+        return next(iter(seen.values()))
+
+    monkey = pytest.MonkeyPatch()
+    monkey.setattr(train_module, "select_butterfly_checkpoint_hessian", spy)
+    try:
+        for correction in ("mean", "length_mean"):
+            passed = run(correction)
+            assert passed is not None, correction
+            assert torch.equal(passed, means["0"])
+        for correction in ("none", "length"):
+            assert run(correction) is None, correction
+    finally:
+        monkey.undo()

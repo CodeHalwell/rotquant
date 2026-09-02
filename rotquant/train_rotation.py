@@ -101,12 +101,23 @@ class RotationTrainConfig:
 @torch.no_grad()
 def hessian_reconstruction_error(rotation: Rotation, weight: torch.Tensor,
                                  quant_cfg: QuantConfig,
-                                 hessian: torch.Tensor) -> float:
+                                 hessian: torch.Tensor,
+                                 activation_mean: torch.Tensor | None = None,
+                                 ) -> float:
     """Hessian-weighted layer-output error of the exact deployed quantizer.
 
     Returns ``tr(E H E^T) / tr(W H W^T)`` for the un-rotated weight error
     ``E = (W R^T - Q(W R^T)) R`` of the packed weight the experiment would
     actually deploy, including GPTQ with the rotated Hessian when configured.
+
+    Under ``mean``/``length_mean`` bias correction the deployed layer adds
+    ``mu_r E_r^T`` to its bias, so its output error is ``-(x - mu) E^T`` rather
+    than ``-x E^T``: the deployed error is weighted by the centered second
+    moment ``H - mu^T mu``, not by ``H``.  Passing ``activation_mean`` scores
+    that quantity instead, since ``tr(E mu^T mu E^T) = ||mu E^T||^2`` and the
+    rotation cancels.  Omit it for ``none``/``length`` correction, where no
+    mean is folded into the bias.  (``length`` needs no special handling: it is
+    applied inside ``quantize_weight`` and is already in ``E``.)
     """
     w = weight.detach().to(torch.float32)
     H = hessian.detach().to(device=w.device, dtype=torch.float32)
@@ -119,8 +130,15 @@ def hessian_reconstruction_error(rotation: Rotation, weight: torch.Tensor,
     q = Quantizer(quant_cfg).quantize_weight(
         rotated, H=rotated_hessian).dequantize().to(w.device)
     error = rotation.inverse_activation(rotated - q)
-    return ((error @ H * error).sum()
-            / (w @ H * w).sum().clamp_min(1e-12)).item()
+    numerator = (error @ H * error).sum()
+    denominator = (w @ H * w).sum()
+    if activation_mean is not None:
+        mean = activation_mean.detach().reshape(1, w.shape[1]).to(
+            device=w.device, dtype=torch.float32)
+        numerator = numerator - (mean @ error.T).square().sum()
+        denominator = denominator - (mean @ w.T).square().sum()
+    return (numerator.clamp_min(0.0)
+            / denominator.clamp_min(1e-12)).item()
 
 
 @torch.no_grad()
@@ -130,6 +148,7 @@ def select_butterfly_checkpoint_hessian(rotation: ButterflyRotation,
                                         quant_cfg: QuantConfig,
                                         hessian: torch.Tensor,
                                         min_improvement: float = 0.0,
+                                        activation_mean: torch.Tensor | None = None,
                                         ) -> dict[str, Any]:
     """Deployed-quantizer gate for Hessian-objective butterflies.
 
@@ -137,11 +156,14 @@ def select_butterfly_checkpoint_hessian(rotation: ButterflyRotation,
     deployed quantizer.  Keep the trained angles/signs only when the exact
     packed weight beats the seeded FWHT reference on the Hessian-weighted
     output error by the required margin; otherwise restore FWHT.
+
+    Pass ``activation_mean`` whenever the layer deploys ``mean``/``length_mean``
+    bias correction, so both arms are scored on the error that survives it.
     """
     reference_error = hessian_reconstruction_error(
-        reference, weight, quant_cfg, hessian)
+        reference, weight, quant_cfg, hessian, activation_mean)
     candidate_error = hessian_reconstruction_error(
-        rotation, weight, quant_cfg, hessian)
+        rotation, weight, quant_cfg, hessian, activation_mean)
     accepted = candidate_error <= reference_error * (1.0 - min_improvement)
     if not accepted:
         rotation.theta.copy_(reference.theta)

@@ -333,10 +333,17 @@ def patch_model(model: nn.Module, cfg: PatchConfig,
                 reference_rot = ButterflyRotation(
                     work_linear.in_features, block=cfg.block,
                     seed=cfg.seed + i, device=work_linear.weight.device)
+                # Score both arms on the error that survives the deployed
+                # mean bias correction; otherwise the gate ranks a component
+                # that apply_mean_bias_correction cancels.
                 selection = select_butterfly_checkpoint_hessian(
                     weight_rot, reference_rot, selection_weight, layer_quant,
                     source_hessian,
-                    min_improvement=train_cfg.selection_min_improvement)
+                    min_improvement=train_cfg.selection_min_improvement,
+                    activation_mean=(
+                        activation_means.get(name)
+                        if layer_quant.bias_correction in {"mean", "length_mean"}
+                        else None))
                 stats.update(selection)
                 stats["selection_tokens"] = 0
             train_stats.append(stats)

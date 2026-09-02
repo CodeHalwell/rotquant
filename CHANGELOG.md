@@ -57,7 +57,12 @@ software.
 - `train_rotation.select_butterfly_checkpoint_hessian` and
   `hessian_reconstruction_error`: the Hessian rotation objective is now gated
   against seeded FWHT under the exact deployed quantizer (including GPTQ), as
-  the activation objective already was.
+  the activation objective already was. Both take an `activation_mean`, which
+  `patch_model` supplies whenever the layer deploys `mean`/`length_mean` bias
+  correction: that correction folds the mean error into the output bias, so the
+  deployed error is weighted by the centered second moment `H - mu^T mu` rather
+  than by `H`, and scoring `H` ranks a component the deployment cancels. Found
+  by the Codex review of the follow-up PR.
 - `ButterflyRotation.enable_sign_training(init_magnitude=...)` and
   `RotationTrainConfig.sign_init_magnitude` (default 0.1): the previous ±1
   logit initialisation could never cross zero under the shipped learning
