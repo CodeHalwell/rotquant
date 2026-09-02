@@ -1,6 +1,6 @@
 # Unsloth Qwen3.5-4B comparison note
 
-Research snapshot: 2026-09-01.
+Research snapshot: 2026-09-02.
 
 ## What exists publicly
 
@@ -58,14 +58,33 @@ BF16 and UD through the same engine removes the largest avoidable engine
 confounder. The result still has to match RotQuant's recorded input hashes
 before the two KL values are placed in the same development table.
 
+## Completed development result
+
+The Colab run at RotQuant revision
+`06c1e73eeae97aa0bfae432ea7f10d88fb70817f` completed on the exact four
+registered C4 inputs (2,044 next-token distributions). The prompt hashes match
+the earlier RotQuant W4A8 run.
+
+| Metric | RotQuant W4 | Unsloth UD-Q4_K_XL |
+|---|---:|---:|
+| Complete artifact bytes | 3,787,286,336 | **3,584,533,344** |
+| Mean teacher KL | 0.022258 | **0.012944** |
+| P95 teacher KL | 0.070567 | **0.036145** |
+| Top-1 agreement | 92.710% | **93.689%** |
+| NLL delta | 0.013978 | **0.011557** |
+
+Relative to the RotQuant point estimate, the Unsloth anchor has 41.85% lower
+mean KL, 48.78% lower P95 KL, and 0.98 percentage points higher top-1
+agreement, while its complete bundle is 5.35% smaller. The Unsloth
+within-engine 95% intervals are `[0.011966, 0.014042]` for mean KL and
+`[92.613%, 94.716%]` for top-1 agreement. This is strong development evidence
+that the next RotQuant allocator must reduce tail errors, but it is not a
+formal provider ranking: RotQuant and Unsloth used different execution engines
+and the artifacts fail the registered 1% byte-matching gate.
+
 ## What this does and does not answer
 
-The next Colab result will answer whether released Unsloth UD-Q4_K_XL changes
-the same held-out token distributions more or less than current RotQuant W4 on
-this small developmental C4 slice. It also gives top-1 agreement, which directly
-answers whether the most likely predicted token changed.
-
-It will not establish Dynamic 3.0 parity, because:
+This result does not establish Dynamic 3.0 parity, because:
 
 - the released Qwen3.5-4B control is documented as Dynamic 2.0;
 - the artifacts differ by 5.66% in complete bytes;

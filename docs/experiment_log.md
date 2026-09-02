@@ -729,16 +729,49 @@ E8P on four disjoint 8k-prefill/64-token confirmations.
 No free-running trajectory block was enabled in this composition profile.
 Accordingly, none of these arms advances directly to a release claim.
 
-### 2026-09-01 — pinned Unsloth Qwen3.5-4B KL comparator (run pending)
+### 2026-09-02 — Unsloth anchor and four-prompt 8k E8 confirmation
 
-Implemented a resumable same-engine BF16-GGUF versus released
-UD-Q4_K_XL full-vocabulary KL comparator. It pins the Unsloth repository,
-llama-cpp-python wrapper, llama.cpp submodule, C4 revision, prompt token IDs,
-artifact sizes, and hashes. It will run by default before the corrected
-long-context stage in the next Colab. The complete Unsloth text model plus F16
-projector is 3,584,533,344 bytes; current complete RotQuant W4 is 5.66% larger,
-so this is a nearest-release developmental anchor rather than a <=1% matched-
-byte competitive result. See `docs/unsloth_qwen35_4b_comparison.md`.
+The pinned Unsloth comparator and corrected long-context stage completed at
+RotQuant revision `06c1e73eeae97aa0bfae432ea7f10d88fb70817f`. The exact raw
+bundle and compact record are versioned under
+`research/results/raw/qwen35_4b_long_kv_unsloth_06c1e73eeae9/` and
+`research/results/qwen35_4b_long_kv_unsloth_06c1e73eeae9.json`.
+
+On the four registered 512-token C4 inputs, released UD-Q4_K_XL produced mean
+KL 0.012944 `[0.011966, 0.014042]`, P95 KL 0.036145, top-1 agreement 93.689%
+`[92.613%, 94.716%]`, and NLL delta 0.011557
+`[0.003845, 0.019315]`. Current RotQuant W4 point estimates on the same token
+hashes are KL 0.022258, P95 KL 0.070567, top-1 92.710%, and NLL delta 0.013978.
+Unsloth therefore leads this development slice, particularly in the KL tail,
+while its complete 3,584,533,344-byte artifact is 5.35% smaller than RotQuant's
+3,787,286,336-byte accounting. This remains a different-engine, unmatched-byte
+anchor rather than a formal provider result. See
+`docs/unsloth_qwen35_4b_comparison.md`.
+
+The E8 confirmation used the same four disjoint C4 calls for every arm, each
+with 8,192 prefill and 64 continuation tokens. Across 256 evaluated tokens, the
+2-bit E8P cache reached 2.188 effective bpv, 7.313x raw K/V compression, and
+4.652x whole-cache compression after counting 26,738,688 bytes of recurrent
+state. Results were:
+
+| Weight/activation arm + E8 | Cache KL (95% CI) | Top-1 (95% CI) | NLL delta |
+|---|---:|---:|---:|
+| Source FP16 | 0.01920 `[0.01583, 0.02295]` | 92.97% `[89.84%, 96.09%]` | 0.04177 |
+| Promoted W4 | 0.02000 `[0.01621, 0.02449]` | 92.97% `[89.84%, 96.09%]` | 0.03475 |
+| W4A8 | 0.02074 `[0.01727, 0.02452]` | 92.58% `[89.45%, 95.70%]` | 0.02902 |
+
+The expanded W4A8 result is consistent with the earlier 64-token smoke: its KL
+intervals overlap, while longer context amortizes tiering overhead from 2.371
+to 2.188 effective bpv and raises whole-cache compression from 2.558x to
+4.652x. Retain E8P for the next stage. The three long-context intervals overlap,
+so this run does not select A8 over weight-only W4.
+
+Most importantly, each arm uses its own full-cache version as teacher. These
+numbers isolate cache damage under that arm; they do not measure cumulative
+W4/W4A8 plus E8 divergence from one FP16 full-cache model, and they cannot be
+added to the short-context weight KL. The next long-context collector must
+persist one fixed FP16 full-cache teacher and score every combined system
+against it before making an end-to-end quality claim.
 
 ## Entry template
 
