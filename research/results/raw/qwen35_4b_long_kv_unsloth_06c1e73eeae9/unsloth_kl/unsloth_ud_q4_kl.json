@@ -1,0 +1,72 @@
+{
+  "protocol": "qwen35-4b-unsloth-gguf-kl-v1",
+  "scope": "same-engine BF16-GGUF to UD-Q4_K_XL text-backbone KL; F16 projector counted in deployed candidate bytes but not executed",
+  "engine": "llama.cpp via llama-cpp-python",
+  "llama_cpp_python_revision": "3691546f1c9e0c1bf93323dff02230bd959cf562",
+  "llama_cpp_engine_revision": "4df29be4f4c3673f428170fda944a5b19f743bb8",
+  "gguf_repo": "unsloth/Qwen3.5-4B-GGUF",
+  "gguf_revision": "e87f176479d0855a907a41277aca2f8ee7a09523",
+  "source": {
+    "name": "Qwen3.5-4B-BF16.gguf",
+    "bytes": 8424393632,
+    "sha256": "9e6e2841a75f503ccb330831832fd7861266e187e0dbf149a954219ccb8c197a"
+  },
+  "candidate": {
+    "files": [
+      {
+        "name": "Qwen3.5-4B-UD-Q4_K_XL.gguf",
+        "bytes": 2912109728,
+        "sha256": "b252c5610a42ca82d20fe2a12813e9d069eed89292907e26c783eeb0bc961bc7"
+      },
+      {
+        "name": "mmproj-F16.gguf",
+        "bytes": 672423616,
+        "sha256": "cd88edcf8d031894960bb0c9c5b9b7e1fea6ebee02b9f7ce925a00d12891f864"
+      }
+    ],
+    "executed_file": "Qwen3.5-4B-UD-Q4_K_XL.gguf",
+    "counted_projector": "mmproj-F16.gguf",
+    "complete_artifact_bytes": 3584533344
+  },
+  "prompt_manifest_fingerprint": "00447f4dcfea260bdcd7a4c3e38fbda745ec02b62d8bdfd407832d8e6bd9087d",
+  "collection_fingerprint": "df721b2d57042b112d785f670dc309202f9e68e84a85eb5d2bceaa677a064e20",
+  "completed_rotquant_w4a8_input_hashes_match": true,
+  "metrics": {
+    "prompts": 4,
+    "tokens": 2044,
+    "mean_teacher_kl": 0.012943536043167114,
+    "median_teacher_kl": 0.008398177102208138,
+    "p95_teacher_kl": 0.03614513948559761,
+    "max_teacher_kl": 0.41837629675865173,
+    "top1_agreement": 0.9368884540117417,
+    "source_nll": 2.8540202056945083,
+    "candidate_nll": 2.865577665367266,
+    "nll_delta": 0.011557459672757895,
+    "input_hashes": [
+      "cf0fb236893f847ff99cb0f571d38604fcb9446ee9df3b5d780a6fa7bb8e6996",
+      "f798e40153c544c8469d6c036999956e3178fdefc533a10b882348409f643f85",
+      "76dfffdaf3002f54dc29343d066c32626f61fb6aa530e337155d6f46c812dc1b",
+      "a68977746b8c8a843f193c2b41b4401a92ea7bda637cd894196d4d6b5dd3d0ef"
+    ],
+    "paired_token_bootstrap": {
+      "draws": 4000,
+      "seed": 1701,
+      "confidence": 0.95,
+      "intervals": {
+        "mean_teacher_kl": [
+          0.011965616539071883,
+          0.014041776385190169
+        ],
+        "top1_agreement": [
+          0.9261252446183953,
+          0.9471624266144814
+        ],
+        "nll_delta": [
+          0.0038450432333614914,
+          0.01931526196129371
+        ]
+      }
+    }
+  },
+  "comparison_warning": "Compare with RotQuant only when input_hashes match. This nearest released Unsloth Q4 artifact is not within the registered 1% matched-byte gate of the current RotQuant W4 artifact."
+}

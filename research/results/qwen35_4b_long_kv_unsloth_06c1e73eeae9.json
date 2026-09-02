@@ -1,0 +1,147 @@
+{
+  "schema_version": 1,
+  "code_revision": "06c1e73eeae97aa0bfae432ea7f10d88fb70817f",
+  "model": "unsloth/Qwen3.5-4B",
+  "model_revision": "3764fa359b9082ea5a1e4a5e3ac3aaf6e9671636",
+  "seed": 0,
+  "protocols": [
+    "qwen35-next-stage-v2",
+    "qwen35-4b-unsloth-gguf-kl-v1"
+  ],
+  "delivered_summary_sha256": "3b1d130761303b5c6b87b87086d800870cdd17be0a1d9e06028380a2646c0ec3",
+  "raw_file_sha256": {
+    "next_stage_summary.csv": "fd01bf6e7004153596942c3cf17593dd779ca2e2d2f3b60104cceb6732595f18",
+    "next_stage_summary.json": "3b1d130761303b5c6b87b87086d800870cdd17be0a1d9e06028380a2646c0ec3",
+    "long_kv/source_fp16_e8.json": "171619d46d692ba9aa5f0d5dc5c19b680d8062ea9ab4bfd99f1dc9ecb529c98e",
+    "long_kv/promoted_w4_e8.json": "1f20e977a88d690c6b17dba293ab05ab81c10c1f77e34cea4a22780584bfb007",
+    "long_kv/w4a8_e8.json": "a2a49d8bd0e3af8b41c8795b0b04fb6837eca3e9f9be92020a733c1181816260",
+    "unsloth_kl/prompt_manifest.json": "ce2490cc298f5b05fddd006b5aa9e36ed6339a76cc218c1edb78766d7961b1b4",
+    "unsloth_kl/candidate_records/prompt-000.json": "f58cae5273579d95e1c88beb23f1f923544e0aa611fa8f0ff53549034f2b764e",
+    "unsloth_kl/candidate_records/prompt-001.json": "fd45c79fd7f8b4ef89968cc2a0f865a5bf6d27e2a65ffaaf35604a0e4266f365",
+    "unsloth_kl/candidate_records/prompt-002.json": "e6a7a6ec36690c40f88dd1f822969c685e699708de99d35385728daa93b12f78",
+    "unsloth_kl/candidate_records/prompt-003.json": "3dcd1175ee1a8aaa6ac60d3ab53263b5702c1a1c61f5c45b0bc95b8f626ec374",
+    "unsloth_kl/unsloth_ud_q4_kl.json": "09821de262e05e9c10ffd92be68a501812b983d817479a8044adf5e104eb8485"
+  },
+  "unsloth_development_anchor": {
+    "scope": "same-engine BF16 GGUF to UD-Q4_K_XL text-backbone KL",
+    "prompts": 4,
+    "tokens": 2044,
+    "input_hashes_match_rotquant_w4a8": true,
+    "complete_artifact_bytes": 3584533344,
+    "mean_teacher_kl": 0.012943536043167114,
+    "mean_teacher_kl_bootstrap_95_ci": [
+      0.011965616539071883,
+      0.014041776385190169
+    ],
+    "median_teacher_kl": 0.008398177102208138,
+    "p95_teacher_kl": 0.03614513948559761,
+    "max_teacher_kl": 0.41837629675865173,
+    "top1_agreement": 0.9368884540117417,
+    "top1_agreement_bootstrap_95_ci": [
+      0.9261252446183953,
+      0.9471624266144814
+    ],
+    "nll_delta": 0.011557459672757895,
+    "nll_delta_bootstrap_95_ci": [
+      0.0038450432333614914,
+      0.01931526196129371
+    ],
+    "development_comparison_to_rotquant_w4": {
+      "rotquant_complete_artifact_bytes": 3787286336,
+      "rotquant_mean_teacher_kl": 0.022257535658237286,
+      "rotquant_p95_teacher_kl": 0.07056654244661331,
+      "rotquant_top1_agreement": 0.9271037181996086,
+      "rotquant_nll_delta": 0.01397776743670499,
+      "unsloth_mean_kl_reduction_fraction": 0.41846499801621825,
+      "unsloth_p95_kl_reduction_fraction": 0.4877864462051121,
+      "unsloth_top1_percentage_point_gain": 0.9784735812133127,
+      "unsloth_complete_artifact_size_reduction_fraction": 0.05353516317811361,
+      "formal_matched_byte_comparison": false
+    }
+  },
+  "long_context_e8_confirmation": {
+    "data_manifest_digest": "490494458938156e2620b8ca3d73d483f9790ccec1bf6777bed13ee99801dfbf",
+    "input_hashes": [
+      "1566940a7ed9efbca4f089f5353519473d9cb99f01a6c5484e3003ee11305da3",
+      "8ada16f1f29ef5a419166777b6d36551c5c82053547601575aa3bdfce93a716b",
+      "59c7e62f52eeb9dc875d44b21a602a3696f409a94992d571d6d63c77c739ad41",
+      "9763747651eaff1cab3e95213e1ada79bf2993d3d0842898a9fc392c3859658a"
+    ],
+    "batches": 4,
+    "prompt_len": 8192,
+    "continuation_len": 64,
+    "evaluated_tokens": 256,
+    "kv_layers": 8,
+    "key_bits": 2.0,
+    "value_bits": 2.0,
+    "effective_kv_bpv": 2.1879196166992188,
+    "raw_kv_compression_ratio": 7.312882922151513,
+    "whole_cache_compression_ratio": 4.652376273778374,
+    "full_precision_kv_fraction": 0.00439453125,
+    "arms": {
+      "source_fp16_e8": {
+        "mean_teacher_kl": 0.019203685691153383,
+        "mean_teacher_kl_bootstrap_95_ci": [
+          0.01582941512522054,
+          0.022952169373589293
+        ],
+        "top1_agreement": 0.9296875,
+        "top1_agreement_bootstrap_95_ci": [
+          0.8984375,
+          0.9609375
+        ],
+        "nll_delta": 0.041769924861327024
+      },
+      "promoted_w4_e8": {
+        "mean_teacher_kl": 0.02000162510911524,
+        "mean_teacher_kl_bootstrap_95_ci": [
+          0.016207093910038526,
+          0.024486203964958445
+        ],
+        "top1_agreement": 0.9296875,
+        "top1_agreement_bootstrap_95_ci": [
+          0.8984375,
+          0.9609375
+        ],
+        "nll_delta": 0.0347534392053197
+      },
+      "w4a8_e8": {
+        "mean_teacher_kl": 0.02074405995600953,
+        "mean_teacher_kl_bootstrap_95_ci": [
+          0.017265498644021344,
+          0.024524607881586998
+        ],
+        "top1_agreement": 0.92578125,
+        "top1_agreement_bootstrap_95_ci": [
+          0.89453125,
+          0.95703125
+        ],
+        "nll_delta": 0.02902271885430574
+      }
+    },
+    "comparison_to_w4a8_e8_smoke": {
+      "smoke_prompt_len": 2048,
+      "smoke_evaluated_tokens": 64,
+      "smoke_mean_teacher_kl": 0.0296004912099761,
+      "confirmed_mean_teacher_kl_reduction_fraction": 0.29919879339343295,
+      "smoke_effective_kv_bpv": 2.370819091796875,
+      "confirmed_effective_kv_bpv_reduction_fraction": 0.07714611196204431,
+      "smoke_whole_cache_compression_ratio": 2.5583652903347374,
+      "confirmed_whole_cache_compression_ratio": 4.652376273778374
+    }
+  },
+  "decision": {
+    "unsloth_anchor": "Unsloth is the stronger development anchor on this slice, but the 5.66% relative size mismatch and different RotQuant execution engine prohibit a formal provider win/loss claim.",
+    "e8_cache": "The four-prompt 8k confirmation supports retaining 2-bit E8P KV for the next stage.",
+    "activation_quantization": "W4A8 versus W4 differences are small and their marginal bootstrap intervals overlap; do not choose A8 from this self-teacher cache test.",
+    "required_followup": "Measure every combined W4/W4A8 plus E8 system against one fixed FP16 full-cache teacher. Current per-arm self-teacher KL isolates cache damage and does not measure cumulative end-to-end divergence."
+  },
+  "limitations": [
+    "seed 0 only",
+    "four long-context prompts and 256 continuation tokens",
+    "only eight dense-attention KV layers are quantized; recurrent state is counted but not quantized",
+    "long-context KL is per-arm self-teacher cache fidelity, not total divergence from one FP16 system",
+    "no retrieval task, long-context perplexity, or free-running trajectory result",
+    "quality fallback materializes dense weights and is not production runtime-memory evidence"
+  ]
+}

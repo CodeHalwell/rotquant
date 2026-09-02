@@ -1,0 +1,41 @@
+{
+  "protocol": "qwen35-4b-unsloth-gguf-kl-v1",
+  "model_id": "unsloth/Qwen3.5-4B",
+  "model_revision": "3764fa359b9082ea5a1e4a5e3ac3aaf6e9671636",
+  "tokenizer_loader": "Qwen2Tokenizer",
+  "dataset": "allenai/c4",
+  "dataset_revision": "1588ec454efa1a09f29cd18ddd04fe05fc8653a2",
+  "split": "train",
+  "selection_scheme": "eligible-skip-before-exclusion-v2",
+  "skip": 4096,
+  "batches": 4,
+  "prompt_len": 512,
+  "prompts": [
+    {
+      "index": 0,
+      "source_row": 15509,
+      "input_hash": "cf0fb236893f847ff99cb0f571d38604fcb9446ee9df3b5d780a6fa7bb8e6996",
+      "tokens": 512
+    },
+    {
+      "index": 1,
+      "source_row": 15516,
+      "input_hash": "f798e40153c544c8469d6c036999956e3178fdefc533a10b882348409f643f85",
+      "tokens": 512
+    },
+    {
+      "index": 2,
+      "source_row": 15517,
+      "input_hash": "76dfffdaf3002f54dc29343d066c32626f61fb6aa530e337155d6f46c812dc1b",
+      "tokens": 512
+    },
+    {
+      "index": 3,
+      "source_row": 15519,
+      "input_hash": "a68977746b8c8a843f193c2b41b4401a92ea7bda637cd894196d4d6b5dd3d0ef",
+      "tokens": 512
+    }
+  ],
+  "completed_rotquant_w4a8_input_hashes_match": true,
+  "fingerprint": "00447f4dcfea260bdcd7a4c3e38fbda745ec02b62d8bdfd407832d8e6bd9087d"
+}

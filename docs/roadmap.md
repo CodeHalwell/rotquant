@@ -114,12 +114,18 @@ specialized around them:
 - [x] pin and implement the exact released Unsloth Qwen3.5-4B UD-Q4_K_XL
   same-engine KL/top-1 comparator, including BF16 references, complete artifact
   bytes/projector policy, checksums, prompt hashes, bootstrap intervals, and
-  interruption-safe source/candidate records; the Colab execution is pending;
+  interruption-safe source/candidate records; execute it on the registered C4
+  slice and record the stronger Unsloth development anchor without making an
+  unmatched-byte provider claim;
 - [ ] run the controlled W4 factor ablation (8-bit scales, bias correction,
   sharing, butterfly basis, Hessian training, and learned signs) with the new
   global KL/top-1 fail-fast gate; do not rerun the rejected bundled arm;
-- [ ] run the corrected four-prompt 8k/64-token source-W4-W4A8 plus 2-bit E8P
-  cache confirmation and require its whole-cache, KL, and top-1 intervals;
+- [x] run the corrected four-prompt 8k/64-token source-W4-W4A8 plus 2-bit E8P
+  cache confirmation: retain E8P at 2.188 effective bpv and 4.652x whole-cache
+  compression; do not select A8 because the cache-fidelity intervals overlap;
+- [ ] add a fixed-FP16-teacher long-context collector so combined W4/W4A8 plus
+  E8 systems are measured end to end rather than only against each arm's own
+  full-cache teacher;
 - [ ] rebuild the model-specific mixed-format allocator as a constrained,
   exact-byte optimization layer over the frozen RotQuant+GPTQ quantizer;
   compare standard uniform, standard mixed, uniform RotQuant, mixed RotQuant,
