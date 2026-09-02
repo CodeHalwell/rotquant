@@ -4,6 +4,7 @@ from __future__ import annotations
 import ast
 import importlib.util
 import json
+import subprocess
 import sys
 from pathlib import Path
 
@@ -16,6 +17,17 @@ NOTEBOOK = ROOT / "notebooks" / "qwen35_4b_optimization_stage_colab.ipynb"
 def _load_runner():
     path = ROOT / "scripts" / "run_qwen35_next_stage.py"
     spec = importlib.util.spec_from_file_location("run_qwen35_next_stage", path)
+    assert spec and spec.loader
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = module
+    spec.loader.exec_module(module)
+    return module
+
+
+def _load_selector():
+    path = ROOT / "scripts" / "select_qwen35_ablation_finalists.py"
+    spec = importlib.util.spec_from_file_location(
+        "select_qwen35_ablation_finalists", path)
     assert spec and spec.loader
     module = importlib.util.module_from_spec(spec)
     sys.modules[spec.name] = module
@@ -111,6 +123,100 @@ def test_failed_optimization_is_decomposed_into_nested_factor_ablation():
         "mean_teacher_kl_max": 0.25,
         "top1_agreement_min": 0.75,
     }
+    assert ("butterfly_hessian_w4", "promoted_w4") in runner.PAIRED_ARMS[
+        "ablation"
+    ]
+    assert (
+        "shared_butterfly_hessian_signs_w4", "promoted_w4"
+    ) in runner.PAIRED_ARMS["ablation"]
+
+
+def test_ablation_finalist_selection_requires_guards_and_a_material_signal():
+    selector = _load_selector()
+
+    def row(arm, **updates):
+        payload = {
+            "stage": "ablation",
+            "arm": arm,
+            "seed": 0,
+            "evaluation_halted": False,
+            "mean_teacher_kl": 0.020,
+            "top1_agreement": 0.92,
+            "ppl_wikitext2": 15.0,
+            "ppl_c4": 17.0,
+            "trajectory_token_agreement": 0.90,
+            "complete_persistent_model_bytes": 4_000_000_000,
+        }
+        payload.update(updates)
+        return payload
+
+    summary = {"code_revision": "abc", "rows": [
+        row("promoted_w4"),
+        row("scale8_w4", complete_persistent_model_bytes=3_900_000_000),
+        row("neutral_w4"),
+        row("regressed_w4", mean_teacher_kl=0.022),
+        row("halted_w4", evaluation_halted=True, mean_teacher_kl=0.001),
+    ]}
+    result = selector.select_finalists(summary)
+
+    assert result["finalists"] == ["scale8_w4"]
+    assert result["confirmation_arms"] == ["promoted_w4", "scale8_w4"]
+    decisions = {row["arm"]: row for row in result["decisions"]}
+    assert decisions["scale8_w4"]["signals"][
+        "complete_persistent_model_bytes"
+    ]
+    assert not decisions["neutral_w4"]["selected"]
+    assert not decisions["regressed_w4"]["guards"]["mean_teacher_kl"]
+    assert not decisions["halted_w4"]["selected"]
+
+
+def test_next_stage_dry_run_filters_to_requested_arms(tmp_path):
+    output = subprocess.check_output([
+        sys.executable,
+        str(ROOT / "scripts" / "run_qwen35_next_stage.py"),
+        "--output-dir", str(tmp_path),
+        "--stage", "ablation",
+        "--seed", "1",
+        "--arm", "scale8_w4",
+        "--dry-run",
+    ], cwd=ROOT, text=True)
+    assert '"total_trials": 1' in output
+    assert '"arm": "scale8_w4"' in output
+    assert '"seed": 1' in output
+    assert "mean_bias_w4" not in output
+
+
+def test_runner_persists_progress_and_partial_summary_after_each_arm(
+    tmp_path, monkeypatch
+):
+    runner = _load_runner()
+
+    def fake_run_trial(trial, **kwargs):
+        assert kwargs["position"] == 1
+        assert kwargs["total"] == 1
+        assert kwargs["heartbeat_seconds"] == 0
+        return {"run_id": "fake", "metrics": {}}, 12.0, False
+
+    monkeypatch.setattr(runner, "_run_trial", fake_run_trial)
+    monkeypatch.setattr(sys, "argv", [
+        "run_qwen35_next_stage.py",
+        "--output-dir", str(tmp_path),
+        "--stage", "ablation",
+        "--seed", "0",
+        "--arm", "promoted_w4",
+        "--heartbeat-seconds", "0",
+    ])
+    runner.main()
+
+    progress = json.loads((tmp_path / "next_stage_progress.json").read_text())
+    assert progress["state"] == "complete"
+    assert progress["completed_trials"] == 1
+    assert progress["completed"][0]["arm"] == "promoted_w4"
+    partial = json.loads(
+        (tmp_path / "next_stage_partial_summary.json").read_text())
+    final = json.loads((tmp_path / "next_stage_summary.json").read_text())
+    assert partial["complete"] is False
+    assert final["complete"] is True
 
 
 def test_long_kv_uses_promoted_w4_and_two_bit_e8p_only():
@@ -207,24 +313,33 @@ def test_next_stage_notebook_is_valid_compilable_and_fail_safe():
     assert 'REPO_REF = "main"' in source
     assert 'run_git(["fetch", "--force", "origin", REPO_REF]' in source
     assert 'run_git(["checkout", "--detach", "FETCH_HEAD"]' in source
-    assert "RUN_W4 = False" in source
-    assert "RUN_FACTOR_ABLATION = False" in source
+    assert "RUN_ABLATION_SCREEN = True" in source
+    assert "RUN_ABLATION_CONFIRM = True" in source
     assert "RUN_LONG_CONTEXT_KV = True" in source
     assert "RUN_UNSLOTH_KL = True" in source
-    assert "RUN_RECOVERY = False" in source
+    assert "CONFIRM_SEEDS = (0, 1, 2)" in source
     assert "REQUIRE_FAST_HADAMARD = True" in source
     assert "bounded source build" in source
     assert "--dry-run" in source
+    assert "--heartbeat-seconds" in source
+    assert "next_stage_progress.json" in source
+    assert "Persistent log:" in source
+    assert "notebook heartbeat" in source
     assert 'sys.executable, "-u"' in source
     assert "subprocess.Popen" in source
     assert "stderr=subprocess.STDOUT" in source
     assert 'child_env["PYTHONUNBUFFERED"] = "1"' in source
+    assert "select_qwen35_ablation_finalists.py" in source
+    assert "FINALIST_ARMS" in source
     assert "run_unsloth_qwen35_4b_kl.py" in source
     assert "UD-Q4_K_XL" in source
     assert "llama_cpp_python" in source
     assert '"diskcache==5.6.3"' in source
     assert "import diskcache, llama_cpp" in source
-    assert "ppl_wikitext2_relative_to_source" in source
+    assert "ppl_wikitext2" in source
+    assert "kl_vs_control" in source
     assert "trajectory_token_agreement" in source
     assert "paired_comparisons" in source
+    assert "kv_endpoint_passed" in source
+    assert "full_experiment_validation.json" in source
     assert "300-prompt" in source

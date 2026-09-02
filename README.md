@@ -85,8 +85,11 @@ completed research funnel: exact-rate scalar/vector controls, calibrated and
 TurboQuant-style variants, mixed-bit allocation, cross-family replication, and
 a real-attention selective-V upper-bound oracle. The focused
 [Qwen3.5-4B optimization Colab](notebooks/qwen35_4b_optimization_stage_colab.ipynb)
-now runs the promoted W4 controls against streamed GPTQ, with W4A8/E8,
-million-token recovery, and 8k-context KV stages as explicit resumable opt-ins.
+now runs the complete next experiment: all-factor seed-0 W4 screening,
+pre-registered finalist selection, three-seed replication, the corrected 8k
+E8P cache engineering check, and the pinned Unsloth Q4 anchor. Every subprocess
+streams to the cell and a persistent Drive log, emits GPU heartbeats during
+silent kernels, and records resumable per-arm progress.
 
 ## Install
 

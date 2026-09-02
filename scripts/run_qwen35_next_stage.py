@@ -16,6 +16,7 @@ import hashlib
 import json
 import subprocess
 import sys
+import threading
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -51,8 +52,11 @@ PAIRED_ARMS = {
         ("shared_fwht_w4", "promoted_w4"),
         ("butterfly_control_w4", "promoted_w4"),
         ("butterfly_hessian_w4", "butterfly_control_w4"),
+        ("butterfly_hessian_w4", "promoted_w4"),
         ("butterfly_hessian_signs_w4", "butterfly_hessian_w4"),
+        ("butterfly_hessian_signs_w4", "promoted_w4"),
         ("shared_butterfly_hessian_signs_w4", "butterfly_hessian_signs_w4"),
+        ("shared_butterfly_hessian_signs_w4", "promoted_w4"),
     ),
     "recovery": (("recovered_w4", "unrecovered_w4"),),
     "long-kv": (
@@ -68,6 +72,64 @@ class Trial:
     arm: str
     config: str
     overrides: tuple[tuple[str, Any], ...]
+
+
+def _timestamp() -> str:
+    return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+
+
+def _gpu_snapshot() -> str:
+    """Return a bounded one-line NVIDIA status without touching torch state."""
+
+    try:
+        output = subprocess.check_output(
+            [
+                "nvidia-smi",
+                "--query-gpu=utilization.gpu,memory.used,memory.total,power.draw",
+                "--format=csv,noheader,nounits",
+            ],
+            stderr=subprocess.DEVNULL,
+            text=True,
+            timeout=5,
+        ).strip().splitlines()[0]
+        utilization, used, total, power = (value.strip() for value in output.split(","))
+        return (
+            f"gpu={utilization}% vram={used}/{total}MiB power={power}W"
+        )
+    except (OSError, subprocess.CalledProcessError, subprocess.TimeoutExpired,
+            IndexError, ValueError):
+        return "gpu=status-unavailable"
+
+
+class _Heartbeat:
+    """Print liveness while a trial is inside a long silent kernel section."""
+
+    def __init__(self, label: str, *, seconds: float):
+        self.label = label
+        self.seconds = float(seconds)
+        self.started = time.monotonic()
+        self.stopped = threading.Event()
+        self.thread: threading.Thread | None = None
+
+    def __enter__(self):
+        if self.seconds > 0:
+            self.thread = threading.Thread(target=self._run, daemon=True)
+            self.thread.start()
+        return self
+
+    def _run(self) -> None:
+        while not self.stopped.wait(self.seconds):
+            elapsed = (time.monotonic() - self.started) / 60
+            print(
+                f"[{_timestamp()}] heartbeat {self.label}: "
+                f"elapsed={elapsed:.1f}m {_gpu_snapshot()}",
+                flush=True,
+            )
+
+    def __exit__(self, _exc_type, _exc, _traceback) -> None:
+        self.stopped.set()
+        if self.thread is not None:
+            self.thread.join(timeout=min(max(self.seconds, 0.1), 2.0))
 
 
 def _trial(
@@ -354,6 +416,18 @@ def summarize_results(
                 metrics, "kv_cache", "mean_teacher_kl"
             ),
             "kv_top1_agreement": _metric(metrics, "kv_cache", "top1_agreement"),
+            "kv_endpoint_passed": _metric(
+                metrics, "kv_cache", "endpoint_check", "passed"
+            ),
+            "kv_endpoint_mean_teacher_kl": _metric(
+                metrics, "kv_cache", "endpoint_check", "mean_teacher_kl"
+            ),
+            "kv_effective_bpv": _metric(
+                metrics, "kv_cache", "effective_kv_bpv"
+            ),
+            "kv_total_cache_compression_ratio": _metric(
+                metrics, "kv_cache", "total_cache_compression_ratio"
+            ),
             "evaluation_halted": metrics.get("evaluation_halted", False),
             "evaluation_halt_reasons": metrics.get("evaluation_halt_reasons"),
         }
@@ -556,7 +630,11 @@ def _run_trial(
     force: bool,
     dry_run: bool,
     code_revision: str,
+    position: int,
+    total: int,
+    heartbeat_seconds: float,
 ) -> tuple[dict[str, Any] | None, float, bool]:
+    label = f"{trial.stage}/{trial.arm}/seed-{seed}"
     fingerprint = trial_fingerprint(trial, seed, code_revision)
     if not force:
         existing = _load_matching_result(
@@ -567,10 +645,13 @@ def _run_trial(
             fingerprint=fingerprint,
         )
         if existing is not None:
-            print(f"resume {trial.stage}/{trial.arm}/seed-{seed}", flush=True)
+            print(
+                f"[{_timestamp()}] RESUME [{position}/{total}] {label}",
+                flush=True,
+            )
             return existing, 0.0, True
 
-    print(f"run {trial.stage}/{trial.arm}/seed-{seed}", flush=True)
+    print(f"[{_timestamp()}] RUN [{position}/{total}] {label}", flush=True)
     if dry_run:
         return None, 0.0, False
     marker_overrides = (
@@ -581,13 +662,31 @@ def _run_trial(
         ("stage_trial_fingerprint", fingerprint),
     )
     start = time.perf_counter()
-    payload = run_experiment.run(
-        str(ROOT / trial.config),
-        str(output_dir),
-        overrides={"seed": seed},
-        sets=[*trial.overrides, *marker_overrides],
-    )
+    with _Heartbeat(label, seconds=heartbeat_seconds):
+        payload = run_experiment.run(
+            str(ROOT / trial.config),
+            str(output_dir),
+            overrides={"seed": seed},
+            sets=[*trial.overrides, *marker_overrides],
+        )
     elapsed = time.perf_counter() - start
+    metrics = payload.get("metrics") or {}
+    logit = metrics.get("logit_fidelity") or {}
+    digest = {
+        "ppl_wikitext2": metrics.get("ppl_wikitext2"),
+        "ppl_c4": metrics.get("ppl_c4"),
+        "mean_teacher_kl": logit.get("mean_teacher_kl"),
+        "top1_agreement": logit.get("top1_agreement"),
+        "trajectory_token_agreement": _metric(
+            metrics, "trajectory", "token_agreement"),
+        "kv_mean_teacher_kl": _metric(metrics, "kv_cache", "mean_teacher_kl"),
+        "evaluation_halted": metrics.get("evaluation_halted", False),
+    }
+    print(
+        f"[{_timestamp()}] COMPLETE [{position}/{total}] {label} "
+        f"elapsed={elapsed / 60:.1f}m metrics={json.dumps(digest)}",
+        flush=True,
+    )
     gc.collect()
     if torch.cuda.is_available():
         torch.cuda.empty_cache()
@@ -603,9 +702,21 @@ def parse_args() -> argparse.Namespace:
         help="stage to run; repeat for multiple stages (default: w4)",
     )
     parser.add_argument("--seed", action="append", type=int, dest="seeds")
+    parser.add_argument(
+        "--arm",
+        action="append",
+        dest="arms",
+        help="run only this arm within the selected stage(s); repeat as needed",
+    )
     parser.add_argument("--output-dir", type=Path, required=True)
     parser.add_argument("--force", action="store_true")
     parser.add_argument("--dry-run", action="store_true")
+    parser.add_argument(
+        "--heartbeat-seconds",
+        type=float,
+        default=60.0,
+        help="print liveness/GPU status this often during a trial; 0 disables",
+    )
     return parser.parse_args()
 
 
@@ -616,28 +727,119 @@ def main() -> None:
     seeds = tuple(dict.fromkeys(args.seeds or [0]))
     if any(seed < 0 for seed in seeds):
         raise ValueError("seeds must be non-negative")
+    if args.heartbeat_seconds < 0:
+        raise ValueError("heartbeat-seconds must be non-negative")
     args.output_dir.mkdir(parents=True, exist_ok=True)
     code_revision = _code_revision()
     results: list[tuple[Trial, int, dict[str, Any], float, bool]] = []
-    planned = []
+    requested_arms = set(args.arms or [])
+    planned_trials: list[tuple[Trial, int]] = []
     for stage in stages:
         for seed in seeds:
             for trial in stage_trials(stage):
-                planned.append({"stage": stage, "arm": trial.arm, "seed": seed})
-                payload, seconds, resumed = _run_trial(
-                    trial,
-                    seed=seed,
-                    output_dir=args.output_dir,
-                    force=args.force,
-                    dry_run=args.dry_run,
-                    code_revision=code_revision,
-                )
-                if payload is not None:
-                    results.append((trial, seed, payload, seconds, resumed))
+                if requested_arms and trial.arm not in requested_arms:
+                    continue
+                planned_trials.append((trial, seed))
+
+    matched_arms = {trial.arm for trial, _seed in planned_trials}
+    unknown_arms = requested_arms - matched_arms
+    if unknown_arms:
+        raise ValueError(
+            "requested arms are not present in the selected stages: "
+            + ", ".join(sorted(unknown_arms))
+        )
+    if not planned_trials:
+        raise ValueError("the selected stages/arms produced an empty trial plan")
+
+    planned = [
+        {"stage": trial.stage, "arm": trial.arm, "seed": seed}
+        for trial, seed in planned_trials
+    ]
+    print(json.dumps({
+        "event": "trial_plan",
+        "protocol": PROTOCOL_VERSION,
+        "code_revision": code_revision,
+        "total_trials": len(planned),
+        "planned": planned,
+    }, indent=2), flush=True)
 
     if args.dry_run:
         print(json.dumps({"protocol": PROTOCOL_VERSION, "planned": planned}, indent=2))
         return
+
+    run_started = time.monotonic()
+    progress: dict[str, Any] = {
+        "protocol": PROTOCOL_VERSION,
+        "code_revision": code_revision,
+        "state": "running",
+        "started_at": _timestamp(),
+        "updated_at": _timestamp(),
+        "total_trials": len(planned),
+        "completed_trials": 0,
+        "planned": planned,
+        "completed": [],
+        "current": None,
+    }
+    progress_path = args.output_dir / "next_stage_progress.json"
+    write_result(str(progress_path), progress)
+
+    for position, (trial, seed) in enumerate(planned_trials, start=1):
+        current = {"stage": trial.stage, "arm": trial.arm, "seed": seed}
+        progress.update({"current": current, "updated_at": _timestamp()})
+        write_result(str(progress_path), progress)
+        try:
+            payload, seconds, resumed = _run_trial(
+                trial,
+                seed=seed,
+                output_dir=args.output_dir,
+                force=args.force,
+                dry_run=False,
+                code_revision=code_revision,
+                position=position,
+                total=len(planned_trials),
+                heartbeat_seconds=args.heartbeat_seconds,
+            )
+        except Exception as exc:
+            progress.update({
+                "state": "failed",
+                "updated_at": _timestamp(),
+                "elapsed_seconds": time.monotonic() - run_started,
+                "last_error": {
+                    **current,
+                    "type": type(exc).__name__,
+                    "message": str(exc),
+                },
+            })
+            write_result(str(progress_path), progress)
+            raise
+        assert payload is not None
+        results.append((trial, seed, payload, seconds, resumed))
+        progress["completed"].append({
+            **current,
+            "resumed": resumed,
+            "wall_seconds": seconds,
+        })
+        progress.update({
+            "completed_trials": len(results),
+            "updated_at": _timestamp(),
+            "elapsed_seconds": time.monotonic() - run_started,
+        })
+        write_result(str(progress_path), progress)
+
+        partial_rows = summarize_results(results)
+        partial = {
+            "protocol": PROTOCOL_VERSION,
+            "code_revision": code_revision,
+            "stages": list(stages),
+            "seeds": list(seeds),
+            "rows": partial_rows,
+            "paired_comparisons": paired_comparisons(results),
+            "complete": False,
+        }
+        write_result(
+            str(args.output_dir / "next_stage_partial_summary.json"), partial)
+        _write_csv(args.output_dir / "next_stage_partial_summary.csv", partial_rows)
+
     rows = summarize_results(results)
     comparisons = paired_comparisons(results)
     summary = {
@@ -647,9 +849,17 @@ def main() -> None:
         "seeds": list(seeds),
         "rows": rows,
         "paired_comparisons": comparisons,
+        "complete": True,
     }
     write_result(str(args.output_dir / "next_stage_summary.json"), summary)
     _write_csv(args.output_dir / "next_stage_summary.csv", rows)
+    progress.update({
+        "state": "complete",
+        "current": None,
+        "updated_at": _timestamp(),
+        "elapsed_seconds": time.monotonic() - run_started,
+    })
+    write_result(str(progress_path), progress)
     print(json.dumps(summary, indent=2))
 
 

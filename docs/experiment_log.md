@@ -630,6 +630,27 @@ source/candidate trajectory, and structured-failure records for Transformers
 or RotQuant checkpoints. No quality numbers were produced by this
 implementation pass.
 
+### 2026-09-02 — full next-run W4/cache harness (no new model result yet)
+
+The focused notebook is now the complete next development experiment rather
+than a collection of manual toggles. It runs all eight W4 factor arms at seed
+0, applies the versioned
+`qwen35-w4-ablation-finalist-selection-v1` guardrails, and automatically reruns
+the promoted control plus viable candidates at seeds 0/1/2. A candidate must
+stay within 5% teacher KL, 1 percentage point top-1, 2% on both PPL datasets,
+2 percentage points trajectory agreement and 0.5% bytes of promoted W4, while
+showing a material improvement in at least one registered metric. Passing that
+screen means only “replicate,” not “promote.”
+
+The same end-to-end run then executes the corrected four-prompt 8k E8P cache
+engineering check and requires the K8 endpoint row, followed by the pinned
+released-Unsloth Q4 anchor. The cache leg remains non-promotable until the
+fixed-FP16 teacher and clustered ≥20-prompt/≥10k-token protocol exist. The
+runner writes an atomic progress record and partial summary after every arm;
+the notebook adds 30-second GPU heartbeats and persistent per-phase Drive logs,
+so Colab disconnection does not erase progress or force blind reruns. No model
+quality result was produced by this implementation pass.
+
 ### 2026-09-01 — three-seed Qwen3.5-4B W4 promotion
 
 The focused W4 ladder completed at code revision
