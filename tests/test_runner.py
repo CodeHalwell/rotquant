@@ -4,6 +4,7 @@ fallback, the lm_head exclusion default, partial-group scale handling, and the
 aggregator seeing nested (zero-shot) metrics.
 """
 import importlib.util
+import json
 import os
 import sys
 from types import ModuleType, SimpleNamespace
@@ -120,6 +121,73 @@ def test_calibration_batches_are_cached_and_content_addressed(monkeypatch):
     assert manifest["batches"] == 1
     assert manifest["source_rows"] == [0]
     assert len(manifest["digest"]) == 64
+
+
+def test_calibration_batches_persist_across_process_cache_resets(
+    tmp_path, monkeypatch
+):
+    calls = {"loads": 0}
+
+    def load_dataset(*args, **kwargs):
+        del args, kwargs
+        calls["loads"] += 1
+        return [{"text": "abcdefghijk"}, {"text": "mnopqrstuvw"}]
+
+    datasets = ModuleType("datasets")
+    datasets.load_dataset = load_dataset
+    monkeypatch.setitem(sys.modules, "datasets", datasets)
+    monkeypatch.setenv("ROTQUANT_TOKEN_CACHE_DIR", str(tmp_path))
+
+    class Tokenizer:
+        name_or_path = "tiny/persistent-tokenizer"
+        vocab_size = 32
+        special_tokens_map: ClassVar[dict] = {}
+
+        def __call__(self, text, return_tensors="pt"):
+            del return_tensors
+            return SimpleNamespace(
+                input_ids=torch.tensor([[ord(char) % 32 for char in text]])
+            )
+
+    run_experiment._CALIB_CACHE.clear()
+    first = run_experiment.build_calib_loader(
+        Tokenizer(), 1, 8, "cpu", revision="pinned"
+    )
+    run_experiment._CALIB_CACHE.clear()
+    second = run_experiment.build_calib_loader(
+        Tokenizer(), 1, 8, "cpu", revision="pinned"
+    )
+    assert calls["loads"] == 1
+    assert torch.equal(first[0]["input_ids"], second[0]["input_ids"])
+    assert len(list(tmp_path.glob("c4-*.npz"))) == 1
+
+
+def test_local_prompt_suite_preserves_ids_domains_and_hashes(tmp_path, monkeypatch):
+    suite = tmp_path / "suite.json"
+    suite.write_text(json.dumps({"prompts": [
+        {"item_id": "code-1", "domain": "code", "text": "write a loop"},
+        {"item_id": "math-1", "domain": "math", "text": "prove x = x"},
+    ]}))
+    monkeypatch.setattr(run_experiment, "REPO_ROOT", tmp_path)
+
+    class Tokenizer:
+        def __call__(self, text, return_tensors="pt"):
+            del return_tensors
+            return SimpleNamespace(input_ids=torch.tensor([
+                [1, *[ord(char) % 31 + 2 for char in text]]
+            ]))
+
+    batches = run_experiment.build_prompt_file_loader(
+        Tokenizer(), "suite.json", field="text", n_seq=2,
+        seq_len=8, device="cpu",
+    )
+    manifest = run_experiment.prompt_file_manifest(
+        batches, path="suite.json", field="text", max_seq_len=8,
+    )
+    assert manifest["item_ids"] == ["code-1", "math-1"]
+    assert manifest["domains"] == ["code", "math"]
+    assert len(manifest["token_hashes"]) == 2
+    assert manifest["token_hashes"][0] != manifest["token_hashes"][1]
 
 
 def test_hessian_cache_key_reuses_source_statistics_across_codebooks():

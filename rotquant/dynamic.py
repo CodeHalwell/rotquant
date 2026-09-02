@@ -27,7 +27,7 @@ from torch import nn
 
 from ._internal import cpu_staging_linear, get_parent
 from .linear import QuantLinear
-from .patch import make_rotations
+from .patch import commit_rotation_storage, make_rotations
 from .quantize import QuantConfig
 from .utils import get_logger
 
@@ -46,11 +46,23 @@ class DynamicQuantConfig:
 
     candidate_bits: tuple[int, ...] = (3, 4)
     target_bpw: float = 3.625
+    # A complete-model byte target takes precedence over ``target_bpw``.  It
+    # includes every persistent source tensor that remains outside the selected
+    # projections plus each candidate's codes, scales, codebook, bias, and
+    # rotation state.  This is the mode used for same-size provider comparisons.
+    target_complete_bytes: int | None = None
+    target_tolerance_fraction: float = 0.01
+    require_target_match: bool = False
     max_tokens: int = 32
     local_weight: float = 1.0
     global_kl_weight: float = 1.0
     global_kl_temperature: float = 1.0
     global_kl_batches: int = 0
+    # Candidate importance scoring should be substantially cheaper than the
+    # final GPTQ pack.  These settings change the scoring proxy only; the recipe
+    # retains the base quantizer's exact error compensation and scale strategy.
+    scoring_error_comp: str = "none"
+    scoring_scale: str = "rms"
     # ``random`` is a matched-budget negative control. It follows a seeded
     # random downgrade order while retaining the exact same candidate formats
     # and byte accounting as the sensitivity-guided allocator.
@@ -66,6 +78,19 @@ class DynamicQuantConfig:
         object.__setattr__(self, "candidate_bits", bits)
         if self.target_bpw <= 0:
             raise ValueError("target_bpw must be > 0")
+        if self.target_complete_bytes is not None and (
+            isinstance(self.target_complete_bytes, bool)
+            or int(self.target_complete_bytes) < 1
+        ):
+            raise ValueError("target_complete_bytes must be a positive integer")
+        if not 0 <= self.target_tolerance_fraction <= 0.25:
+            raise ValueError("target_tolerance_fraction must be in [0, 0.25]")
+        if not isinstance(self.require_target_match, bool):
+            raise TypeError("require_target_match must be boolean")
+        if self.require_target_match and self.target_complete_bytes is None:
+            raise ValueError(
+                "require_target_match requires target_complete_bytes"
+            )
         if self.max_tokens < 1:
             raise ValueError("max_tokens must be >= 1")
         if self.local_weight < 0 or self.global_kl_weight < 0:
@@ -76,6 +101,12 @@ class DynamicQuantConfig:
             raise ValueError("global_kl_temperature must be > 0")
         if self.global_kl_batches < 0:
             raise ValueError("global_kl_batches must be >= 0")
+        if self.scoring_error_comp not in {"none", "gptq"}:
+            raise ValueError("scoring_error_comp must be 'none' or 'gptq'")
+        if self.scoring_scale not in {"rms", "mse_search", "turboquant"}:
+            raise ValueError(
+                "scoring_scale must be 'rms', 'mse_search', or 'turboquant'"
+            )
         if self.allocation not in {"greedy", "random"}:
             raise ValueError("dynamic allocation must be 'greedy' or 'random'")
         object.__setattr__(self, "rules", tuple(self.rules or ()))
@@ -94,9 +125,18 @@ class CandidateScore:
     bits: int
     config: QuantConfig
     packed_bytes: int
+    registered_bytes: int
+    codebook_bytes: int
+    complete_bytes: int
     local_error: float
     global_kl: float
     score: float
+
+
+# A stage runner evaluates matched arms in one Python process. Candidate
+# reconstruction scores are source-model facts, so random and greedy allocation
+# may share them when the runner supplies the same content-addressed context.
+_CANDIDATE_SCORE_CACHE: dict[str, dict[str, list[CandidateScore]]] = {}
 
 
 def _matches(name: str, pattern: str) -> bool:
@@ -209,6 +249,47 @@ def _local_error(source: nn.Linear, candidate: QuantLinear,
         return float(token_errors.mean().item())
 
 
+def _persistent_registered_tensors(module: nn.Module) -> list[torch.Tensor]:
+    """Return unique parameters and persistent buffers owned by ``module``."""
+
+    tensors: list[torch.Tensor] = []
+    seen: set[int] = set()
+    for submodule in module.modules():
+        for parameter in submodule._parameters.values():
+            if parameter is not None and id(parameter) not in seen:
+                seen.add(id(parameter))
+                tensors.append(parameter)
+        nonpersistent = getattr(submodule, "_non_persistent_buffers_set", set())
+        for name, buffer in submodule._buffers.items():
+            if (
+                buffer is not None
+                and name not in nonpersistent
+                and id(buffer) not in seen
+            ):
+                seen.add(id(buffer))
+                tensors.append(buffer)
+    return tensors
+
+
+def _tensor_bytes(tensors: Sequence[torch.Tensor]) -> int:
+    return sum(tensor.numel() * tensor.element_size() for tensor in tensors)
+
+
+def _candidate_codebook_bytes(candidate: QuantLinear) -> int:
+    tensors = []
+    for codebook in (
+        candidate.qweight.codebook,
+        candidate.qweight.residual_codebook,
+    ):
+        centroids = getattr(codebook, "centroids", None)
+        if centroids is not None:
+            tensors.append(centroids)
+    # A primary and residual codebook are distinct today, but retain unique
+    # accounting so future shared codebooks do not get charged twice.
+    unique = {id(tensor): tensor for tensor in tensors}
+    return _tensor_bytes(tuple(unique.values()))
+
+
 def _candidate_linear(source: nn.Linear, quant: QuantConfig, patch_cfg,
                       seed: int) -> QuantLinear:
     source_device = source.weight.device
@@ -217,6 +298,7 @@ def _candidate_linear(source: nn.Linear, quant: QuantConfig, patch_cfg,
     work = cpu_staging_linear(source) if stage else source
     weight_rotation, act_rotation = make_rotations(
         work.in_features, patch_cfg, seed, device=work.weight.device)
+    commit_rotation_storage(weight_rotation, patch_cfg.rotation_storage_dtype)
     candidate = QuantLinear.from_linear(
         work, quant, weight_rotation=weight_rotation,
         act_rotation=act_rotation, fallback=True, fallback_dtype=source_dtype)
@@ -238,8 +320,13 @@ def _score_candidates(model: nn.Module, targets, patch_cfg,
         layer_scores = []
         for bits in _allowed_bits(name, config):
             quant = replace(patch_cfg.quant, bits=bits)
+            scoring_quant = replace(
+                quant,
+                error_comp=config.scoring_error_comp,
+                scale=config.scoring_scale,
+            )
             candidate = _candidate_linear(
-                source, quant, patch_cfg, patch_cfg.seed + index)
+                source, scoring_quant, patch_cfg, patch_cfg.seed + index)
             local = _local_error(
                 source, candidate, activations.get(name), config.max_tokens)
             global_kl = 0.0
@@ -256,10 +343,18 @@ def _score_candidates(model: nn.Module, targets, patch_cfg,
                     setattr(parent, attr, original)
             score = (config.local_weight * local
                      + config.global_kl_weight * global_kl)
+            registered_bytes = _tensor_bytes(
+                _persistent_registered_tensors(candidate)
+            )
+            codebook_bytes = _candidate_codebook_bytes(candidate)
+            packed_bytes = candidate.packed_state_bytes()
             layer_scores.append(CandidateScore(
                 bits=bits,
                 config=quant,
-                packed_bytes=candidate.packed_state_bytes(),
+                packed_bytes=packed_bytes,
+                registered_bytes=registered_bytes,
+                codebook_bytes=codebook_bytes,
+                complete_bytes=packed_bytes + registered_bytes + codebook_bytes,
                 local_error=local,
                 global_kl=global_kl,
                 score=score,
@@ -280,6 +375,7 @@ def select_dynamic_quantization(
     *,
     activations: dict[str, torch.Tensor] | None = None,
     teacher_calls: Sequence[Any] | None = None,
+    score_cache_key: str | None = None,
 ) -> tuple[dict[str, QuantConfig], dict[str, Any]]:
     """Return a per-projection quantizer recipe and serializable diagnostics."""
 
@@ -293,22 +389,75 @@ def select_dynamic_quantization(
     if not targets:
         raise ValueError("dynamic quantization found no target linear layers")
     target_by_name = dict(targets)
-    scores = _score_candidates(
-        model, targets, patch_cfg, config, activations or {}, teacher_calls)
+    scores = (
+        _CANDIDATE_SCORE_CACHE.get(score_cache_key)
+        if score_cache_key is not None else None
+    )
+    score_cache_hit = scores is not None
+    if scores is None:
+        scores = _score_candidates(
+            model, targets, patch_cfg, config, activations or {}, teacher_calls
+        )
+        if score_cache_key is not None:
+            _CANDIDATE_SCORE_CACHE[score_cache_key] = scores
+    else:
+        if set(scores) != set(target_by_name):
+            raise ValueError("dynamic candidate score cache target mismatch")
+        logger.info(
+            "Reusing dynamic candidate scores for %d layers (key=%s)",
+            len(scores), score_cache_key,
+        )
 
     selected = {name: len(items) - 1 for name, items in scores.items()}
     randomizer = random.Random(patch_cfg.seed)
     total_weights = sum(
         target_by_name[name].weight.numel() for name in selected)
+    target_tensor_ids = {
+        id(tensor)
+        for _name, module in targets
+        for tensor in _persistent_registered_tensors(module)
+    }
+    fixed_tensors = [
+        tensor for tensor in _persistent_registered_tensors(model)
+        if id(tensor) not in target_tensor_ids
+    ]
+    fixed_complete_bytes = _tensor_bytes(fixed_tensors)
     target_bits = config.target_bpw * total_weights
 
     def stored_bits() -> int:
         return sum(scores[name][index].packed_bytes * 8
                    for name, index in selected.items())
 
+    def selected_complete_bytes() -> int:
+        return fixed_complete_bytes + sum(
+            scores[name][index].complete_bytes
+            for name, index in selected.items()
+        )
+
+    if config.target_complete_bytes is not None:
+        target_bytes = int(config.target_complete_bytes)
+        tolerance_bytes = round(
+            target_bytes * config.target_tolerance_fraction
+        )
+
+        def over_budget() -> bool:
+            return selected_complete_bytes() > target_bytes + tolerance_bytes
+
+        def move_savings(current: CandidateScore, lower: CandidateScore) -> int:
+            return current.complete_bytes - lower.complete_bytes
+    else:
+        target_bytes = None
+        tolerance_bytes = None
+
+        def over_budget() -> bool:
+            return stored_bits() > target_bits
+
+        def move_savings(current: CandidateScore, lower: CandidateScore) -> int:
+            return current.packed_bytes - lower.packed_bytes
+
     # Multiple-choice rate allocation: begin at each tensor's highest allowed
     # precision, then repeatedly take the least harmful next downgrade per byte.
-    while stored_bits() > target_bits:
+    while over_budget():
         moves = []
         for order, name in enumerate(selected):
             index = selected[name]
@@ -316,7 +465,7 @@ def select_dynamic_quantization(
                 continue
             current = scores[name][index]
             lower = scores[name][index - 1]
-            savings = current.packed_bytes - lower.packed_bytes
+            savings = move_savings(current, lower)
             if savings <= 0:
                 continue
             penalty = max(0.0, lower.score - current.score)
@@ -334,6 +483,7 @@ def select_dynamic_quantization(
         selected[selected_name] -= 1
 
     achieved_bits = stored_bits()
+    achieved_complete_bytes = selected_complete_bytes()
     recipe = {
         name: scores[name][index].config
         for name, index in selected.items()
@@ -347,22 +497,70 @@ def select_dynamic_quantization(
             "name": name,
             "bits": item.bits,
             "packed_bytes": item.packed_bytes,
+            "registered_bytes": item.registered_bytes,
+            "codebook_bytes": item.codebook_bytes,
+            "complete_bytes": item.complete_bytes,
             "local_error": item.local_error,
             "global_kl": item.global_kl,
             "score": item.score,
         })
     stats = {
         "config": asdict(config),
+        "candidate_score_cache_key": score_cache_key,
+        "candidate_score_cache_hit": score_cache_hit,
         "layers": len(targets),
         "target_bpw": config.target_bpw,
         "achieved_bpw": achieved_bits / total_weights,
-        "target_reached": achieved_bits <= target_bits,
+        "target_reached": (
+            achieved_complete_bytes <= int(config.target_complete_bytes)
+            + int(tolerance_bytes or 0)
+            if config.target_complete_bytes is not None
+            else achieved_bits <= target_bits
+        ),
         "packed_bytes": achieved_bits // 8,
+        "fixed_complete_bytes": fixed_complete_bytes,
+        "estimated_complete_bytes": achieved_complete_bytes,
+        "target_complete_bytes": config.target_complete_bytes,
+        "target_tolerance_bytes": tolerance_bytes,
+        "target_error_bytes": (
+            achieved_complete_bytes - int(config.target_complete_bytes)
+            if config.target_complete_bytes is not None else None
+        ),
+        "within_target_tolerance": (
+            abs(achieved_complete_bytes - int(config.target_complete_bytes))
+            <= int(tolerance_bytes or 0)
+            if config.target_complete_bytes is not None else None
+        ),
         "weights": total_weights,
         "counts_by_bits": count_by_bits,
         "details": details,
+        "candidate_table": [
+            {
+                "name": name,
+                "bits": item.bits,
+                "packed_bytes": item.packed_bytes,
+                "registered_bytes": item.registered_bytes,
+                "codebook_bytes": item.codebook_bytes,
+                "complete_bytes": item.complete_bytes,
+                "local_error": item.local_error,
+                "global_kl": item.global_kl,
+                "score": item.score,
+                "selected": selected[name] == index,
+            }
+            for name, items in scores.items()
+            for index, item in enumerate(items)
+        ],
     }
     logger.info(
-        "dynamic allocation: %.4f bpw target -> %.4f bpw (%s)",
-        config.target_bpw, stats["achieved_bpw"], count_by_bits)
+        "dynamic allocation: %.4f bpw target -> %.4f bpw; "
+        "complete=%d target=%s (%s)",
+        config.target_bpw, stats["achieved_bpw"], achieved_complete_bytes,
+        config.target_complete_bytes, count_by_bits)
+    if config.require_target_match and not stats["within_target_tolerance"]:
+        raise ValueError(
+            "dynamic allocation missed complete-model byte target: "
+            f"estimated={achieved_complete_bytes}, "
+            f"target={config.target_complete_bytes}, "
+            f"tolerance={tolerance_bytes}"
+        )
     return recipe, stats

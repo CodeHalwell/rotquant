@@ -29,6 +29,8 @@ class TrajectoryConfig:
     use_cache: bool = True
     bootstrap_draws: int = 2_000
     bootstrap_seed: int = 17
+    prompt_file: str | None = None
+    prompt_field: str = "prompt"
 
     def __post_init__(self) -> None:
         if self.batches < 1:
@@ -39,6 +41,10 @@ class TrajectoryConfig:
             raise ValueError("trajectory skip must be >= 0")
         if self.bootstrap_draws < 1 or self.bootstrap_seed < 0:
             raise ValueError("bootstrap draws must be positive and seed nonnegative")
+        if self.prompt_file is not None and not self.prompt_file.strip():
+            raise ValueError("prompt_file must be a non-empty path")
+        if not self.prompt_field:
+            raise ValueError("prompt_field must be non-empty")
 
 
 @dataclass
@@ -46,6 +52,8 @@ class TrajectoryReference:
     inputs: dict[str, torch.Tensor]
     continuation: torch.Tensor
     input_hash: str
+    item_id: str | None = None
+    domain: str | None = None
 
 
 def _device_inputs(inputs: Mapping[str, Any], device) -> dict[str, Any]:
@@ -95,6 +103,8 @@ def capture_trajectories(model, tokenizer, batches: Sequence[Mapping[str, Any]],
             input_hash=hashlib.sha256(
                 prompt["input_ids"].detach().cpu().contiguous().numpy().tobytes()
             ).hexdigest(),
+            item_id=getattr(batch, "item_id", None),
+            domain=getattr(batch, "domain", None),
         ))
     if not references:
         raise ValueError("trajectory evaluation requires at least one prompt")
@@ -142,6 +152,8 @@ def evaluate_trajectories(model, tokenizer,
         prompt_prefix.extend(row_prefix.float().tolist())
         prompt_metrics.append({
             "input_hash": reference.input_hash,
+            "item_id": reference.item_id,
+            "domain": reference.domain,
             "examples": prompt_examples,
             "tokens": rows.numel(),
             "token_agreement": float(rows.float().mean().item()),
@@ -168,4 +180,30 @@ def evaluate_trajectories(model, tokenizer,
         draws=config.bootstrap_draws,
         seed=config.bootstrap_seed,
     )
+    domains = sorted({
+        row["domain"] for row in prompt_metrics if row.get("domain") is not None
+    })
+    if domains:
+        result["domain_summaries"] = {}
+        for domain in domains:
+            rows = [row for row in prompt_metrics if row.get("domain") == domain]
+            domain_tokens = sum(int(row["tokens"]) for row in rows)
+            domain_examples = sum(int(row["examples"]) for row in rows)
+            result["domain_summaries"][domain] = {
+                "prompts": len(rows),
+                "examples": domain_examples,
+                "tokens": domain_tokens,
+                "token_agreement": sum(
+                    float(row["token_agreement"]) * int(row["tokens"])
+                    for row in rows
+                ) / domain_tokens,
+                "exact_trajectory_rate": sum(
+                    float(row["exact_trajectory_rate"]) * int(row["examples"])
+                    for row in rows
+                ) / domain_examples,
+                "mean_matching_prefix": sum(
+                    float(row["mean_matching_prefix"]) * int(row["examples"])
+                    for row in rows
+                ) / domain_examples,
+            }
     return result

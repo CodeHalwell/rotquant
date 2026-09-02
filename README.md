@@ -91,6 +91,16 @@ E8P cache engineering check, and the pinned Unsloth Q4 anchor. Every subprocess
 streams to the cell and a persistent Drive log, emits GPU heartbeats during
 silent kernels, and records resumable per-arm progress.
 
+The follow-on
+[Qwen3.5-4B dynamic mixed-precision Colab](notebooks/qwen35_4b_dynamic_mixed_precision_colab.ipynb)
+replicates learned butterfly signs, tests fp16 angle storage, searches static
+2/3/4/5/6/8-bit recipes at the exact complete Unsloth UD-Q4_K_XL byte target,
+confirms seed-0 finalists across three seeds, exports reloadable packed
+artifacts, and repeats the same-input Unsloth KL anchor on more than 10,000
+teacher-forced tokens. See the
+[runbook](docs/qwen35_dynamic_mixed_experiment.md) for phase boundaries,
+resumption, and the remaining public-claim limitations.
+
 ## Install
 
 ```bash

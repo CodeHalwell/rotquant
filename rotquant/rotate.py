@@ -284,8 +284,12 @@ class ButterflyRotation(Rotation):
         signs = torch.randint(0, 2, (dim,), generator=gen,
                               dtype=torch.float32) * 2 - 1
         self.register_buffer("signs", signs.to(device=device, dtype=torch.int8))
+        if dtype not in (torch.float16, torch.bfloat16, torch.float32):
+            raise ValueError(
+                "ButterflyRotation dtype must be float16, bfloat16, or float32"
+            )
         angles = torch.full((self.n_blocks, self.n_stages, block // 2),
-                            math.pi / 4, dtype=torch.float32, device=device)
+                            math.pi / 4, dtype=dtype, device=device)
         self.theta = nn.Parameter(angles)
         self.register_parameter("sign_logits", None)
         self._sign_temperature = 1.0

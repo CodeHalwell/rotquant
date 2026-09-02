@@ -184,6 +184,31 @@ def test_packed_checkpoint_round_trip_reproduces_logits(tmp_path, rotation):
             assert torch.equal(reloaded.act_rotation.signs, original.act_rotation.signs)
 
 
+def test_half_precision_butterfly_storage_round_trips_exactly(tmp_path):
+    """The metadata-saving finalist must reload with the deployed angle dtype."""
+
+    torch.manual_seed(23)
+    model = _tiny_packed_llama("butterfly")
+    for module in model.modules():
+        if isinstance(module, QuantLinear) and hasattr(module.act_rotation, "theta"):
+            module.act_rotation.theta.data = module.act_rotation.theta.data.half()
+
+    output = tmp_path / "packed-fp16-angles"
+    save_packed_checkpoint(model, output, model_loader="causal_lm")
+    manifest = checkpoint_manifest(output)
+    rotation_specs = [
+        item["rotation"] for item in manifest["quantized_modules"]
+        if item["rotation"]["kind"] == "butterfly"
+    ]
+    assert rotation_specs
+    assert {spec["storage_dtype"] for spec in rotation_specs} == {"float16"}
+
+    restored = load_packed_model(output, dtype=torch.float32)
+    for module in restored.modules():
+        if isinstance(module, QuantLinear) and hasattr(module.act_rotation, "theta"):
+            assert module.act_rotation.theta.dtype == torch.float16
+
+
 def test_checkpoint_refuses_nonempty_directory_without_overwrite(tmp_path):
     model = _tiny_packed_llama()
     export_dir = tmp_path / "occupied"

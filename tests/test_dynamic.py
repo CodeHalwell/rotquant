@@ -1,4 +1,5 @@
 """Dynamic mixed-precision selection and teacher-logit fidelity metrics."""
+from dataclasses import replace
 from types import SimpleNamespace
 
 import torch
@@ -10,6 +11,7 @@ from rotquant.dynamic import (
     select_dynamic_quantization,
     teacher_logit_kl,
 )
+from rotquant.linear import QuantLinear
 from rotquant.patch import PatchConfig, patch_model
 from rotquant.quantize import QuantConfig
 
@@ -148,3 +150,100 @@ def test_random_allocator_is_a_seeded_matched_format_control():
         assert stats["target_reached"]
         recipes.append({name: quant.bits for name, quant in recipe.items()})
     assert recipes[0] == recipes[1]
+
+
+def test_dynamic_allocator_targets_complete_persistent_bytes():
+    torch.manual_seed(8)
+    activations = {
+        "layers.0": torch.randn(16, 16),
+        "layers.1": torch.randn(16, 16),
+    }
+    probe = TinyLM().eval()
+    probe_cfg = _patch_cfg(
+        candidate_bits=[2, 4], target_bpw=2.0,
+        global_kl_weight=0.0,
+    )
+    _recipe, probe_stats = select_dynamic_quantization(
+        probe, probe_cfg, activations=activations
+    )
+    candidates = probe_stats["candidate_table"]
+    high = {
+        row["name"]: row for row in candidates if row["bits"] == 4
+    }
+    low = {
+        row["name"]: row for row in candidates if row["bits"] == 2
+    }
+    first_name = min(high)
+    target = (
+        probe_stats["fixed_complete_bytes"]
+        + sum(row["complete_bytes"] for row in high.values())
+        - (high[first_name]["complete_bytes"] - low[first_name]["complete_bytes"])
+    )
+
+    model = TinyLM().eval()
+    patch_cfg = _patch_cfg(
+        candidate_bits=[2, 4],
+        target_bpw=4.0,
+        target_complete_bytes=target,
+        target_tolerance_fraction=0.0,
+        require_target_match=True,
+        global_kl_weight=0.0,
+    )
+    recipe, stats = select_dynamic_quantization(
+        model, patch_cfg, activations=activations
+    )
+    assert stats["estimated_complete_bytes"] == target
+    assert stats["within_target_tolerance"] is True
+    assert sorted(config.bits for config in recipe.values()) == [2, 4]
+    assert len(stats["candidate_table"]) == 4
+
+    patch_cfg.layer_quant = recipe
+    patch_model(model, patch_cfg)
+    seen: set[int] = set()
+    registered_bytes = 0
+    for module in model.modules():
+        for tensor in [*module._parameters.values(), *module._buffers.values()]:
+            if tensor is not None and id(tensor) not in seen:
+                seen.add(id(tensor))
+                registered_bytes += tensor.numel() * tensor.element_size()
+    packed_bytes = 0
+    codebook_bytes = 0
+    for module in model.modules():
+        if not isinstance(module, QuantLinear):
+            continue
+        packed_bytes += module.packed_state_bytes()
+        centroids = module.qweight.codebook.centroids
+        codebook_bytes += centroids.numel() * centroids.element_size()
+    assert registered_bytes + packed_bytes + codebook_bytes == target
+
+
+def test_candidate_score_cache_reuses_screen_but_not_allocation(monkeypatch):
+    import rotquant.dynamic as dynamic_module
+
+    torch.manual_seed(9)
+    model = TinyLM().eval()
+    patch_cfg = _patch_cfg(
+        candidate_bits=[2, 4], target_bpw=3.0, global_kl_weight=0.0
+    )
+    calls = {"count": 0}
+    original = dynamic_module._score_candidates
+
+    def counted(*args, **kwargs):
+        calls["count"] += 1
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(dynamic_module, "_score_candidates", counted)
+    dynamic_module._CANDIDATE_SCORE_CACHE.clear()
+    _, first = select_dynamic_quantization(
+        model, patch_cfg, score_cache_key="same-source-and-scoring"
+    )
+    random_patch = replace(
+        patch_cfg,
+        dynamic={**patch_cfg.dynamic, "allocation": "random"},
+    )
+    _, second = select_dynamic_quantization(
+        model, random_patch, score_cache_key="same-source-and-scoring"
+    )
+    assert calls["count"] == 1
+    assert first["candidate_score_cache_hit"] is False
+    assert second["candidate_score_cache_hit"] is True

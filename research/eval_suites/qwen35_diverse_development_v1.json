@@ -1,0 +1,156 @@
+{
+  "name": "qwen35-diverse-development-v1",
+  "scope": "Authored development prompts; not the licensed 300-prompt release suite",
+  "prompts": [
+    {
+      "item_id": "agentic-001",
+      "domain": "agentic",
+      "prompt": "You can call get_weather(city, date) and create_calendar_event(title, start, duration_minutes). A user asks: Check tomorrow's weather in Bristol and, only if rain is likely, schedule a 30-minute reminder called Pack umbrella at 07:30. Respond with the minimum valid sequence of tool calls.",
+      "text": "Tool-use case. Available functions are get_weather(city, date) and create_calendar_event(title, start, duration_minutes). The user asks to check tomorrow's Bristol weather and create a 07:30 thirty-minute reminder only if rain is likely. A correct agent first calls get_weather with Bristol and tomorrow's date. It must inspect the precipitation result before deciding whether to call create_calendar_event. It must not schedule the event speculatively, invent a forecast, or call the calendar twice. If rain is likely, the second call uses the exact title Pack umbrella, a start time of 07:30 tomorrow, and duration_minutes equal to 30. If rain is not likely, it explains briefly that no reminder was created."
+    },
+    {
+      "item_id": "agentic-002",
+      "domain": "agentic",
+      "prompt": "A repository has failing tests. You may call read_file(path), search(pattern), and run_tests(target). Plan and execute the smallest sequence needed to locate an off-by-one error in src/window.py without modifying files.",
+      "text": "Repository diagnosis case. The agent has read_file, search, and run_tests, but no write tool. It should begin with a focused test run or search for references to src/window.py, inspect the failing assertion, and then read the smallest relevant region of the implementation. The agent must not claim to have edited the file because no mutation tool exists. A good trace names the observed boundary condition, cites the relevant index or slice, and proposes a patch for the user without applying it. Repeating broad test runs after the failure is already localized wastes time and should be avoided."
+    },
+    {
+      "item_id": "agentic-003",
+      "domain": "agentic",
+      "prompt": "You have lookup_order(order_id) and refund_order(order_id, amount). The customer requests a full refund, but the order record may show a partial prior refund. Describe the safe tool-call sequence and do not exceed the remaining refundable amount.",
+      "text": "Refund case. The agent must retrieve the order before issuing money. It calls lookup_order exactly once, checks payment status, currency, captured total, and any earlier refunds, then computes remaining refundable amount as captured total minus completed refunds. A full refund request means refunding that remaining amount, not blindly refunding the original total. If the remaining amount is zero or the order is ineligible, no refund call is made. Otherwise refund_order is called once with the verified order identifier and remaining amount. The response reports the result without exposing unrelated customer data."
+    },
+    {
+      "item_id": "agentic-004",
+      "domain": "agentic",
+      "prompt": "Use search_flights(origin, destination, date) and book_flight(flight_id) to help a user find a flight from LHR to AMS next Friday. Booking requires explicit confirmation. What should the agent do now?",
+      "text": "Travel case. The user has requested help finding a flight but has not authorized a purchase. The agent may call search_flights with LHR, AMS, and the resolved date for next Friday. It should present a concise set of suitable options with times and prices, then ask the user to choose and confirm. It must not call book_flight until the user explicitly confirms a specific flight identifier and material terms. The agent should clarify the date if next Friday is ambiguous under the current locale or time zone. Search is reversible; booking is consequential."
+    },
+    {
+      "item_id": "agentic-005",
+      "domain": "agentic",
+      "prompt": "An email assistant can list_messages(query), read_message(id), and send_message(to, subject, body). The user says, Find the latest invoice from Northwind and tell me the total. Do not send anything.",
+      "text": "Email retrieval case. The agent searches for messages from Northwind containing invoice-related terms, selects the latest plausible result, and reads that message. It extracts the invoice total and currency from the content and reports them with enough context to distinguish invoice date or number. It does not call send_message because the user explicitly prohibited sending. If search produces multiple equally recent invoices or the total is absent, it asks a focused question or reports the uncertainty rather than guessing."
+    },
+    {
+      "item_id": "code-001",
+      "domain": "code",
+      "prompt": "Write a Python function merge_intervals(intervals) that accepts unsorted closed integer intervals, merges overlaps and touching intervals, and returns sorted pairs. Explain the complexity.",
+      "text": "Programming task: merge unsorted closed integer intervals, treating adjacent intervals as touching. Sort normalized pairs by their start, then scan once. For each start and end, append a new pair when the output is empty or start is greater than the previous end plus one; otherwise extend the previous end to the maximum. The implementation should avoid mutating caller-owned pairs. Sorting dominates at O(n log n) time, the scan is O(n), and the output requires O(n) space in the worst case. Empty input returns an empty list. Reversed endpoints should either be normalized explicitly or rejected consistently."
+    },
+    {
+      "item_id": "code-002",
+      "domain": "code",
+      "prompt": "A Python async worker occasionally processes the same queue item twice after cancellation. Show a robust pattern that acknowledges only after successful processing and requeues failures without swallowing CancelledError.",
+      "text": "Asynchronous queue task. A safe worker awaits queue.get, runs the handler inside a try block, and calls task_done in a finally block exactly once for every successful get. Application exceptions may place the item onto a retry queue with a bounded attempt count. asyncio.CancelledError must be re-raised after any required cleanup; it should not be caught by a broad exception handler and converted into success. Acknowledgement to an external broker happens only after the handler commits its side effects. Idempotency keys are still required because process crashes can occur between commit and acknowledgement."
+    },
+    {
+      "item_id": "code-003",
+      "domain": "code",
+      "prompt": "Implement an LRU cache in TypeScript with get and put in amortized O(1). Capacity zero must be handled correctly and keys may map to undefined-like values.",
+      "text": "TypeScript design. Use a Map whose insertion order represents recency. get checks Map.has rather than comparing the returned value with undefined, removes the existing key, reinserts the same value, and returns it. put returns immediately when capacity is zero. For an existing key it deletes the old entry before setting the new value. If insertion makes size exceed capacity, it obtains the first key from map.keys().next() and deletes it. Both operations are amortized constant time under the Map contract. The API should distinguish a missing key from a stored undefined value, for example with a tagged result."
+    },
+    {
+      "item_id": "code-004",
+      "domain": "code",
+      "prompt": "Given a SQL table events(user_id, occurred_at, event_type), write a query returning each user's first purchase after their first signup, excluding purchases before signup.",
+      "text": "SQL task. First aggregate signup rows to one minimum signup timestamp per user. Join purchases for the same user with occurred_at greater than or equal to that signup timestamp. Then rank eligible purchases by occurred_at and a stable tie breaker, or aggregate their minimum timestamp if only the time is required. A common-table-expression solution keeps the two phases explicit. Users without a signup or without a later purchase are excluded unless the requested output calls for a left join. The query must not take the user's first purchase globally and compare afterward, because that loses later eligible purchases when an earlier purchase predates signup."
+    },
+    {
+      "item_id": "code-005",
+      "domain": "code",
+      "prompt": "Review this invariant: a ring buffer with head pointing to the next read slot and tail to the next write slot reserves one empty position. State the full and empty conditions and the usable capacity.",
+      "text": "Ring-buffer invariant. Empty means head equals tail. Full means advancing tail by one modulo the underlying array length would equal head. A successful write stores at tail and then advances tail; a successful read loads from head and then advances head. Reserving one position disambiguates full from empty without an extra count, so an array of length N has usable capacity N minus one. Boundary tests should cover wraparound, filling to N minus one items, rejecting the next write, draining to empty, and alternating operations across the modulus."
+    },
+    {
+      "item_id": "math-001",
+      "domain": "math",
+      "prompt": "A tank is initially 40% full. Adding 18 litres makes it 70% full. What is the tank's capacity and how much water was initially present? Show the equations.",
+      "text": "Let C be the tank capacity in litres. The initial amount is 0.40C and the later amount is 0.70C. Their difference is the added eighteen litres, so 0.70C minus 0.40C equals 18. Thus 0.30C equals 18 and C equals 60 litres. The initial amount is 0.40 times 60, which equals 24 litres. Checking: 24 plus 18 is 42, and 42 divided by 60 is 0.70. Therefore the capacity is 60 litres and the tank initially held 24 litres."
+    },
+    {
+      "item_id": "math-002",
+      "domain": "math",
+      "prompt": "Prove that the sum of the first n odd positive integers is n squared, using induction and a geometric interpretation.",
+      "text": "The identity is 1 plus 3 plus 5 through 2n minus 1 equals n squared. For induction, the n equals one case is immediate. Assume the first n odd numbers sum to n squared. Adding the next odd number, 2n plus 1, gives n squared plus 2n plus 1, which is the square of n plus one. This proves the result for every positive integer. Geometrically, an n by n square can be enlarged to an n plus one square by adding an L-shaped border containing n cells along one side, n along another, and one corner cell: exactly 2n plus 1 cells."
+    },
+    {
+      "item_id": "math-003",
+      "domain": "math",
+      "prompt": "Two fair six-sided dice are rolled. Given that at least one die shows a 5, what is the probability that the sum is 8? Explain the conditional sample space.",
+      "text": "Condition on ordered pairs where at least one coordinate is five. There are six pairs of the form five comma j and six pairs of the form i comma five, but the pair five comma five is counted twice, leaving eleven equally likely ordered outcomes. A sum of eight with at least one five occurs for five comma three and three comma five. Therefore the conditional probability is two elevenths. The denominator is not twelve because the double-five outcome belongs to both initial lists but is only one elementary outcome."
+    },
+    {
+      "item_id": "math-004",
+      "domain": "math",
+      "prompt": "Find the minimum of f(x)=x^2+16/x for positive x and justify that it is global.",
+      "text": "For positive x, differentiate f to obtain f prime equals 2x minus 16 divided by x squared. Setting this to zero gives 2x cubed equals 16, so x equals 2. The second derivative is 2 plus 32 divided by x cubed, which is positive for every positive x; therefore f is strictly convex and the stationary point is the unique global minimum. Substitution gives f of 2 equals 4 plus 8, or 12. The boundary behavior agrees: f tends to positive infinity as x approaches zero from the right or as x grows without bound."
+    },
+    {
+      "item_id": "math-005",
+      "domain": "math",
+      "prompt": "A diagnostic test has 95% sensitivity and 90% specificity. Disease prevalence is 2%. Compute the probability of disease after a positive result.",
+      "text": "Use Bayes' rule. Among a notional ten thousand people, two hundred have the disease and about one hundred ninety of them test positive. Nine thousand eight hundred do not have the disease; with ninety percent specificity, ten percent test positive, producing nine hundred eighty false positives. There are therefore about one thousand one hundred seventy positive tests, of which one hundred ninety are true positives. The posterior probability is 190 divided by 1170, approximately 0.1624 or 16.2 percent. High sensitivity does not imply a high positive predictive value when prevalence is low."
+    },
+    {
+      "item_id": "multilingual-001",
+      "domain": "multilingual",
+      "prompt": "Responde en español: explica por qué conviene separar los datos de calibración de los datos de evaluación al cuantizar un modelo.",
+      "text": "Separar los datos de calibración y de evaluación evita medir el mismo material que se utilizó para elegir escalas, formatos o capas de mayor precisión. Si ambos conjuntos se solapan, una cuantización puede parecer mejor porque se adapta a ejemplos conocidos, no porque conserve la calidad de manera general. La evaluación debe usar entradas no vistas, mantener la plantilla de conversación correcta y registrar revisiones e identificadores. También conviene comparar distribuciones de logits, acuerdo de la primera opción y trayectorias de varios tokens, además de la perplejidad."
+    },
+    {
+      "item_id": "multilingual-002",
+      "domain": "multilingual",
+      "prompt": "Réponds en français : résume les compromis entre une quantification à deux bits et une quantification à quatre bits pour un assistant utilisant des outils.",
+      "text": "Une quantification à deux bits réduit fortement la taille du modèle et la bande passante mémoire, mais elle perturbe davantage les probabilités de sortie. Pour un assistant qui appelle des outils, une petite erreur peut modifier le nom d'une fonction, un argument JSON ou la décision d'appeler un outil, puis faire diverger toute la trajectoire. Quatre bits occupent plus de mémoire, mais conservent généralement mieux les logits et les réponses longues. Il faut donc comparer les modèles à taille réelle, sur des appels d'outils non vus, et mesurer les erreurs de syntaxe ainsi que la divergence sur plusieurs tokens."
+    },
+    {
+      "item_id": "multilingual-003",
+      "domain": "multilingual",
+      "prompt": "日本語で答えてください。長い文書を要約するとき、重要な数値と但し書きを失わないための手順を説明してください。",
+      "text": "長い文書を要約する場合は、最初に目的と対象読者を確認します。次に、章ごとの主張、日付、金額、割合、条件、例外を構造化して抽出します。似た数値を混同しないように出典の節と単位を保持し、推測と明記された事実を分けます。要約を書いた後、原文と照合して、重要な但し書き、否定表現、適用範囲が残っているか確認します。情報が不足している場合は、断定せずに不明点を示します。"
+    },
+    {
+      "item_id": "multilingual-004",
+      "domain": "multilingual",
+      "prompt": "أجب بالعربية: ما الفرق بين ضغط أوزان النموذج وضغط ذاكرة المفاتيح والقيم أثناء الاستدلال؟",
+      "text": "ضغط الأوزان يقلل الحجم الدائم لمعاملات النموذج ويؤثر في كل طلب، بينما ضغط ذاكرة المفاتيح والقيم يقلل الذاكرة التي تنمو مع طول السياق وعدد الطلبات المتزامنة. يمكن اختيار دقة مختلفة لكل منهما لأن مصادر الخطأ والتكلفة مختلفة. يجب قياس جودة الأوزان بمقارنة توزيعات الخرج مع النموذج الأصلي، وقياس الذاكرة المضغوطة داخل مسار الانتباه نفسه. كما يجب حساب المقاييس والبيانات الوصفية وعدم الادعاء بتسريع التنفيذ قبل وجود نواة تستخدم التمثيل المضغوط مباشرة."
+    },
+    {
+      "item_id": "multilingual-005",
+      "domain": "multilingual",
+      "prompt": "हिन्दी में समझाइए: किसी मॉडल के दो संस्करणों की निष्पक्ष तुलना के लिए केवल फ़ाइल का नाम पर्याप्त क्यों नहीं है?",
+      "text": "केवल फ़ाइल का नाम यह नहीं बताता कि मॉडल में कौन से सहायक मॉड्यूल, प्रोजेक्टर, शब्दकोश या स्केल शामिल हैं। निष्पक्ष तुलना के लिए वास्तविक बाइट आकार, चेकसम, मूल मॉडल का संस्करण, टोकनाइज़र, चैट टेम्पलेट और चलाने वाले इंजन को दर्ज करना चाहिए। दोनों संस्करणों को समान इनपुट और समान डिकोडिंग नियमों पर परखना चाहिए। यदि आकार में बड़ा अंतर हो तो गुणवत्ता का अंतर मिश्रित कारणों से आ सकता है, इसलिए समान आकार की सीमा पहले तय करना उपयोगी है।"
+    },
+    {
+      "item_id": "long-document-001",
+      "domain": "long_document",
+      "prompt": "A project report states: phase one costs £1.2m and ends in March; phase two is optional, costs £0.8m, and begins only if defect escape is below 2%; the contingency is 10% of committed work only. Summarize the committed budget and the trigger for phase two.",
+      "text": "Project report excerpt. The programme contains two phases. Phase one is approved, has a budget of £1.2 million, and is scheduled to finish at the end of March. Phase two has an estimated cost of £0.8 million but is not yet committed. Its authorization depends on the phase-one defect-escape rate being strictly below two percent at the release review. The finance appendix assigns a ten-percent contingency only to work that has been committed; optional work does not receive contingency until approval. Therefore the current committed base is £1.2 million and current contingency is £0.12 million, for £1.32 million committed including contingency. Phase two is triggered by the quality threshold and would change the budget only after approval."
+    },
+    {
+      "item_id": "long-document-002",
+      "domain": "long_document",
+      "prompt": "From this policy, identify who may approve an emergency production change: normal changes need two reviewers; during a declared severity-one incident, the incident commander and one service owner may approve; the author cannot be the service owner; retrospective review is due within 48 hours.",
+      "text": "Change-control policy excerpt. Standard production changes require two independent reviewers before deployment. An emergency exception applies only while a severity-one incident has been formally declared. Under that exception, approval must come from the active incident commander and one owner of the affected service. The person who authored the change cannot satisfy the service-owner approval role, even if that person normally owns the service. The deployment record must link the incident, identify both approvers, and describe rollback. Emergency approval does not remove oversight: a retrospective review is required within forty-eight hours of deployment. A severity-two incident or an undeclared outage follows the normal two-reviewer process."
+    },
+    {
+      "item_id": "long-document-003",
+      "domain": "long_document",
+      "prompt": "A clinical study enrolled 600 adults, randomized 2:1. Twelve withdrew before dosing and are excluded from the safety set but retained in intention-to-treat analysis. State the expected group sizes before withdrawal and the analysis rule.",
+      "text": "Study methods excerpt. Six hundred adults were randomized in a two-to-one ratio between treatment and control. Randomization therefore assigned four hundred participants to treatment and two hundred to control before any withdrawals. Twelve randomized participants withdrew consent before receiving a dose. The intention-to-treat analysis retains all randomized participants in their assigned groups, including those twelve, and handles missing outcomes according to the prespecified statistical plan. The safety population contains only participants who received at least one dose, so the pre-dose withdrawals are excluded from safety summaries. The excerpt does not state which randomized groups contained the twelve withdrawals, so post-withdrawal safety group sizes cannot be inferred."
+    },
+    {
+      "item_id": "long-document-004",
+      "domain": "long_document",
+      "prompt": "A service SLO is 99.9% monthly availability. Planned maintenance counts as downtime unless announced seven days ahead and completed within a two-hour window. Explain whether a three-hour announced maintenance is excluded.",
+      "text": "Availability policy excerpt. The monthly service-level objective is 99.9 percent. By default, every interval in which the service cannot process valid requests contributes to downtime. Planned maintenance is excluded only when both conditions hold: customers receive at least seven full days of notice, and the maintenance is completed within a continuous two-hour window. Notice alone is insufficient. A maintenance event announced ten days in advance but lasting three hours exceeds the allowed window, so it is not excluded under this clause; the unavailable interval counts toward the monthly calculation. The policy provides no partial two-hour exclusion for an overlong event."
+    },
+    {
+      "item_id": "long-document-005",
+      "domain": "long_document",
+      "prompt": "A procurement note offers 8% discount for 1,000 units, plus 2% if paid in 10 days. Freight is fixed at £4,000 and discounts apply only to goods. Unit list price is £50. Compute the total with both discounts, before tax.",
+      "text": "Procurement note. The order contains one thousand units at a list price of fifty pounds each, so the undiscounted goods value is £50,000. The volume discount is eight percent of goods, reducing the goods value to £46,000. The prompt states that the additional two-percent early-payment discount also applies and that discounts apply only to goods. Applying it sequentially to the already discounted goods gives £45,080. Fixed freight of £4,000 is then added without discount, producing £49,080 before tax. If the contract instead defined both percentages against list price the result would differ, but the ordinary sequential interpretation is used here."
+    }
+  ]
+}

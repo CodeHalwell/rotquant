@@ -67,6 +67,10 @@ class PatchConfig:
     # Optional signed, symmetric, per-token activation quantization. This is a
     # correctness path today; fused W4A8 kernels can consume the same semantics.
     activation_bits: int | None = None
+    # Train learned butterfly angles in fp32, then store/deploy them at this
+    # precision.  Float16 halves the learned-rotation metadata while preserving
+    # the same O(d log block) transform and is evaluated as a separate arm.
+    rotation_storage_dtype: str = "float32"
     # Optional Unsloth-Dynamic-style, model-specific mixed-precision search.
     # ``dynamic`` contains serializable search settings. ``layer_quant`` is
     # populated by the runner with the resulting per-projection recipe and is
@@ -117,6 +121,29 @@ def make_rotations(in_features: int, cfg: PatchConfig, layer_seed: int,
     return weight_rot, act_rot
 
 
+def commit_rotation_storage(rotation: Rotation, dtype: str) -> None:
+    """Commit learned butterfly metadata to its declared deployed dtype."""
+
+    supported = {
+        "float16": torch.float16,
+        "bfloat16": torch.bfloat16,
+        "float32": torch.float32,
+    }
+    if dtype not in supported:
+        raise ValueError(
+            "rotation_storage_dtype must be float16, bfloat16, or float32"
+        )
+    target = supported[dtype]
+    if isinstance(rotation, ButterflyRotation):
+        rotation.theta.data = rotation.theta.detach().to(dtype=target)
+        rotation._invalidate_cache()
+    elif dtype != "float32":
+        raise ValueError(
+            "reduced rotation storage is currently supported only for "
+            "butterfly rotations"
+        )
+
+
 def _rotate_hessian(rotation: Rotation, hessian: torch.Tensor) -> torch.Tensor:
     """Return ``R H R^T`` (see :func:`rotquant._internal.rotate_hessian`)."""
 
@@ -162,6 +189,15 @@ def patch_model(model: nn.Module, cfg: PatchConfig,
         or not 2 <= cfg.activation_bits <= 16
     ):
         raise ValueError("activation_bits must be None or an integer in [2, 16]")
+    if cfg.rotation_storage_dtype not in {"float16", "bfloat16", "float32"}:
+        raise ValueError(
+            "rotation_storage_dtype must be float16, bfloat16, or float32"
+        )
+    if cfg.rotation_storage_dtype != "float32" and not butterfly_kind:
+        raise ValueError(
+            "reduced rotation storage is currently supported only for "
+            "butterfly rotations"
+        )
     if learned_kind and cfg.train_rotation is None:
         logger.warning(
             "rotation='learned' starts at ~identity (theta init 1e-3): without "
@@ -370,6 +406,7 @@ def patch_model(model: nn.Module, cfg: PatchConfig,
                          if "selection_accepted" in stats else ""))
         elif reused_shared_rotation and cfg.train_rotation is not None:
             logger.debug("reusing jointly trained rotation for %s", name)
+        commit_rotation_storage(weight_rot, cfg.rotation_storage_dtype)
         H = source_hessian
         if H is not None:
             # Hessians may have been offloaded to CPU by collect_hessians;
@@ -413,6 +450,7 @@ def patch_model(model: nn.Module, cfg: PatchConfig,
             "steps": train_stats[0]["steps"],
             "objective": train_stats[0]["objective"],
             "tokens": train_stats[0]["tokens"],
+            "storage_dtype": cfg.rotation_storage_dtype,
             "selection_tokens": train_stats[0].get("selection_tokens", 0),
             "mean_best_step": (
                 sum(s["best_step"] for s in train_stats) / len(train_stats)

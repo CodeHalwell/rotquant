@@ -1,0 +1,61 @@
+{
+  "schema_version": 1,
+  "protocol": "qwen35-next-stage-v2",
+  "code_revision": "2911e7af539ff1501ba791aaf463c14a4eaf03a3",
+  "model": "unsloth/Qwen3.5-4B",
+  "model_revision": "3764fa359b9082ea5a1e4a5e3ac3aaf6e9671636",
+  "stage": "ablation-confirm",
+  "seeds": [0, 1, 2],
+  "raw_file_sha256": {
+    "ablation_screen": "4a714dd90bac90cbda3fa03a7f3bf4d9e0dd3e54c1cf87dbdf390cf623934338",
+    "ablation_confirm": "b2556181d944ec1a29ee295105c41af4cde5aaaf68d4f326abd53b43f8059a75",
+    "long_kv": "e2a48316dd9f293daca3a294ce2f76992c3c98873448b99240ebfceecbbd30a0",
+    "unsloth_ud_q4_kl": "09821de262e05e9c10ffd92be68a501812b983d817479a8044adf5e104eb8485",
+    "validation": "0babf1bc3ae24c33a94c290f4a2f78d708e9fe3c04853d7af9cb24054728661a"
+  },
+  "three_seed_means": {
+    "promoted_w4": {
+      "mean_teacher_kl": 0.022541290704362626,
+      "top1_agreement": 0.9271037181996086,
+      "ppl_wikitext2": 9.791425387064615,
+      "ppl_c4": 14.259466489156088,
+      "trajectory_token_agreement": 0.5247395833333334,
+      "complete_persistent_model_bytes": 3787286336
+    },
+    "scale8_w4": {
+      "mean_teacher_kl": 0.02192056645619193,
+      "top1_agreement": 0.9254729288975865,
+      "ppl_wikitext2": 9.798540751139322,
+      "ppl_c4": 14.259516080220541,
+      "trajectory_token_agreement": 0.5208333333333334,
+      "complete_persistent_model_bytes": 3759868736
+    },
+    "shared_fwht_w4": {
+      "mean_teacher_kl": 0.02341061818856316,
+      "top1_agreement": 0.9290606653620351,
+      "ppl_wikitext2": 9.780060450236002,
+      "ppl_c4": 14.269831021626791,
+      "trajectory_token_agreement": 0.5403645833333334,
+      "complete_persistent_model_bytes": 3787163456
+    }
+  },
+  "unsloth_anchor": {
+    "complete_artifact_bytes": 3584533344,
+    "mean_teacher_kl": 0.012943536043167114,
+    "p95_teacher_kl": 0.03614513948559761,
+    "top1_agreement": 0.9368884540117417,
+    "nll_delta": 0.011557459672757895,
+    "tokens": 2044
+  },
+  "decision": {
+    "scale8_w4": "retain as the lower-byte uniform control; KL improved modestly but other metrics were neutral",
+    "shared_fwht_w4": "do not promote; three-seed effects are mixed",
+    "learned_signs": "replicate at three seeds and test fp16 angle storage before promotion",
+    "mixed_precision": "screen exact-byte 2/3/4/5/6/8-bit allocation against uniform and random-mixed controls"
+  },
+  "limitations": [
+    "The learned-sign arm was available only at seed 0 in the source bundle.",
+    "The Unsloth anchor used four C4 prompts and a different inference engine.",
+    "The long-context cache result remains provisional under the validity assessment in docs/experiment_log.md."
+  ]
+}

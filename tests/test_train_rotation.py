@@ -117,6 +117,17 @@ def test_butterfly_initialises_exactly_from_seeded_fwht():
     assert butterfly.theta.numel() == 256 * 7 // 2
 
 
+def test_butterfly_supports_half_precision_persistent_angles():
+    butterfly = ButterflyRotation(
+        256, block=128, seed=17, dtype=torch.float16
+    )
+    assert butterfly.theta.dtype == torch.float16
+    inputs = torch.randn(3, 256, dtype=torch.float16)
+    output = butterfly.rotate_activation(inputs)
+    restored = butterfly.inverse_activation(output)
+    assert torch.allclose(restored, inputs, atol=5e-3, rtol=5e-3)
+
+
 def test_activation_aware_butterfly_training_reduces_output_error():
     torch.manual_seed(3)
     d = 32

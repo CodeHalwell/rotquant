@@ -1,0 +1,68 @@
+# Three-seed replication of the seed-0 learned-sign result, including a
+# half-precision deployed-angle arm that removes roughly half of the learned
+# butterfly metadata. The main C4 KL slice is expanded to >10k scored tokens;
+# the authored five-domain suite is a development diagnostic, not the licensed
+# 300-prompt release benchmark.
+experiment: QWEN35_SIGN_REPLICATION_CUDA
+label: qwen35_4b_sign_replication_cuda
+model: unsloth/Qwen3.5-4B
+model_revision: 3764fa359b9082ea5a1e4a5e3ac3aaf6e9671636
+calib_dataset_revision: 1588ec454efa1a09f29cd18ddd04fe05fc8653a2
+model_loader: multimodal_lm
+device: cuda
+dtype: float16
+seed: 0
+n_calib: 128
+calib_seq_len: 512
+hessian_collection: streamed
+hessian_layers_per_pass: 4
+quant:
+  bits: 4
+  codebook: gaussian
+  scale: mse_search
+  scale_bits: 16
+  group_size: 128
+  error_comp: gptq
+  gptq_block: 128
+  gptq_actorder: true
+  gptq_recompute_scales: true
+  bias_correction: none
+patch:
+  rotation: fwht
+  block: 128
+  mode: consistent
+  share_rotations: false
+  fallback: true
+  rotation_storage_dtype: float32
+  include: [model.language_model.layers.]
+  exclude: [linear_attn.in_proj_a, linear_attn.in_proj_b, lm_head, embed_out]
+eval:
+  perplexity: true
+  ppl_datasets: [wikitext2, c4]
+  ppl:
+    seq_len: 2048
+    max_samples: 32
+  zeroshot: false
+  logit_fidelity:
+    batches: 24
+    prompt_len: 512
+    skip: 4096
+    bootstrap_draws: 4000
+  logit_fidelity_suites:
+    diverse:
+      batches: 25
+      prompt_len: 512
+      prompt_file: research/eval_suites/qwen35_diverse_development_v1.json
+      prompt_field: text
+      bootstrap_draws: 4000
+  fail_fast:
+    mean_teacher_kl_max: 0.25
+    top1_agreement_min: 0.75
+  trajectory_suites:
+    diverse:
+      batches: 25
+      prompt_len: 256
+      new_tokens: 32
+      prompt_file: research/eval_suites/qwen35_diverse_development_v1.json
+      prompt_field: prompt
+      bootstrap_draws: 4000

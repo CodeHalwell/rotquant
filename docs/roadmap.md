@@ -117,9 +117,14 @@ specialized around them:
   interruption-safe source/candidate records; execute it on the registered C4
   slice and record the stronger Unsloth development anchor without making an
   unmatched-byte provider claim;
-- [ ] run the controlled W4 factor ablation (8-bit scales, bias correction,
+- [x] run the controlled W4 factor ablation (8-bit scales, bias correction,
   sharing, butterfly basis, Hessian training, and learned signs) with the new
-  global KL/top-1 fail-fast gate; do not rerun the rejected bundled arm;
+  global KL/top-1 fail-fast gate; 8-bit scales show a small three-seed KL gain,
+  sharing is neutral overall, and learned signs remain the strongest seed-0
+  lead but require the dedicated replication below;
+- [ ] run the generated learned-sign replication at seeds 0/1/2, including the
+  fp16-angle-storage arm, on the expanded >10k-token C4 KL slice and authored
+  five-domain development suite;
 - [ ] repeat the four-prompt 8k/64-token source-W4-W4A8 plus 2-bit E8P cache
   engineering check on the current simulator, recording a passing 8-bit
   endpoint. The previous 2.188-bpv/4.652x run predates tier ageing and the
@@ -131,8 +136,13 @@ specialized around them:
 - [ ] add a fixed-FP16-teacher long-context collector so combined W4/W4A8 plus
   E8 systems are measured end to end rather than only against each arm's own
   full-cache teacher;
-- [ ] rebuild the model-specific mixed-format allocator as a constrained,
-  exact-byte optimization layer over the frozen RotQuant+GPTQ quantizer;
+- [x] rebuild the model-specific mixed-format allocator as a constrained,
+  exact-byte optimization layer over the frozen RotQuant+GPTQ quantizer,
+  including 2/3/4/5/6/8-bit candidates, complete persistent-byte accounting,
+  a matched random-allocation control, an actual post-pack byte gate, and a
+  serialized candidate table;
+- [ ] execute and confirm that allocator on Qwen3.5-4B with the generated
+  [dynamic mixed-precision notebook](../notebooks/qwen35_4b_dynamic_mixed_precision_colab.ipynb);
   compare standard uniform, standard mixed, uniform RotQuant, mixed RotQuant,
   and Unsloth artifacts at matched bytes. Uniform W4 remains the control and
   production default until held-out KL and trajectories prove a mixed W4 win;

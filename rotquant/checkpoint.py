@@ -80,7 +80,11 @@ def _rotation_spec(rotation: Rotation) -> dict[str, Any]:
     elif isinstance(rotation, RandomizedHadamard):
         spec.update(kind="fwht", block=rotation.block)
     elif isinstance(rotation, ButterflyRotation):
-        spec.update(kind="butterfly", block=rotation.block)
+        spec.update(
+            kind="butterfly",
+            block=rotation.block,
+            storage_dtype=_dtype_name(rotation.theta.dtype),
+        )
     elif isinstance(rotation, DenseOrthogonal):
         spec["kind"] = "dense"
     elif isinstance(rotation, LearnedRotation):
@@ -100,7 +104,12 @@ def _build_rotation(spec: dict[str, Any]) -> Rotation:
     if kind == "fwht":
         return RandomizedHadamard(dim, block=int(spec["block"]), seed=0)
     if kind == "butterfly":
-        return ButterflyRotation(dim, block=int(spec["block"]), seed=0)
+        return ButterflyRotation(
+            dim,
+            block=int(spec["block"]),
+            seed=0,
+            dtype=_resolve_dtype(spec.get("storage_dtype", "float32")),
+        )
     if kind == "dense":
         return DenseOrthogonal(dim, seed=0)
     if kind == "learned":
@@ -579,6 +588,20 @@ def load_packed_model(
 
         model.generation_config = GenerationConfig.from_pretrained(checkpoint)
     model.to(device=device, dtype=resolved_dtype).eval()
+    # ``Module.to(dtype=...)`` correctly converts ordinary model tensors but
+    # would also erase the explicitly deployed butterfly metadata dtype.  That
+    # dtype is part of the packed artifact's byte budget, so restore it after
+    # the model-wide conversion.
+    for module_spec in manifest["quantized_modules"]:
+        rotation_spec = module_spec["rotation"]
+        if rotation_spec["kind"] != "butterfly":
+            continue
+        parent, attr = get_parent(model, module_spec["name"])
+        rotation = getattr(parent, attr).act_rotation
+        rotation.theta.data = rotation.theta.detach().to(
+            dtype=_resolve_dtype(rotation_spec.get("storage_dtype", "float32"))
+        )
+        rotation._invalidate_cache()
     return model
 
 

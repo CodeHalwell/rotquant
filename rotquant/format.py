@@ -177,6 +177,13 @@ def _validate_module(value: Any, index: int, version: int) -> str:
         block = rotation.get("block")
         if isinstance(block, bool) or not isinstance(block, int) or block < 1:
             _fail(f"{path}.rotation.block", "must be a positive integer")
+    if rotation_kind == "butterfly":
+        storage_dtype = rotation.get("storage_dtype", "float32")
+        if storage_dtype not in {"float16", "bfloat16", "float32"}:
+            _fail(
+                f"{path}.rotation.storage_dtype",
+                "must be float16, bfloat16, or float32",
+            )
 
     qweight = _mapping(module.get("qweight"), f"{path}.qweight")
     for field in ("in_features", "out_features"):

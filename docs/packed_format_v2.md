@@ -16,6 +16,10 @@ and v2, while new writers emit v2.
   declares `scale_quant_group_size`; missing offset/step metadata fails closed.
 - `rotation_id` preserves one shared rotation object across q/k/v or gate/up
   modules after loading.
+- A butterfly rotation may declare `storage_dtype` as `float16`, `bfloat16`, or
+  `float32`. Missing values retain the earlier `float32` behavior. Loaders must
+  preserve this dtype after any model-wide device/dtype conversion because the
+  angle tensor is part of the deployed byte budget.
 - `activation_bits` records the signed per-token activation-quantization
   semantics used by `QuantLinear`.
 - Identical codebook tensors are stored once and referenced by all applicable

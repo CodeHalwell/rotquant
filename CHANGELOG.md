@@ -24,6 +24,11 @@ software.
   post-template token identities, exact and near-duplicate leakage checks,
   fixed 300-prompt domain quotas, measured multi-file artifact identities,
   structured run failures, and paired/domain bootstrap reports.
+- The Qwen3.5-4B exact-byte experiment: 2/3/4/5/6/8-bit model-specific
+  allocation, a matched random-mixed control, fp16 deployed butterfly angles,
+  persistent token caches, multi-suite/domain fidelity metrics, three-seed
+  finalist selection, packed export, and same-input Unsloth comparison in a
+  resumable Colab notebook.
 
 ### Changed
 
@@ -35,6 +40,8 @@ software.
   KV-cache evaluation boundary relies on Transformers cache internals.
 - `scripts/run_experiment.py`'s `run()` is decomposed into documented stage
   functions.
+- Packed checkpoint loading preserves each butterfly rotation's declared
+  storage dtype instead of coercing angle metadata to the model load dtype.
 
 ### Added
 

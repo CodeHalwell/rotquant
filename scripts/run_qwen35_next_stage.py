@@ -35,7 +35,10 @@ from scripts import run_experiment
 PROTOCOL_VERSION = "qwen35-next-stage-v2"
 MIN_RELIABLE_BOOTSTRAP_SAMPLES = 20
 DEFAULT_STAGES = ("w4",)
-REGISTERED_STAGES = ("w4", "w4a8", "ablation", "recovery", "long-kv")
+REGISTERED_STAGES = (
+    "w4", "w4a8", "ablation", "recovery", "long-kv",
+    "signs", "dynamic",
+)
 PAIRED_ARMS = {
     "w4": (
         ("gptq_gaussian_w4", "gaussian_w4_control"),
@@ -62,6 +65,20 @@ PAIRED_ARMS = {
     "long-kv": (
         ("promoted_w4_e8", "source_fp16_e8"),
         ("w4a8_e8", "promoted_w4_e8"),
+    ),
+    "signs": (
+        ("learned_signs_fp32_w4", "promoted_w4"),
+        ("learned_signs_fp16_w4", "learned_signs_fp32_w4"),
+        ("learned_signs_fp16_w4", "promoted_w4"),
+    ),
+    "dynamic": (
+        ("uniform_w3", "uniform_scale8_w4"),
+        ("random_mixed_fwht", "uniform_scale8_w4"),
+        ("dynamic_mixed_unrotated", "random_mixed_fwht"),
+        ("dynamic_mixed_fwht", "random_mixed_fwht"),
+        ("dynamic_mixed_fwht", "uniform_scale8_w4"),
+        ("dynamic_mixed_signs_fp16", "dynamic_mixed_fwht"),
+        ("dynamic_mixed_signs_fp16", "uniform_scale8_w4"),
     ),
 }
 
@@ -299,6 +316,87 @@ def stage_trials(stage: str) -> tuple[Trial, ...]:
                 **{"patch.activation_bits": 8},
             ),
         )
+    if stage == "signs":
+        config = "configs/qwen35_4b_sign_replication_cuda.yaml"
+        training = {
+            "steps": 200,
+            "lr": 0.001,
+            "objective": "hessian",
+            "assignment_scale": "rms",
+            "learn_signs": True,
+            "sign_temperature": 1.0,
+        }
+        return (
+            _trial(stage, "promoted_w4", config),
+            _trial(
+                stage,
+                "learned_signs_fp32_w4",
+                config,
+                **{
+                    "patch.rotation": "butterfly",
+                    "patch.train_rotation": training,
+                    "patch.rotation_storage_dtype": "float32",
+                },
+            ),
+            _trial(
+                stage,
+                "learned_signs_fp16_w4",
+                config,
+                **{
+                    "patch.rotation": "butterfly",
+                    "patch.train_rotation": training,
+                    "patch.rotation_storage_dtype": "float16",
+                },
+            ),
+        )
+    if stage == "dynamic":
+        config = "configs/qwen35_4b_dynamic_mixed_cuda.yaml"
+        training = {
+            "steps": 200,
+            "lr": 0.001,
+            "objective": "hessian",
+            "assignment_scale": "rms",
+            "learn_signs": True,
+            "sign_temperature": 1.0,
+        }
+        return (
+            _trial(stage, "source_fp16", config, **{"patch.enabled": False}),
+            _trial(
+                stage,
+                "uniform_w3",
+                config,
+                **{"patch.dynamic": None, "quant.bits": 3},
+            ),
+            _trial(
+                stage,
+                "uniform_scale8_w4",
+                config,
+                **{"patch.dynamic": None, "quant.bits": 4},
+            ),
+            _trial(
+                stage,
+                "random_mixed_fwht",
+                config,
+                **{"patch.dynamic.allocation": "random"},
+            ),
+            _trial(
+                stage,
+                "dynamic_mixed_unrotated",
+                config,
+                **{"patch.rotation": "none"},
+            ),
+            _trial(stage, "dynamic_mixed_fwht", config),
+            _trial(
+                stage,
+                "dynamic_mixed_signs_fp16",
+                config,
+                **{
+                    "patch.rotation": "butterfly",
+                    "patch.train_rotation": training,
+                    "patch.rotation_storage_dtype": "float16",
+                },
+            ),
+        )
     raise ValueError(f"unknown stage {stage!r}; choose from {REGISTERED_STAGES}")
 
 
@@ -358,6 +456,14 @@ def _load_matching_result(
     return max(matches, key=lambda entry: entry[0])[1] if matches else None
 
 
+def _complete_artifact(path: Path) -> bool:
+    return all((path / name).is_file() for name in (
+        "rotquant_config.json",
+        "rotquant_model.safetensors",
+        "rotquant_packed.safetensors",
+    ))
+
+
 def _metric(metrics: dict[str, Any], *path: str) -> Any:
     value: Any = metrics
     for name in path:
@@ -403,6 +509,50 @@ def summarize_results(
             "mean_teacher_kl": _metric(metrics, "logit_fidelity", "mean_teacher_kl"),
             "p95_teacher_kl": _metric(metrics, "logit_fidelity", "p95_teacher_kl"),
             "top1_agreement": _metric(metrics, "logit_fidelity", "top1_agreement"),
+            "nll_delta": _metric(metrics, "logit_fidelity", "nll_delta"),
+            "logit_fidelity_tokens": _metric(
+                metrics, "logit_fidelity", "tokens"
+            ),
+            "logit_fidelity_input_hashes": _metric(
+                metrics, "logit_fidelity", "input_hashes"
+            ),
+            "diverse_mean_teacher_kl": _metric(
+                metrics, "logit_fidelity_suites", "diverse", "mean_teacher_kl"
+            ),
+            "diverse_top1_agreement": _metric(
+                metrics, "logit_fidelity_suites", "diverse", "top1_agreement"
+            ),
+            "diverse_nll_delta": _metric(
+                metrics, "logit_fidelity_suites", "diverse", "nll_delta"
+            ),
+            "diverse_logit_tokens": _metric(
+                metrics, "logit_fidelity_suites", "diverse", "tokens"
+            ),
+            "diverse_trajectory_token_agreement": _metric(
+                metrics, "trajectory_suites", "diverse", "token_agreement"
+            ),
+            "diverse_exact_trajectory_rate": _metric(
+                metrics, "trajectory_suites", "diverse", "exact_trajectory_rate"
+            ),
+            "diverse_mean_matching_prefix": _metric(
+                metrics, "trajectory_suites", "diverse", "mean_matching_prefix"
+            ),
+            "dynamic_counts_by_bits": _metric(
+                metrics, "dynamic_quantization", "counts_by_bits"
+            ),
+            "dynamic_estimated_complete_bytes": _metric(
+                metrics, "dynamic_quantization", "estimated_complete_bytes"
+            ),
+            "dynamic_actual_target_match": _metric(
+                metrics, "dynamic_quantization", "actual_target_validation",
+                "within_tolerance",
+            ),
+            "dynamic_score_cache_hit": _metric(
+                metrics, "dynamic_quantization", "candidate_score_cache_hit"
+            ),
+            "packed_artifact_bytes": _metric(
+                metrics, "packed_checkpoint", "artifact_bytes"
+            ),
             "trajectory_token_agreement": _metric(
                 metrics, "trajectory", "token_agreement"
             ),
@@ -633,6 +783,8 @@ def _run_trial(
     position: int,
     total: int,
     heartbeat_seconds: float,
+    export_dir: Path | None = None,
+    export_processor: bool = False,
 ) -> tuple[dict[str, Any] | None, float, bool]:
     label = f"{trial.stage}/{trial.arm}/seed-{seed}"
     fingerprint = trial_fingerprint(trial, seed, code_revision)
@@ -644,12 +796,20 @@ def _run_trial(
             seed=seed,
             fingerprint=fingerprint,
         )
-        if existing is not None:
+        if existing is not None and (
+            export_dir is None or _complete_artifact(export_dir)
+        ):
             print(
                 f"[{_timestamp()}] RESUME [{position}/{total}] {label}",
                 flush=True,
             )
             return existing, 0.0, True
+        if existing is not None and export_dir is not None:
+            print(
+                f"[{_timestamp()}] RESULT EXISTS BUT ARTIFACT IS INCOMPLETE; "
+                f"rerunning {label}",
+                flush=True,
+            )
 
     print(f"[{_timestamp()}] RUN [{position}/{total}] {label}", flush=True)
     if dry_run:
@@ -668,6 +828,9 @@ def _run_trial(
             str(output_dir),
             overrides={"seed": seed},
             sets=[*trial.overrides, *marker_overrides],
+            export_dir=str(export_dir) if export_dir is not None else None,
+            export_overwrite=export_dir is not None,
+            export_processor=export_processor,
         )
     elapsed = time.perf_counter() - start
     metrics = payload.get("metrics") or {}
@@ -717,6 +880,29 @@ def parse_args() -> argparse.Namespace:
         default=60.0,
         help="print liveness/GPU status this often during a trial; 0 disables",
     )
+    parser.add_argument(
+        "--artifact-dir",
+        type=Path,
+        help="root directory for selected packed checkpoint exports",
+    )
+    parser.add_argument(
+        "--export-arm",
+        action="append",
+        default=[],
+        help="arm to export; repeat as needed (requires --artifact-dir)",
+    )
+    parser.add_argument(
+        "--export-seed",
+        action="append",
+        type=int,
+        default=[],
+        help="seed to export; default is every requested seed",
+    )
+    parser.add_argument(
+        "--export-processor",
+        action="store_true",
+        help="include AutoProcessor metadata in selected artifacts",
+    )
     return parser.parse_args()
 
 
@@ -729,6 +915,10 @@ def main() -> None:
         raise ValueError("seeds must be non-negative")
     if args.heartbeat_seconds < 0:
         raise ValueError("heartbeat-seconds must be non-negative")
+    if args.export_arm and args.artifact_dir is None:
+        raise ValueError("--export-arm requires --artifact-dir")
+    if args.export_seed and args.artifact_dir is None:
+        raise ValueError("--export-seed requires --artifact-dir")
     args.output_dir.mkdir(parents=True, exist_ok=True)
     code_revision = _code_revision()
     results: list[tuple[Trial, int, dict[str, Any], float, bool]] = []
@@ -788,6 +978,15 @@ def main() -> None:
         progress.update({"current": current, "updated_at": _timestamp()})
         write_result(str(progress_path), progress)
         try:
+            should_export = (
+                args.artifact_dir is not None
+                and (not args.export_arm or trial.arm in set(args.export_arm))
+                and (not args.export_seed or seed in set(args.export_seed))
+            )
+            export_dir = (
+                args.artifact_dir / trial.stage / trial.arm / f"seed-{seed}"
+                if should_export else None
+            )
             payload, seconds, resumed = _run_trial(
                 trial,
                 seed=seed,
@@ -798,6 +997,8 @@ def main() -> None:
                 position=position,
                 total=len(planned_trials),
                 heartbeat_seconds=args.heartbeat_seconds,
+                export_dir=export_dir,
+                export_processor=args.export_processor,
             )
         except Exception as exc:
             progress.update({

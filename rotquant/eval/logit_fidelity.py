@@ -20,6 +20,10 @@ class LogitFidelityConfig:
     temperature: float = 1.0
     bootstrap_draws: int = 2_000
     bootstrap_seed: int = 17
+    # Optional repository-relative JSON/JSONL prompt suite. When set, ``skip``
+    # is ignored and ``prompt_field`` is tokenized instead of streaming C4.
+    prompt_file: str | None = None
+    prompt_field: str = "text"
 
     def __post_init__(self) -> None:
         if self.batches < 1 or self.prompt_len < 2:
@@ -30,6 +34,10 @@ class LogitFidelityConfig:
             raise ValueError("logit fidelity temperature must be > 0")
         if self.bootstrap_draws < 1 or self.bootstrap_seed < 0:
             raise ValueError("bootstrap draws must be positive and seed nonnegative")
+        if self.prompt_file is not None and not self.prompt_file.strip():
+            raise ValueError("prompt_file must be a non-empty path")
+        if not self.prompt_field:
+            raise ValueError("prompt_field must be non-empty")
 
 
 @dataclass
@@ -37,6 +45,8 @@ class LogitReference:
     inputs: dict[str, torch.Tensor]
     logits: torch.Tensor
     input_hash: str
+    item_id: str | None = None
+    domain: str | None = None
 
 
 def _device_inputs(inputs: Mapping[str, Any], device) -> dict[str, Any]:
@@ -79,6 +89,8 @@ def capture_logit_references(
                 device="cpu", dtype=torch.float16
             ),
             input_hash=_input_hash(prompt["input_ids"]),
+            item_id=getattr(batch, "item_id", None),
+            domain=getattr(batch, "domain", None),
         ))
     if not references:
         raise ValueError("logit fidelity evaluation requires at least one prompt")
@@ -153,6 +165,8 @@ def evaluate_logit_fidelity(
         )
         prompt_metrics.append({
             "input_hash": reference.input_hash,
+            "item_id": reference.item_id,
+            "domain": reference.domain,
             "tokens": prompt_tokens,
             "mean_teacher_kl": prompt_kl_sum / prompt_tokens,
             "mean_logit_cosine": prompt_cosine_sum / prompt_tokens,
@@ -176,7 +190,7 @@ def evaluate_logit_fidelity(
         draws=config.bootstrap_draws,
         seed=config.bootstrap_seed,
     )
-    return {
+    result = {
         "prompts": len(references),
         "tokens": tokens,
         "mean_teacher_kl": kl_sums / tokens,
@@ -192,6 +206,31 @@ def evaluate_logit_fidelity(
         "prompt_metrics": prompt_metrics,
         "paired_token_bootstrap": bootstrap,
     }
+    domains = sorted({
+        row["domain"] for row in prompt_metrics if row.get("domain") is not None
+    })
+    if domains:
+        result["domain_summaries"] = {}
+        for domain in domains:
+            rows = [row for row in prompt_metrics if row.get("domain") == domain]
+            domain_tokens = sum(int(row["tokens"]) for row in rows)
+            result["domain_summaries"][domain] = {
+                "prompts": len(rows),
+                "tokens": domain_tokens,
+                "mean_teacher_kl": sum(
+                    float(row["mean_teacher_kl"]) * int(row["tokens"])
+                    for row in rows
+                ) / domain_tokens,
+                "top1_agreement": sum(
+                    float(row["top1_agreement"]) * int(row["tokens"])
+                    for row in rows
+                ) / domain_tokens,
+                "nll_delta": sum(
+                    float(row["nll_delta"]) * int(row["tokens"])
+                    for row in rows
+                ) / domain_tokens,
+            }
+    return result
 
 
 __all__ = [

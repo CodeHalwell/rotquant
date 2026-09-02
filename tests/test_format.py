@@ -65,6 +65,20 @@ def test_legacy_v1_manifest_without_explicit_packing_is_valid() -> None:
     validate_checkpoint_manifest(manifest)
 
 
+def test_butterfly_storage_dtype_is_optional_but_validated() -> None:
+    manifest = _manifest()
+    manifest["quantized_modules"][0]["rotation"] = {
+        "kind": "butterfly",
+        "dim": 4,
+        "block": 4,
+        "storage_dtype": "float16",
+    }
+    validate_checkpoint_manifest(manifest)
+    manifest["quantized_modules"][0]["rotation"]["storage_dtype"] = "int8"
+    with pytest.raises(FormatValidationError, match="storage_dtype"):
+        validate_checkpoint_manifest(manifest)
+
+
 @pytest.mark.parametrize(
     ("mutation", "message"),
     [

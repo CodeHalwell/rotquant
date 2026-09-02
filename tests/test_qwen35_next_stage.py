@@ -131,6 +131,39 @@ def test_failed_optimization_is_decomposed_into_nested_factor_ablation():
     ) in runner.PAIRED_ARMS["ablation"]
 
 
+def test_sign_replication_and_dynamic_exact_byte_stages_are_registered():
+    runner = _load_runner()
+    signs = {trial.arm: runner._resolved_trial_config(trial, 0)
+             for trial in runner.stage_trials("signs")}
+    assert list(signs) == [
+        "promoted_w4", "learned_signs_fp32_w4", "learned_signs_fp16_w4"
+    ]
+    assert signs["learned_signs_fp32_w4"]["patch"][
+        "rotation_storage_dtype"
+    ] == "float32"
+    assert signs["learned_signs_fp16_w4"]["patch"][
+        "rotation_storage_dtype"
+    ] == "float16"
+
+    dynamic = {trial.arm: runner._resolved_trial_config(trial, 0)
+               for trial in runner.stage_trials("dynamic")}
+    assert list(dynamic) == [
+        "source_fp16", "uniform_w3", "uniform_scale8_w4",
+        "random_mixed_fwht", "dynamic_mixed_unrotated",
+        "dynamic_mixed_fwht", "dynamic_mixed_signs_fp16",
+    ]
+    search = dynamic["dynamic_mixed_fwht"]["patch"]["dynamic"]
+    assert search["candidate_bits"] == [2, 3, 4, 5, 6, 8]
+    assert search["target_complete_bytes"] == 3_584_533_344
+    assert search["require_target_match"] is True
+    assert dynamic["random_mixed_fwht"]["patch"]["dynamic"][
+        "allocation"
+    ] == "random"
+    assert dynamic["dynamic_mixed_signs_fp16"]["patch"][
+        "train_rotation"
+    ]["learn_signs"] is True
+
+
 def test_ablation_finalist_selection_requires_guards_and_a_material_signal():
     selector = _load_selector()
 

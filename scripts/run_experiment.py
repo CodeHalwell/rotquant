@@ -30,14 +30,18 @@ import os
 import re
 import sys
 import tempfile
+import time
 from collections import OrderedDict
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
+from pathlib import Path
 from typing import Any
 
+import numpy as np
 import torch
 import yaml
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+REPO_ROOT = Path(__file__).resolve().parents[1]
 
 from rotquant.patch import PatchConfig, patch_model
 from rotquant.quantize import QuantConfig
@@ -60,7 +64,9 @@ MODEL_LOADERS = ("auto", "causal_lm", "multimodal_lm")
 class TokenBatch(dict):
     """Model-input mapping carrying a non-forwarded source-row identity."""
 
-    def __init__(self, input_ids: torch.Tensor, source_row: int):
+    def __init__(self, input_ids: torch.Tensor, source_row: int | None,
+                 *, item_id: str | None = None, domain: str | None = None,
+                 source_id: str | None = None):
         # Calibration/evaluation batches are fixed-length and never padded, so
         # every token is valid.  Supplying the mask explicitly avoids ambiguous
         # Transformers behaviour when a tokenizer uses the same ID for PAD and
@@ -71,6 +77,9 @@ class TokenBatch(dict):
             attention_mask=torch.ones_like(input_ids),
         )
         self.source_row = source_row
+        self.item_id = item_id
+        self.domain = domain
+        self.source_id = source_id
 
 
 _CALIB_CACHE: OrderedDict[
@@ -264,6 +273,76 @@ def load_hf_model(model_name: str, dtype: torch.dtype, device,
     return model, tokenizer, selected
 
 
+def _persistent_registered_tensors(model: torch.nn.Module) -> list[torch.Tensor]:
+    """Unique parameters and persistent buffers, excluding runtime caches."""
+
+    tensors: list[torch.Tensor] = []
+    seen: set[int] = set()
+    for module in model.modules():
+        for parameter in module._parameters.values():
+            if parameter is not None and id(parameter) not in seen:
+                seen.add(id(parameter))
+                tensors.append(parameter)
+        nonpersistent = getattr(module, "_non_persistent_buffers_set", set())
+        for name, buffer in module._buffers.items():
+            if (
+                buffer is not None
+                and name not in nonpersistent
+                and id(buffer) not in seen
+            ):
+                seen.add(id(buffer))
+                tensors.append(buffer)
+    return tensors
+
+
+def _persistent_token_cache_dir() -> str | None:
+    value = os.environ.get("ROTQUANT_TOKEN_CACHE_DIR")
+    return value if value else None
+
+
+def _load_persistent_token_cache(path: str, key: str, n_seq: int, seq_len: int):
+    try:
+        with np.load(path, allow_pickle=False) as payload:
+            stored_key = payload["cache_key"].tobytes().decode("ascii")
+            ids = np.asarray(payload["input_ids"], dtype=np.int64)
+            source_rows = np.asarray(payload["source_rows"], dtype=np.int64)
+        if (
+            stored_key != key
+            or ids.shape != (n_seq, seq_len)
+            or source_rows.shape != (n_seq,)
+        ):
+            return None
+        return tuple(
+            (torch.from_numpy(ids[index].copy()).reshape(1, seq_len), int(source_rows[index]))
+            for index in range(n_seq)
+        )
+    except (OSError, KeyError, ValueError, UnicodeDecodeError):
+        return None
+
+
+def _write_persistent_token_cache(path: str, key: str, batches) -> None:
+    directory = os.path.dirname(path)
+    os.makedirs(directory, exist_ok=True)
+    temporary = f"{path}.tmp-{os.getpid()}"
+    ids = np.stack([
+        batch["input_ids"].detach().cpu().to(torch.int64).numpy()[0]
+        for batch in batches
+    ])
+    source_rows = np.asarray(
+        [batch.source_row for batch in batches], dtype=np.int64
+    )
+    with open(temporary, "wb") as handle:
+        np.savez(
+            handle,
+            cache_key=np.frombuffer(key.encode("ascii"), dtype=np.uint8),
+            input_ids=ids,
+            source_rows=source_rows,
+        )
+        handle.flush()
+        os.fsync(handle.fileno())
+    os.replace(temporary, path)
+
+
 def build_calib_loader(tokenizer, n_seq: int, seq_len: int, device,
                        skip: int = 0, revision: str | None = None,
                        exclude_source_rows: set[int] | frozenset[int] | None = None):
@@ -295,6 +374,27 @@ def build_calib_loader(tokenizer, n_seq: int, seq_len: int, device,
         _CALIB_CACHE.move_to_end(key)
         return [TokenBatch(ids.to(device), source_row) for ids, source_row in cached]
 
+    persistent_dir = _persistent_token_cache_dir()
+    persistent_path = (
+        os.path.join(persistent_dir, f"c4-{key}.npz")
+        if persistent_dir is not None else None
+    )
+    if persistent_path is not None:
+        cached = _load_persistent_token_cache(
+            persistent_path, key, n_seq, seq_len
+        )
+        if cached is not None:
+            logger.info(
+                "Loaded %d token batches from persistent cache %s",
+                len(cached), persistent_path,
+            )
+            _CALIB_CACHE[key] = cached
+            _CALIB_CACHE.move_to_end(key)
+            return [
+                TokenBatch(ids.to(device), source_row)
+                for ids, source_row in cached
+            ]
+
     from datasets import load_dataset
     ds = load_dataset(
         "allenai/c4",
@@ -304,8 +404,19 @@ def build_calib_loader(tokenizer, n_seq: int, seq_len: int, device,
         revision=revision,
     )
     batches, count, eligible = [], 0, 0
+    scan_started = time.monotonic()
+    last_progress = scan_started
     for source_row, row in enumerate(ds):
         ids = tokenizer(row["text"], return_tensors="pt").input_ids
+        now = time.monotonic()
+        if now - last_progress >= 30:
+            logger.info(
+                "Token dataset scan: source_rows=%d eligible=%d selected=%d/%d "
+                "elapsed=%.1fm",
+                source_row + 1, eligible, count, n_seq,
+                (now - scan_started) / 60,
+            )
+            last_progress = now
         if ids.shape[1] < seq_len:
             continue
         # ``skip`` names an eligible-document position in the pinned source,
@@ -322,6 +433,10 @@ def build_calib_loader(tokenizer, n_seq: int, seq_len: int, device,
         count += 1
         if count >= n_seq:
             break
+    if count < n_seq:
+        raise ValueError(
+            f"C4 stream ended after selecting {count}/{n_seq} token batches"
+        )
     cached_batches = tuple(
         (batch["input_ids"], batch.source_row) for batch in batches
     )
@@ -329,10 +444,98 @@ def build_calib_loader(tokenizer, n_seq: int, seq_len: int, device,
     _CALIB_CACHE.move_to_end(key)
     while len(_CALIB_CACHE) > _CALIB_CACHE_LIMIT:
         _CALIB_CACHE.popitem(last=False)
+    if persistent_path is not None:
+        _write_persistent_token_cache(persistent_path, key, batches)
+        logger.info(
+            "Persisted %d token batches to %s", len(batches), persistent_path
+        )
     return [
         TokenBatch(ids.to(device), source_row)
         for ids, source_row in cached_batches
     ]
+
+
+def _resolved_prompt_file(path: str) -> Path:
+    prompt_path = Path(path)
+    return prompt_path if prompt_path.is_absolute() else REPO_ROOT / prompt_path
+
+
+def _load_prompt_records(path: Path) -> list[dict[str, Any]]:
+    if not path.is_file():
+        raise FileNotFoundError(f"prompt suite does not exist: {path}")
+    if path.suffix.lower() == ".jsonl":
+        records = [
+            json.loads(line) for line in path.read_text(encoding="utf-8").splitlines()
+            if line.strip()
+        ]
+    else:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+        records = payload.get("prompts") if isinstance(payload, dict) else payload
+    if not isinstance(records, list) or not all(
+        isinstance(record, dict) for record in records
+    ):
+        raise TypeError("prompt suite must be a JSON list (or {prompts: [...]})")
+    return records
+
+
+def build_prompt_file_loader(tokenizer, path: str, *, field: str,
+                             n_seq: int, seq_len: int, device):
+    """Tokenize a committed, domain-labelled prompt suite deterministically."""
+
+    prompt_path = _resolved_prompt_file(path)
+    records = _load_prompt_records(prompt_path)
+    if len(records) < n_seq:
+        raise ValueError(
+            f"prompt suite has {len(records)} rows; requested {n_seq}"
+        )
+    batches = []
+    seen_ids: set[str] = set()
+    for index, record in enumerate(records[:n_seq]):
+        text = record.get(field)
+        if not isinstance(text, str) or not text.strip():
+            raise ValueError(
+                f"prompt suite row {index} lacks non-empty {field!r} text"
+            )
+        item_id = str(record.get("item_id", f"row-{index:04d}"))
+        if item_id in seen_ids:
+            raise ValueError(f"duplicate prompt suite item_id: {item_id}")
+        seen_ids.add(item_id)
+        domain = record.get("domain")
+        if not isinstance(domain, str) or not domain:
+            raise ValueError(f"prompt suite row {item_id} lacks a domain")
+        ids = tokenizer(text, return_tensors="pt").input_ids[..., :seq_len]
+        if ids.shape[-1] < 2:
+            raise ValueError(f"prompt suite row {item_id} tokenized below 2 tokens")
+        batches.append(TokenBatch(
+            ids.cpu().to(device),
+            None,
+            item_id=item_id,
+            domain=domain,
+            source_id=str(record.get("source_id", "rotquant-authored")),
+        ))
+    return batches
+
+
+def prompt_file_manifest(batches, *, path: str, field: str,
+                         max_seq_len: int) -> dict[str, Any]:
+    prompt_path = _resolved_prompt_file(path)
+    manifest = token_batch_manifest(
+        batches,
+        dataset="local_prompt_suite",
+        split="evaluation",
+        revision=hashlib.sha256(prompt_path.read_bytes()).hexdigest(),
+        skip=0,
+        seq_len=max_seq_len,
+    )
+    manifest.update({
+        "path": str(prompt_path.relative_to(REPO_ROOT)),
+        "field": field,
+        "item_ids": [batch.item_id for batch in batches],
+        "domains": [batch.domain for batch in batches],
+        "source_ids": [batch.source_id for batch in batches],
+        "actual_tokens": [int(batch["input_ids"].numel()) for batch in batches],
+    })
+    return manifest
 
 
 def token_batch_manifest(batches, *, dataset: str, split: str,
@@ -351,6 +554,8 @@ def token_batch_manifest(batches, *, dataset: str, split: str,
         "seq_len": seq_len,
         "batches": len(hashes),
         "source_rows": [getattr(batch, "source_row", None) for batch in batches],
+        "item_ids": [getattr(batch, "item_id", None) for batch in batches],
+        "domains": [getattr(batch, "domain", None) for batch in batches],
         "token_hashes": hashes,
         "digest": hashlib.sha256("".join(hashes).encode()).hexdigest(),
     }
@@ -376,8 +581,9 @@ def calibration_source_rows(manifests: dict[str, Any]) -> set[int]:
     """Return exact source rows consumed by any internal calibration stage."""
 
     rows: set[int] = set()
-    for stage in _CALIBRATION_MANIFEST_STAGES:
-        manifest = manifests.get(stage)
+    for stage, manifest in manifests.items():
+        if stage.split(":", 1)[0] not in _CALIBRATION_MANIFEST_STAGES:
+            continue
         if not isinstance(manifest, dict):
             continue
         rows.update(
@@ -389,8 +595,15 @@ def calibration_source_rows(manifests: dict[str, Any]) -> set[int]:
 def validate_internal_data_disjointness(manifests: dict[str, Any]) -> None:
     """Fail when C4 calibration and evaluation stages reuse a source row."""
 
-    for calibration_stage in sorted(_CALIBRATION_MANIFEST_STAGES):
-        calibration = manifests.get(calibration_stage)
+    calibration_entries = [
+        (stage, manifest) for stage, manifest in manifests.items()
+        if stage.split(":", 1)[0] in _CALIBRATION_MANIFEST_STAGES
+    ]
+    evaluation_entries = [
+        (stage, manifest) for stage, manifest in manifests.items()
+        if stage.split(":", 1)[0] in _EVALUATION_MANIFEST_STAGES
+    ]
+    for calibration_stage, calibration in sorted(calibration_entries):
         if not isinstance(calibration, dict):
             continue
         calibration_rows = {
@@ -403,8 +616,7 @@ def validate_internal_data_disjointness(manifests: dict[str, Any]) -> None:
             calibration.get("split"),
             calibration.get("revision"),
         )
-        for evaluation_stage in sorted(_EVALUATION_MANIFEST_STAGES):
-            evaluation = manifests.get(evaluation_stage)
+        for evaluation_stage, evaluation in sorted(evaluation_entries):
             if not isinstance(evaluation, dict):
                 continue
             evaluation_identity = (
@@ -534,7 +746,7 @@ def footprint_metrics(model: torch.nn.Module, cfg_model: dict[str, Any]) -> dict
                 fp16_bytes / effective_bytes)
     registered_bytes = sum(
         tensor.numel() * tensor.element_size()
-        for tensor in list(model.parameters()) + list(model.buffers())
+        for tensor in _persistent_registered_tensors(model)
     )
     metrics["registered_model_bytes"] = registered_bytes
     metrics["codebook_bytes"] = codebook_bytes
@@ -573,8 +785,10 @@ class _ReferenceCaptures:
     drift_batch: Any = None
     trajectory_config: Any = None
     trajectory_references: Any = None
+    trajectory_suites: dict[str, tuple[Any, Any]] | None = None
     logit_fidelity_config: Any = None
     logit_references: Any = None
+    logit_fidelity_suites: dict[str, tuple[Any, Any]] | None = None
 
 
 def _prepare_calibration(cfg: dict[str, Any], model, tokenizer, device: str,
@@ -897,6 +1111,37 @@ def _capture_references(cfg: dict[str, Any], eval_cfg: dict[str, Any],
     refs = _ReferenceCaptures()
     excluded_rows = calibration_source_rows(metrics["data_manifest"])
 
+    def evaluation_batches(config, *, default_dataset: str):
+        prompt_file = getattr(config, "prompt_file", None)
+        if prompt_file:
+            batches = build_prompt_file_loader(
+                tokenizer,
+                prompt_file,
+                field=config.prompt_field,
+                n_seq=config.batches,
+                seq_len=config.prompt_len,
+                device=device,
+            )
+            manifest = prompt_file_manifest(
+                batches,
+                path=prompt_file,
+                field=config.prompt_field,
+                max_seq_len=config.prompt_len,
+            )
+            return batches, manifest
+        batches = build_calib_loader(
+            tokenizer, config.batches, config.prompt_len, device,
+            skip=config.skip,
+            revision=calibration_revision,
+            exclude_source_rows=excluded_rows,
+        )
+        manifest = token_batch_manifest(
+            batches, dataset=default_dataset, split="train",
+            revision=calibration_revision, skip=config.skip,
+            seq_len=config.prompt_len,
+        )
+        return batches, manifest
+
     if eval_cfg.get("layer_mse", False):
         from rotquant.eval.layer_mse import capture_outputs
         layer_mse_skip = int(eval_cfg.get("layer_mse_skip", 0))
@@ -919,17 +1164,10 @@ def _capture_references(cfg: dict[str, Any], eval_cfg: dict[str, Any],
         trajectory_kwargs = (trajectory_requested
                              if isinstance(trajectory_requested, dict) else {})
         refs.trajectory_config = TrajectoryConfig(**trajectory_kwargs)
-        trajectory_batches = build_calib_loader(
-            tokenizer, refs.trajectory_config.batches,
-            refs.trajectory_config.prompt_len, device,
-            skip=refs.trajectory_config.skip,
-            revision=calibration_revision,
-            exclude_source_rows=excluded_rows)
-        metrics["data_manifest"]["trajectory"] = token_batch_manifest(
-            trajectory_batches, dataset="allenai/c4", split="train",
-            revision=calibration_revision, skip=refs.trajectory_config.skip,
-            seq_len=refs.trajectory_config.prompt_len,
+        trajectory_batches, trajectory_manifest = evaluation_batches(
+            refs.trajectory_config, default_dataset="allenai/c4"
         )
+        metrics["data_manifest"]["trajectory"] = trajectory_manifest
         trajectory_cache_key = _reference_cache_key(
             "trajectory", model_name, cfg.get("model_revision"),
             refs.trajectory_config, trajectory_batches,
@@ -963,18 +1201,10 @@ def _capture_references(cfg: dict[str, Any], eval_cfg: dict[str, Any],
             if isinstance(logit_fidelity_requested, dict) else {}
         )
         refs.logit_fidelity_config = LogitFidelityConfig(**logit_kwargs)
-        logit_batches = build_calib_loader(
-            tokenizer, refs.logit_fidelity_config.batches,
-            refs.logit_fidelity_config.prompt_len, device,
-            skip=refs.logit_fidelity_config.skip,
-            revision=calibration_revision,
-            exclude_source_rows=excluded_rows,
+        logit_batches, logit_manifest = evaluation_batches(
+            refs.logit_fidelity_config, default_dataset="allenai/c4"
         )
-        metrics["data_manifest"]["logit_fidelity"] = token_batch_manifest(
-            logit_batches, dataset="allenai/c4", split="train",
-            revision=calibration_revision, skip=refs.logit_fidelity_config.skip,
-            seq_len=refs.logit_fidelity_config.prompt_len,
-        )
+        metrics["data_manifest"]["logit_fidelity"] = logit_manifest
         logit_cache_key = _reference_cache_key(
             "logit_fidelity", model_name, cfg.get("model_revision"),
             refs.logit_fidelity_config, logit_batches,
@@ -993,6 +1223,79 @@ def _capture_references(cfg: dict[str, Any], eval_cfg: dict[str, Any],
         else:
             metrics["source_logit_fidelity_seconds"] = 0.0
 
+    logit_suites = eval_cfg.get("logit_fidelity_suites") or {}
+    if not isinstance(logit_suites, dict):
+        raise TypeError("eval.logit_fidelity_suites must be a mapping")
+    if logit_suites:
+        from rotquant.eval.logit_fidelity import (
+            LogitFidelityConfig,
+            capture_logit_references,
+        )
+        refs.logit_fidelity_suites = {}
+        for name, suite_kwargs in logit_suites.items():
+            if not isinstance(name, str) or not name:
+                raise ValueError("logit fidelity suite names must be non-empty")
+            if not isinstance(suite_kwargs, dict):
+                raise TypeError(f"logit fidelity suite {name!r} must be a mapping")
+            suite_config = LogitFidelityConfig(**suite_kwargs)
+            suite_batches, suite_manifest = evaluation_batches(
+                suite_config, default_dataset="allenai/c4"
+            )
+            manifest_key = f"logit_fidelity:{name}"
+            metrics["data_manifest"][manifest_key] = suite_manifest
+            cache_key = _reference_cache_key(
+                manifest_key, model_name, cfg.get("model_revision"),
+                suite_config, suite_batches,
+            )
+            suite_references = _LOGIT_REFERENCE_CACHE.get(cache_key)
+            if suite_references is None:
+                with Timer() as t:
+                    suite_references = capture_logit_references(
+                        model, suite_batches, device, suite_config
+                    )
+                metrics[f"source_{manifest_key}_seconds"] = t.elapsed
+                _LOGIT_REFERENCE_CACHE[cache_key] = suite_references
+            else:
+                metrics[f"source_{manifest_key}_seconds"] = 0.0
+            refs.logit_fidelity_suites[name] = (
+                suite_config, suite_references
+            )
+
+    trajectory_suites = eval_cfg.get("trajectory_suites") or {}
+    if not isinstance(trajectory_suites, dict):
+        raise TypeError("eval.trajectory_suites must be a mapping")
+    if trajectory_suites:
+        from rotquant.eval.trajectory import TrajectoryConfig, capture_trajectories
+        refs.trajectory_suites = {}
+        for name, suite_kwargs in trajectory_suites.items():
+            if not isinstance(name, str) or not name:
+                raise ValueError("trajectory suite names must be non-empty")
+            if not isinstance(suite_kwargs, dict):
+                raise TypeError(f"trajectory suite {name!r} must be a mapping")
+            suite_config = TrajectoryConfig(**suite_kwargs)
+            suite_batches, suite_manifest = evaluation_batches(
+                suite_config, default_dataset="allenai/c4"
+            )
+            manifest_key = f"trajectory:{name}"
+            metrics["data_manifest"][manifest_key] = suite_manifest
+            cache_key = _reference_cache_key(
+                manifest_key, model_name, cfg.get("model_revision"),
+                suite_config, suite_batches,
+            )
+            suite_references = _TRAJECTORY_REFERENCE_CACHE.get(cache_key)
+            if suite_references is None:
+                with Timer() as t:
+                    suite_references = capture_trajectories(
+                        model, tokenizer, suite_batches, device, suite_config
+                    )
+                metrics[f"source_{manifest_key}_seconds"] = t.elapsed
+                _TRAJECTORY_REFERENCE_CACHE[cache_key] = suite_references
+            else:
+                metrics[f"source_{manifest_key}_seconds"] = 0.0
+            refs.trajectory_suites[name] = (
+                suite_config, suite_references
+            )
+
     return refs
 
 
@@ -1003,11 +1306,46 @@ def _apply_quantization(cfg: dict[str, Any], model, pcfg: PatchConfig,
     patch_stats: dict[str, Any] = {}
     if art.needs_dynamic:
         from rotquant.dynamic import select_dynamic_quantization
+        dynamic_scoring = dict(pcfg.dynamic or {})
+        # Allocation policy and rate target consume the candidate table but do
+        # not change its layer/bit errors. Excluding them allows the seeded
+        # random control and greedy allocator to reuse one expensive screen.
+        for key in (
+            "allocation", "target_bpw", "target_complete_bytes",
+            "target_tolerance_fraction", "require_target_match",
+        ):
+            dynamic_scoring.pop(key, None)
+        score_context = {
+            "model": cfg.get("model"),
+            "model_revision": cfg.get("model_revision"),
+            "seed": pcfg.seed,
+            "quant": asdict(pcfg.quant),
+            "patch": {
+                "rotation": pcfg.rotation,
+                "block": pcfg.block,
+                "mode": pcfg.mode,
+                "rotation_storage_dtype": pcfg.rotation_storage_dtype,
+                "include": pcfg.include,
+                "exclude": pcfg.exclude,
+            },
+            "dynamic_scoring": dynamic_scoring,
+            "activation_manifest": metrics.get("data_manifest", {}).get(
+                "activation_calibration"
+            ),
+            "dynamic_manifest": metrics.get("data_manifest", {}).get(
+                "dynamic_calibration"
+            ),
+        }
+        score_cache_key = hashlib.sha256(json.dumps(
+            score_context, sort_keys=True, default=str
+        ).encode()).hexdigest()
         with Timer() as t:
             pcfg.layer_quant, dynamic_stats = select_dynamic_quantization(
                 model, pcfg,
                 activations=art.dynamic_activations or art.activations,
-                teacher_calls=art.dynamic_calls)
+                teacher_calls=art.dynamic_calls,
+                score_cache_key=score_cache_key,
+            )
         dynamic_stats["seconds"] = t.elapsed
         patch_stats["dynamic_quantization"] = dynamic_stats
 
@@ -1041,6 +1379,25 @@ def _apply_quantization(cfg: dict[str, Any], model, pcfg: PatchConfig,
     metrics["peak_vram_bytes_patch"] = peak_vram_bytes()
     metrics.update(patch_stats)
     metrics.update(footprint_metrics(model, cfg))
+    dynamic = metrics.get("dynamic_quantization")
+    if isinstance(dynamic, dict) and dynamic.get("target_complete_bytes") is not None:
+        target = int(dynamic["target_complete_bytes"])
+        tolerance = int(dynamic.get("target_tolerance_bytes") or 0)
+        actual = int(metrics["complete_persistent_model_bytes"])
+        validation = {
+            "target_complete_bytes": target,
+            "tolerance_bytes": tolerance,
+            "actual_complete_bytes": actual,
+            "error_bytes": actual - target,
+            "within_tolerance": abs(actual - target) <= tolerance,
+        }
+        dynamic["actual_target_validation"] = validation
+        require = bool((pcfg.dynamic or {}).get("require_target_match", False))
+        if require and not validation["within_tolerance"]:
+            raise ValueError(
+                "patched model missed complete-model byte target: "
+                f"actual={actual}, target={target}, tolerance={tolerance}"
+            )
 
 
 def _logit_fail_fast_reasons(
@@ -1109,6 +1466,19 @@ def _run_evaluations(cfg: dict[str, Any], eval_cfg: dict[str, Any],
             metrics["peak_vram_bytes_eval"] = peak_vram_bytes()
             return
 
+    if refs.logit_fidelity_suites:
+        from rotquant.eval.logit_fidelity import evaluate_logit_fidelity
+        metrics["logit_fidelity_suites"] = {}
+        for name, (suite_config, suite_references) in (
+            refs.logit_fidelity_suites.items()
+        ):
+            with Timer() as t:
+                suite_metrics = evaluate_logit_fidelity(
+                    model, suite_references, device, suite_config
+                )
+            suite_metrics["seconds"] = t.elapsed
+            metrics["logit_fidelity_suites"][name] = suite_metrics
+
     if refs.trajectory_references is not None:
         from rotquant.eval.trajectory import evaluate_trajectories
         with Timer() as t:
@@ -1116,6 +1486,17 @@ def _run_evaluations(cfg: dict[str, Any], eval_cfg: dict[str, Any],
                 model, tokenizer, refs.trajectory_references, device,
                 refs.trajectory_config)
         metrics["trajectory"]["seconds"] = t.elapsed
+
+    if refs.trajectory_suites:
+        from rotquant.eval.trajectory import evaluate_trajectories
+        metrics["trajectory_suites"] = {}
+        for name, (suite_config, suite_references) in refs.trajectory_suites.items():
+            with Timer() as t:
+                suite_metrics = evaluate_trajectories(
+                    model, tokenizer, suite_references, device, suite_config
+                )
+            suite_metrics["seconds"] = t.elapsed
+            metrics["trajectory_suites"][name] = suite_metrics
 
     kv_cache_requested = eval_cfg.get("kv_cache", False)
     if kv_cache_requested:

@@ -102,3 +102,26 @@ The final provider comparison must repeat the same engine-normalized method on
 the frozen 300-prompt manifest, add greedy trajectory and task outcomes, and
 interpolate or build RotQuant/standard-GGUF artifacts within 1% of the released
 Unsloth byte count.
+
+## Implemented next comparison
+
+The generated
+`notebooks/qwen35_4b_dynamic_mixed_precision_colab.ipynb` now makes the nearest
+development comparison materially stronger without overstating it:
+
+- the RotQuant allocator targets the complete 3,584,533,344-byte bundle and
+  refuses a model whose actual post-pack persistent bytes miss ±1%;
+- every candidate uses one of the existing deployable scalar formats at
+  2/3/4/5/6/8 bits, with GPTQ applied only after the cheap allocation screen;
+- a seeded random mixed-format arm separates allocation intelligence from the
+  benefit of merely mixing bit widths;
+- the primary C4 KL slice expands from four to 24 × 512-token prompts, while
+  exact post-tokenization hashes are required to match the Unsloth run;
+- an authored 25-prompt, five-domain suite adds teacher KL and 32-token greedy
+  trajectories, but is labelled development-only; and
+- selected seed-0 recipes are rerun at seeds 1/2 and exported as reloadable
+  packed checkpoints before the comparison report is generated.
+
+The implementation is ready but has no results yet. Even if a candidate wins
+this development comparison, Dynamic 3.0 parity still requires the frozen,
+licensed 300-prompt engine-neutral protocol and task-level outcomes.

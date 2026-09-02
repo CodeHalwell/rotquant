@@ -924,6 +924,40 @@ The 7.313x compression figure should not be published until the configuration
 is repeated on the fixed simulator with the endpoint check recorded, because
 the deployed figure is 6.98x on the code that produced it.
 
+### 2026-09-03 — full W4 ablation decision and exact-byte next stage
+
+The completed full-experiment bundle at revision
+`2911e7af539ff1501ba791aaf463c14a4eaf03a3` has been reduced to the
+content-addressed record
+`research/results/qwen35_4b_full_ablation_2911e7af539f.json`. The three-seed
+confirmation means are:
+
+| Arm | Mean KL | Top-1 | WikiText-2 PPL | C4 PPL | 32-token agreement | Complete bytes |
+|---|---:|---:|---:|---:|---:|---:|
+| Promoted W4 | 0.022541 | 92.710% | 9.7914 | 14.2595 | 52.47% | 3,787,286,336 |
+| Scale8 W4 | **0.021921** | 92.547% | 9.7985 | 14.2595 | 52.08% | **3,759,868,736** |
+| Shared FWHT W4 | 0.023411 | **92.906%** | **9.7801** | 14.2698 | **54.04%** | 3,787,163,456 |
+
+Scale8 reduced mean KL by 2.75% and persistent bytes by 0.72% relative to
+promoted W4, while its top-1, PPL, and trajectory results were essentially
+neutral or slightly worse. Retain it as the lower-byte uniform control rather
+than claiming a broad promotion. Shared FWHT has mixed metric movement and does
+not promote. The learned-sign butterfly was the strongest seed-0 research lead
+but did not run at seeds 1/2, so it advances only to a dedicated replication.
+
+The next stage is implemented but not yet executed. It adds fp16 deployed
+butterfly-angle storage, an exact complete-byte 2/3/4/5/6/8-bit allocator, a
+matched random allocation control, post-pack target validation, persistent C4
+token caching, 24-prompt (>10k-token) same-input KL, and an authored 25-prompt
+five-domain KL/32-token trajectory diagnostic. Seed-0 finalists are selected by
+registered guards, confirmed at seeds 1/2, exported, and compared against the
+pinned 3,584,533,344-byte Unsloth UD-Q4_K_XL bundle. The generated notebook and
+runbook are `notebooks/qwen35_4b_dynamic_mixed_precision_colab.ipynb` and
+`docs/qwen35_dynamic_mixed_experiment.md`.
+
+This remains a development selector. A public provider claim still requires
+the licensed 300-prompt engine-neutral protocol and task-level outcomes.
+
 ## Entry template
 
 For each new run, append:
