@@ -114,7 +114,12 @@ software.
   decode passes corrupted, that state. Every K/V code width then produced the
   same next-token KL (~0.5–0.9 on Qwen3.5-4B). The clone now covers tensors
   inside containers and fails closed when any storage remains shared;
-  `non_kv_state_bytes` accounting sees the same tensors. A regression test
+  `non_kv_state_bytes` accounting sees the same tensors. Cloning, the
+  shared-storage check and the byte accounting now share one traversal
+  (`_iter_cache_tensors`), which also covers tensors held on the cache object
+  rather than in a layer; those were cloned and checked but not counted, so a
+  cache keeping state there reported a whole-cache ratio that was too
+  favourable. A regression test
   (`tests/test_kv_cache_bit_monotone.py`) requires near-zero KL at 8 bits and
   monotone KL across bit widths on a hybrid model. See
   `docs/scientific_validity_review_2026-09-01.md` for the affected results.

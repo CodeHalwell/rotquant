@@ -544,3 +544,39 @@ def test_chunked_tiered_writes_decide_sinks_by_absolute_position():
     assert _row_gap(chunked, 3, new_keys[..., 1, :]) > 5e-2
     assert _row_gap(chunked, 4, new_keys[..., 2, :]) < 5e-3
     assert _row_gap(chunked, 5, new_keys[..., 3, :]) < 5e-3
+
+
+def test_cache_level_state_is_counted_in_the_byte_accounting():
+    """State stored on the cache, not in a layer, is still an unpacked cost.
+
+    ``_clone_cache`` clones it and the shared-storage check sees it, so the
+    byte accounting must see it too; otherwise it vanishes from
+    ``non_kv_state_bytes`` and the whole-cache ratio reads too favourably.
+    """
+    ids = torch.arange(1, 9).reshape(1, -1)
+    keys, values = _states(ids)
+
+    baseline = _Cache(keys.clone(), values.clone())
+    _plain, plain_metrics = simulate_packed_kv_cache(
+        baseline, KVQuantConfig(bits=4, group_size=4, rotation_block=8))
+
+    source = _Cache(keys.clone(), values.clone())
+    # Some Transformers caches hold conv/recurrent state on the cache object.
+    source.global_state = torch.ones(2, 64)
+    source.grouped_state = {0: torch.ones(3, 32)}
+    extra = (source.global_state.numel() * source.global_state.element_size()
+             + 3 * 32 * source.grouped_state[0].element_size())
+
+    packed, metrics = simulate_packed_kv_cache(
+        source, KVQuantConfig(bits=4, group_size=4, rotation_block=8))
+
+    assert metrics["non_kv_state_bytes"] == plain_metrics["non_kv_state_bytes"] + extra
+    assert (metrics["source_total_cache_bytes"]
+            == plain_metrics["source_total_cache_bytes"] + extra)
+    # Unpacked state is added to both sides, so the ratio can only fall.
+    assert (metrics["total_cache_compression_ratio"]
+            < plain_metrics["total_cache_compression_ratio"])
+
+    # And the clone still isolates it.
+    assert packed.global_state is not source.global_state
+    assert packed.grouped_state[0] is not source.grouped_state[0]

@@ -176,19 +176,26 @@ def _iter_tensors(value):
             yield from _iter_tensors(item)
 
 
-def _storage_keys(cache) -> set[tuple[str, int]]:
-    keys = set()
+def _iter_cache_tensors(cache):
+    """Every tensor the cache owns, in its layers and on the cache itself.
+
+    Sharing detection, cloning and byte accounting must all see the same
+    tensors: state counted by one and missed by another is exactly how an
+    unmeasured cache cost hides inside a compression ratio.
+    """
     for layer in cache.layers:
-        for tensor in _iter_tensors(vars(layer)):
-            if tensor.numel():
-                keys.add((str(tensor.device), tensor.untyped_storage().data_ptr()))
+        yield from _iter_tensors(vars(layer))
     for name, value in vars(cache).items():
         if name == "layers":
             continue
-        for tensor in _iter_tensors(value):
-            if tensor.numel():
-                keys.add((str(tensor.device), tensor.untyped_storage().data_ptr()))
-    return keys
+        yield from _iter_tensors(value)
+
+
+def _storage_keys(cache) -> set[tuple[str, int]]:
+    return {
+        (str(tensor.device), tensor.untyped_storage().data_ptr())
+        for tensor in _iter_cache_tensors(cache) if tensor.numel()
+    }
 
 
 def _clone_cache(cache):
@@ -214,13 +221,12 @@ def _clone_cache(cache):
 
 def _cache_tensor_bytes(cache) -> int:
     storages: dict[tuple[str, int], int] = {}
-    for layer in cache.layers:
-        for value in _iter_tensors(vars(layer)):
-            if value.numel() == 0:
-                continue
-            storage = value.untyped_storage()
-            key = (str(value.device), storage.data_ptr())
-            storages[key] = storage.nbytes()
+    for value in _iter_cache_tensors(cache):
+        if value.numel() == 0:
+            continue
+        storage = value.untyped_storage()
+        key = (str(value.device), storage.data_ptr())
+        storages[key] = storage.nbytes()
     return sum(storages.values())
 
 
