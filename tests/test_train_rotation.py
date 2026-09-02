@@ -552,3 +552,29 @@ def test_patch_model_gates_shared_sites_on_their_members():
     scored = seen["weight"]
     assert not isinstance(scored, torch.Tensor), "the concatenation is not deployed"
     assert [w.shape[0] for w in scored] == [32, 16]
+
+
+def test_patch_model_keeps_its_public_positional_signature():
+    """stats_out is the sixth positional parameter of the public API.
+
+    Inserting a new option ahead of it silently rebinds a caller's dict, which
+    both loses their report and hands the rotation gate a dict to do arithmetic
+    with. New options must be keyword-only.
+    """
+    import inspect
+
+    parameters = list(inspect.signature(patch_model).parameters.values())
+    positional = [p.name for p in parameters
+                  if p.kind is inspect.Parameter.POSITIONAL_OR_KEYWORD]
+    assert positional == ["model", "cfg", "hessians", "activations",
+                          "activation_means", "stats_out"]
+    assert all(p.kind is inspect.Parameter.KEYWORD_ONLY
+               for p in parameters if p.name == "hessian_damp_frac")
+
+    # A caller passing stats_out positionally still gets its report filled.
+    model = torch.nn.Sequential(nn.Linear(64, 16))
+    stats = {}
+    patch_model(model, PatchConfig(quant=QuantConfig(bits=4, group_size=32),
+                                   rotation="fwht", block=32, seed=0),
+                None, None, None, stats)
+    assert stats["patched_modules"] == 1

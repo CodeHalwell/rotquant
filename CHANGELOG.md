@@ -68,7 +68,8 @@ software.
   than by `H`, and scoring `H` ranks a component the deployment cancels. Found
   by the Codex review of the follow-up PR.
 - `hessian_reconstruction_error(..., damp_frac=...)` and
-  `patch_model(hessian_damp_frac=...)` remove the ridge that
+  `patch_model(*, hessian_damp_frac=...)` (keyword-only, so `stats_out` keeps
+  its sixth positional slot) remove the ridge that
   `HessianAccumulator.finalize` folds into `H`, which GPTQ wants for Cholesky
   stability but which scoring measures as an extra `lambda ||E||^2`.
   `CalibrationResult.damp_frac` records what was applied. The default 0.0

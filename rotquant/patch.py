@@ -127,12 +127,19 @@ def patch_model(model: nn.Module, cfg: PatchConfig,
                 hessians: Mapping[str, torch.Tensor] | None = None,
                 activations: dict[str, torch.Tensor] | None = None,
                 activation_means: Mapping[str, torch.Tensor] | None = None,
-                hessian_damp_frac: float = 0.0,
-                stats_out: dict | None = None) -> nn.Module:
+                stats_out: dict | None = None,
+                *,
+                hessian_damp_frac: float = 0.0) -> nn.Module:
     """Replace targeted ``nn.Linear`` layers with ``QuantLinear`` in-place.
 
     ``stats_out``: optional dict filled with patching side-info (currently
     per-run rotation-training aggregates under ``"rotation_train"``).
+
+    ``hessian_damp_frac`` is keyword-only, and new options should stay that
+    way: ``stats_out`` is the sixth positional parameter of the public API, so
+    inserting ahead of it silently rebinds a caller's dict.  Pass the
+    ``damp_frac`` used to collect ``hessians`` (``CalibrationResult.damp_frac``)
+    so the rotation gate scores the undamped second moment.
     """
     if not cfg.enabled:
         logger.info("Quantization disabled; evaluating the source model unchanged")
