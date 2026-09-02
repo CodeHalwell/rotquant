@@ -37,6 +37,7 @@ than full-model fine-tuning.
 """
 from __future__ import annotations
 
+from collections.abc import Sequence
 from dataclasses import dataclass, replace
 from typing import Any
 
@@ -98,8 +99,26 @@ class RotationTrainConfig:
             raise ValueError("sign_init_magnitude must be positive")
 
 
+def _selection_members(weight) -> list[torch.Tensor]:
+    """The weights a site deploys as separate packed artifacts.
+
+    A shared-rotation site trains one rotation over the concatenation of its
+    sibling projections, but ``patch_model`` packs each projection on its own.
+    Scoring the concatenation would fit one calibrated codebook across all
+    siblings and let 8-bit scale blocks straddle their boundaries, neither of
+    which the deployed artifact does, so a gate must score the members.
+    """
+    if isinstance(weight, torch.Tensor):
+        return [weight]
+    members = list(weight)
+    if not members:
+        raise ValueError("selection needs at least one weight")
+    return members
+
+
 @torch.no_grad()
-def hessian_reconstruction_error(rotation: Rotation, weight: torch.Tensor,
+def hessian_reconstruction_error(rotation: Rotation,
+                                 weight: torch.Tensor | Sequence[torch.Tensor],
                                  quant_cfg: QuantConfig,
                                  hessian: torch.Tensor,
                                  activation_mean: torch.Tensor | None = None,
@@ -128,28 +147,41 @@ def hessian_reconstruction_error(rotation: Rotation, weight: torch.Tensor,
     damp_frac)``.  The default 0.0 matches ``scripts/run_experiment.py``, which
     damps only inside the GPTQ solver.
     """
-    w = weight.detach().to(torch.float32)
-    H = hessian.detach().to(device=w.device, dtype=torch.float32)
-    if H.shape != (w.shape[1], w.shape[1]):
+    members = [w.detach().to(torch.float32) for w in _selection_members(weight)]
+    in_features = members[0].shape[1]
+    H = hessian.detach().to(device=members[0].device, dtype=torch.float32)
+    if H.shape != (in_features, in_features):
         raise ValueError("rotation Hessian shape does not match weight input")
-    rotated = rotation.rotate_weight(w)
+    # The rotated Hessian and the ridge depend only on the rotation and H, so
+    # they are shared across the site's members.
     rotated_hessian = (
         rotate_hessian(rotation, H) if quant_cfg.error_comp == "gptq" else None
     )
-    q = Quantizer(quant_cfg).quantize_weight(
-        rotated, H=rotated_hessian).dequantize().to(w.device)
-    error = rotation.inverse_activation(rotated - q)
-    numerator = (error @ H * error).sum()
-    denominator = (w @ H * w).sum()
-    if damp_frac:
-        ridge = damp_frac * torch.diagonal(H).mean() / (1.0 + damp_frac)
-        numerator = numerator - ridge * error.square().sum()
-        denominator = denominator - ridge * w.square().sum()
-    if activation_mean is not None:
-        mean = activation_mean.detach().reshape(1, w.shape[1]).to(
-            device=w.device, dtype=torch.float32)
-        numerator = numerator - (mean @ error.T).square().sum()
-        denominator = denominator - (mean @ w.T).square().sum()
+    ridge = (damp_frac * torch.diagonal(H).mean() / (1.0 + damp_frac)
+             if damp_frac else None)
+    mean = (activation_mean.detach().reshape(1, in_features).to(
+        device=members[0].device, dtype=torch.float32)
+        if activation_mean is not None else None)
+
+    numerator = H.new_zeros(())
+    denominator = H.new_zeros(())
+    for w in members:
+        if w.shape[1] != in_features:
+            raise ValueError("shared-site weights disagree on input features")
+        rotated = rotation.rotate_weight(w)
+        # A fresh quantizer per member: a calibrated grid is fitted to the
+        # matrix it packs, exactly as QuantLinear.from_linear does per layer.
+        q = Quantizer(quant_cfg).quantize_weight(
+            rotated, H=rotated_hessian).dequantize().to(w.device)
+        error = rotation.inverse_activation(rotated - q)
+        numerator = numerator + (error @ H * error).sum()
+        denominator = denominator + (w @ H * w).sum()
+        if ridge is not None:
+            numerator = numerator - ridge * error.square().sum()
+            denominator = denominator - ridge * w.square().sum()
+        if mean is not None:
+            numerator = numerator - (mean @ error.T).square().sum()
+            denominator = denominator - (mean @ w.T).square().sum()
     return (numerator.clamp_min(0.0)
             / denominator.clamp_min(1e-12)).item()
 
@@ -157,7 +189,7 @@ def hessian_reconstruction_error(rotation: Rotation, weight: torch.Tensor,
 @torch.no_grad()
 def select_butterfly_checkpoint_hessian(rotation: ButterflyRotation,
                                         reference: ButterflyRotation,
-                                        weight: torch.Tensor,
+                                        weight: torch.Tensor | Sequence[torch.Tensor],
                                         quant_cfg: QuantConfig,
                                         hessian: torch.Tensor,
                                         min_improvement: float = 0.0,
@@ -191,7 +223,8 @@ def select_butterfly_checkpoint_hessian(rotation: ButterflyRotation,
 
 
 @torch.no_grad()
-def activation_reconstruction_error(rotation: Rotation, weight: torch.Tensor,
+def activation_reconstruction_error(rotation: Rotation,
+                                    weight: torch.Tensor | Sequence[torch.Tensor],
                                     quant_cfg: QuantConfig,
                                     activations: torch.Tensor,
                                     max_tokens: int = 64) -> float:
@@ -199,21 +232,30 @@ def activation_reconstruction_error(rotation: Rotation, weight: torch.Tensor,
     if quant_cfg.error_comp == "gptq":
         raise ValueError(
             "exact rotation checkpoint selection with GPTQ requires a Hessian")
-    w = weight.detach().to(torch.float32)
-    x = activations.detach().reshape(-1, w.shape[1])[:max_tokens]
-    x = x.to(device=w.device, dtype=torch.float32)
-    rotated = rotation.rotate_weight(w)
-    q = Quantizer(quant_cfg).quantize_weight(rotated).dequantize().to(w.device)
-    target = x @ w.T
-    pred = rotation.rotate_activation(x) @ q.T
-    return ((pred - target).pow(2).mean()
-            / target.pow(2).mean().clamp_min(1e-12)).item()
+    members = [w.detach().to(torch.float32) for w in _selection_members(weight)]
+    in_features = members[0].shape[1]
+    x = activations.detach().reshape(-1, in_features)[:max_tokens]
+    x = x.to(device=members[0].device, dtype=torch.float32)
+    rotated_x = rotation.rotate_activation(x)
+    # Summed rather than averaged so members of different output widths
+    # aggregate by energy; for a single member the ratio is unchanged.
+    error_energy = x.new_zeros(())
+    signal_energy = x.new_zeros(())
+    for w in members:
+        if w.shape[1] != in_features:
+            raise ValueError("shared-site weights disagree on input features")
+        rotated = rotation.rotate_weight(w)
+        q = Quantizer(quant_cfg).quantize_weight(rotated).dequantize().to(w.device)
+        target = x @ w.T
+        error_energy = error_energy + (rotated_x @ q.T - target).pow(2).sum()
+        signal_energy = signal_energy + target.pow(2).sum()
+    return (error_energy / signal_energy.clamp_min(1e-12)).item()
 
 
 @torch.no_grad()
 def select_butterfly_checkpoint(rotation: ButterflyRotation,
                                 reference: ButterflyRotation,
-                                weight: torch.Tensor,
+                                weight: torch.Tensor | Sequence[torch.Tensor],
                                 quant_cfg: QuantConfig,
                                 activations: torch.Tensor,
                                 max_tokens: int = 64,

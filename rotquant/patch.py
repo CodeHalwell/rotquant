@@ -259,7 +259,7 @@ def patch_model(model: nn.Module, cfg: PatchConfig,
                     f"activation-aware rotation training requires captured "
                     f"activations for {name}"
                 )
-            selection_weight = train_weight
+            selection_members = [train_weight]
             site_members = [name]
             if share_key is not None:
                 members = [
@@ -284,8 +284,11 @@ def patch_model(model: nn.Module, cfg: PatchConfig,
                             f"shared rotation dimension mismatch at {member_name}")
                     member_weights.append(member_linear.weight.detach().to(
                         device=train_weight.device, dtype=train_weight.dtype))
-                selection_weight = torch.cat(member_weights, dim=0)
-                train_weight = selection_weight
+                # One rotation is trained over the concatenation, but each
+                # projection is packed separately below, so the gates score the
+                # members rather than the concatenation.
+                selection_members = member_weights
+                train_weight = torch.cat(member_weights, dim=0)
                 site_members = [member_name for _, member_name, _ in members]
                 trained_shared_sites.add(share_key)
             stats = train_layer_rotation(
@@ -295,8 +298,10 @@ def patch_model(model: nn.Module, cfg: PatchConfig,
             stats["site_members"] = site_members
             if train_on_source:
                 weight_rot.to(device=work_linear.weight.device, dtype=torch.float32)
-                selection_weight = selection_weight.to(
-                    device=work_linear.weight.device, dtype=torch.float32)
+                selection_members = [
+                    member.to(device=work_linear.weight.device,
+                              dtype=torch.float32)
+                    for member in selection_members]
             if isinstance(weight_rot, ButterflyRotation) \
                     and train_cfg.objective == "activation":
                 if layer_acts is None:
@@ -320,7 +325,7 @@ def patch_model(model: nn.Module, cfg: PatchConfig,
                     selection_acts = layer_acts
                     selection_tokens = train_cfg.max_tokens
                 selection = select_butterfly_checkpoint(
-                    weight_rot, reference_rot, selection_weight, layer_quant,
+                    weight_rot, reference_rot, selection_members, layer_quant,
                     selection_acts, max_tokens=selection_tokens,
                     min_improvement=train_cfg.selection_min_improvement)
                 stats.update(selection)
@@ -338,7 +343,7 @@ def patch_model(model: nn.Module, cfg: PatchConfig,
                 # mean bias correction; otherwise the gate ranks a component
                 # that apply_mean_bias_correction cancels.
                 selection = select_butterfly_checkpoint_hessian(
-                    weight_rot, reference_rot, selection_weight, layer_quant,
+                    weight_rot, reference_rot, selection_members, layer_quant,
                     source_hessian,
                     min_improvement=train_cfg.selection_min_improvement,
                     activation_mean=(

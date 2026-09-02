@@ -72,6 +72,15 @@ software.
   so no recorded run is affected; measured on synthetic layers the ridge shifts
   the score by at most 1.009x and reversed no decision in 120 trials, because
   it inflates numerator and denominator of the ratio together.
+- Both rotation checkpoint gates score a shared-rotation site as the separate
+  packed weights it deploys, rather than as the concatenation it trains on.
+  `patch_model` packs each sibling projection on its own, so a concatenated
+  score fits one calibrated codebook across all siblings and lets 8-bit scale
+  blocks straddle their boundaries: measured 7.1e-2 and 6.9e-3 relative
+  difference in the packed weight. `configs/qwen35_4b_w4a8_e8_trials_cuda.yaml`
+  combines `share_rotations: true`, `scale_bits: 8` and the Hessian objective,
+  so its bundled `optimized_w4` arm carried this confound. Found by the Codex
+  review of the follow-up PR.
 - `ButterflyRotation.enable_sign_training(init_magnitude=...)` and
   `RotationTrainConfig.sign_init_magnitude` (default 0.1): the previous ±1
   logit initialisation could never cross zero under the shipped learning

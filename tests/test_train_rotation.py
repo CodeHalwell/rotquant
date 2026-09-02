@@ -382,7 +382,7 @@ def test_patch_model_passes_the_activation_mean_to_the_hessian_gate():
     original = train_module.select_butterfly_checkpoint_hessian
 
     def spy(*args, **kwargs):
-        seen[args[2].shape] = kwargs.get("activation_mean")
+        seen["mean"] = kwargs.get("activation_mean")
         return original(*args, **kwargs)
 
     torch.manual_seed(9)
@@ -401,7 +401,7 @@ def test_patch_model_passes_the_activation_mean_to_the_hessian_gate():
                             "assignment_scale": "rms"},
         )
         patch_model(model, config, hessians=hessians, activation_means=means)
-        return next(iter(seen.values()))
+        return seen["mean"]
 
     monkey = pytest.MonkeyPatch()
     monkey.setattr(train_module, "select_butterfly_checkpoint_hessian", spy)
@@ -451,3 +451,104 @@ def test_hessian_error_removes_the_calibration_damping_ridge():
     assert hessian_reconstruction_error(
         rotation, weight, quant_cfg, raw, mean, damp_frac=0.0) == pytest.approx(
             undamped, rel=1e-9)
+
+
+def test_gates_score_shared_site_members_as_separate_packed_weights():
+    """A shared site packs each projection alone, so the gate must too.
+
+    Concatenating is equivalent for plain per-row quantization, but a
+    calibrated codebook is fitted per matrix and 8-bit scale blocks would
+    straddle the sibling boundary, neither of which the artifact does.
+    """
+    from rotquant.quantize import Quantizer
+    from rotquant.train_rotation import (
+        activation_reconstruction_error,
+        hessian_reconstruction_error,
+    )
+
+    torch.manual_seed(2)
+    d = 128
+    # 100*8 = 800 scale entries: the second member starts mid-block, which
+    # is the case a concatenated fit would silently absorb.
+    members = [torch.randn(o, d) * 0.1 for o in (100, 60)]
+    joined = torch.cat(members, dim=0)
+    x = torch.randn(256, d)
+    hessian = x.T @ x / 256
+    rotation = RandomizedHadamard(d, block=d, seed=0)
+
+    scale_blocks = QuantConfig(bits=4, group_size=16, scale_bits=8,
+                               scale_quant_group_size=256)
+    calibrated = QuantConfig(bits=4, group_size=16, codebook="calibrated")
+
+    for quant_cfg in (scale_blocks, calibrated):
+        # The packed artifacts genuinely differ, so the scores must too.
+        separate = torch.cat(
+            [Quantizer(quant_cfg).quantize_weight(
+                rotation.rotate_weight(w)).dequantize() for w in members], dim=0)
+        together = Quantizer(quant_cfg).quantize_weight(
+            rotation.rotate_weight(joined)).dequantize()
+        assert not torch.equal(separate, together)
+        assert (hessian_reconstruction_error(rotation, members, quant_cfg, hessian)
+                != pytest.approx(hessian_reconstruction_error(
+                    rotation, joined, quant_cfg, hessian), rel=1e-9))
+
+    # Per-row quantization is unaffected by concatenation, so the two agree.
+    per_row = QuantConfig(bits=4, group_size=16, scale_bits=16)
+    assert (hessian_reconstruction_error(rotation, members, per_row, hessian)
+            == pytest.approx(hessian_reconstruction_error(
+                rotation, joined, per_row, hessian), rel=1e-6))
+    assert (activation_reconstruction_error(rotation, members, per_row, x)
+            == pytest.approx(activation_reconstruction_error(
+                rotation, joined, per_row, x), rel=1e-6))
+
+    # A single weight and a one-member list are the same thing.
+    assert (hessian_reconstruction_error(rotation, [joined], per_row, hessian)
+            == pytest.approx(hessian_reconstruction_error(
+                rotation, joined, per_row, hessian), rel=1e-12))
+
+
+def test_patch_model_gates_shared_sites_on_their_members():
+    import rotquant.train_rotation as train_module
+
+    seen = {}
+    original = train_module.select_butterfly_checkpoint_hessian
+
+    def spy(rotation, reference, weight, *args, **kwargs):
+        seen["weight"] = weight
+        return original(rotation, reference, weight, *args, **kwargs)
+
+    torch.manual_seed(4)
+
+    class Attention(nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.q_proj = nn.Linear(64, 32)
+            self.k_proj = nn.Linear(64, 16)
+
+    class Block(nn.Module):
+        def __init__(self):
+            super().__init__()
+            # shared_rotation_key matches on a ".q_proj"-style suffix, so the
+            # projections must sit under a parent module.
+            self.attn = Attention()
+
+    model = Block()
+    x = torch.randn(256, 64) * torch.linspace(0.5, 2.0, 64)
+    hessians = {"attn.q_proj": x.T @ x / 256, "attn.k_proj": x.T @ x / 256}
+    config = PatchConfig(
+        quant=QuantConfig(bits=3, group_size=32),
+        rotation="butterfly", block=32, share_rotations=True,
+        include=["attn.q_proj", "attn.k_proj"],
+        train_rotation={"steps": 2, "lr": 1e-3, "objective": "hessian",
+                        "assignment_scale": "rms"},
+    )
+    monkey = pytest.MonkeyPatch()
+    monkey.setattr(train_module, "select_butterfly_checkpoint_hessian", spy)
+    try:
+        patch_model(model, config, hessians=hessians)
+    finally:
+        monkey.undo()
+
+    scored = seen["weight"]
+    assert not isinstance(scored, torch.Tensor), "the concatenation is not deployed"
+    assert [w.shape[0] for w in scored] == [32, 16]

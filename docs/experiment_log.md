@@ -741,9 +741,13 @@ Review note (2026-09-02): the `optimized_w4` arm's `scale_bits: 8` path used
 an encoder that pulled every scale in a narrow-range block toward the block
 minimum (subnormal fp16 step; up to −35 % on down-projection-like scales,
 +73 % weight quantization error in synthetic replication), and its GPTQ codes
-were assigned against scales the artifact did not store. Both are fixed on the
-review branch; the planned single-factor ablation must use the fixed encoder
-before 8-bit scales can be blamed or cleared.
+were assigned against scales the artifact did not store. The arm also set
+`share_rotations: true`, and the rotation checkpoint gate scored the
+concatenated q/k/v weight while the patcher packs each projection separately,
+which with `scale_bits: 8` is not the deployed artifact. All three are fixed on
+the review branch; the planned single-factor ablation must use the fixed
+encoder and the per-member gate before 8-bit scales, sharing or learned
+rotations can be blamed or cleared.
 
 ### 2026-09-02 — Unsloth anchor and four-prompt 8k E8 confirmation
 
