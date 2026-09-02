@@ -46,6 +46,12 @@ from .utils import BitBudget, get_logger
 
 logger = get_logger(__name__)
 
+# ``torch.finfo(torch.float16)`` exposes the smallest *normal* value, but scale
+# metadata legitimately needs the subnormal range too.  IEEE fp16's smallest
+# positive subnormal is 2^-24.  Keeping the constant in Python avoids creating
+# a device scalar in every encode call; conversion happens inside ``clamp_min``.
+_FP16_SMALLEST_POSITIVE = 2.0 ** -24
+
 
 def _weight_digest(w: torch.Tensor) -> str:
     """Exact content digest of a weight matrix (shape + float32 bytes)."""
@@ -369,10 +375,11 @@ def _storage_scales(scales: torch.Tensor | None,
 
     The protocol charges ``scale_bits`` (default 16) per scale, so the stored
     tensor must actually be fp16 -- and quantisation must run against the
-    *rounded* values so pack-time indices and dequant agree. Floored at the
-    smallest normal fp16 so the fp32 ``1e-12`` clamp on all-zero groups does not
-    underflow to zero and divide out to NaN. The only other supported format is
-    fp32 (``scale_bits=32``). For 8-bit storage this returns the values after a
+    *rounded* values so pack-time indices and dequant agree. Positive values are
+    floored only at the smallest fp16 subnormal; scale selection already keeps
+    zero groups positive, and preserving the subnormal range avoids amplifying
+    genuinely small layers. The only other supported format is fp32
+    (``scale_bits=32``). For 8-bit storage this returns the values after a
     real blockwise uint8 encode/decode round trip, so code assignment agrees
     exactly with deployment. The codes and second-level metadata are retained
     later by :func:`_encode_storage_scales`.
@@ -381,7 +388,7 @@ def _storage_scales(scales: torch.Tensor | None,
         return scales
     if scale_bits == 16.0:
         return scales.to(torch.float16).clamp_min(
-            torch.finfo(torch.float16).smallest_normal)
+            _FP16_SMALLEST_POSITIVE)
     if scale_bits == 8.0:
         stored, offsets, steps = _encode_storage_scales(
             scales, scale_bits, scale_quant_group_size)
@@ -409,7 +416,7 @@ def _encode_storage_scales(
         return scales.float(), None, None
     if scale_bits == 16.0:
         return (scales.to(torch.float16).clamp_min(
-            torch.finfo(torch.float16).smallest_normal), None, None)
+            _FP16_SMALLEST_POSITIVE), None, None)
     if scale_bits != 8.0:
         raise ValueError("scale_bits must be 8, 16, or 32")
     if group_size < 2:
@@ -423,13 +430,19 @@ def _encode_storage_scales(
     grouped = padded.reshape(blocks, group_size)
     minimum = grouped.amin(dim=1)
     maximum = grouped.amax(dim=1)
-    offsets = minimum.to(torch.float16).clamp_min(
-        torch.finfo(torch.float16).smallest_normal)
-    steps = ((maximum - offsets.float()).clamp_min(0.0) / 255.0).to(
-        torch.float16)
-    # A constant block has no range; a zero step is an exact compact encoding.
-    # A range too small for even a subnormal fp16 step is treated the same way.
-    constant = (maximum <= offsets.float()) | (steps.float() == 0)
+    offsets = minimum.to(torch.float16).clamp_min(_FP16_SMALLEST_POSITIVE)
+    ideal_steps = (maximum - offsets.float()).clamp_min(0.0) / 255.0
+    steps = ideal_steps.to(torch.float16)
+    # Round the retained step upward whenever nearest-fp16 rounded it down.  A
+    # downward-rounded affine step cannot reach the block maximum and clips the
+    # upper tail; this matters most in the sparse subnormal range. ``nextafter``
+    # also maps a zero result to the smallest positive fp16 subnormal.
+    rounded_down = steps.float() < ideal_steps
+    steps[rounded_down] = torch.nextafter(
+        steps[rounded_down], torch.full_like(steps[rounded_down], torch.inf))
+    positive_range = maximum > offsets.float()
+    # A genuinely constant block has no range; a zero step is exact and compact.
+    constant = ~positive_range
     steps[constant] = 0
     # Divide by exactly the fp16 step that decoding multiplies by.  Subnormal
     # fp16 steps are legitimate for narrow-range blocks (a range below 0.0156

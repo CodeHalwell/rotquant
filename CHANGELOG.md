@@ -116,6 +116,16 @@ software.
 
 ### Fixed
 
+- Calibrated KV-cache scalar grids are now fitted once from each layer's
+  prefill K/V distributions, persisted for the cache lifetime and reused by
+  every decode and ageing write. The previous row-at-a-time ageing path fitted
+  and discarded a new grid for every row, so the artifact had no stable
+  decoder; deployed byte accounting now includes both fp32 centroid grids.
+- fp16 scale storage now preserves positive subnormal magnitudes instead of
+  clamping offsets and 16-bit scales to fp16's smallest *normal*. The old clamp
+  amplified genuinely small layers (synthetic weight sigma 1e-6: 8-bit-scale
+  NMSE >47); the 8-bit affine step is also rounded upward when nearest-fp16
+  rounding would otherwise leave the block maximum unreachable.
 - The 8-bit scale encoder divided by a divisor clamped to the smallest normal
   fp16 value while decoding multiplied by the true step. Blocks whose 256
   scales span less than 0.0156 have a subnormal step, so every scale in them

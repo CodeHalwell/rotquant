@@ -105,7 +105,11 @@ def test_encoded_scales_are_retained_verbatim_rather_than_re_encoded():
     )
 
 
-@pytest.mark.parametrize("centre,half_range", [(0.011, 0.001), (0.004, 0.0005), (0.02, 0.006)])
+@pytest.mark.parametrize(
+    "centre,half_range",
+    [(1e-5, 2e-6), (5e-5, 1e-5), (0.011, 0.001),
+     (0.004, 0.0005), (0.02, 0.006)],
+)
 def test_eight_bit_encoder_is_accurate_for_narrow_range_blocks(centre, half_range):
     """Blocks whose fp16 step is subnormal must still decode to within half a step.
 
@@ -130,6 +134,25 @@ def test_eight_bit_encoder_is_accurate_for_narrow_range_blocks(centre, half_rang
     assert (decoded - scales).abs().max().item() <= tolerance
     # No systematic pull toward the block minimum (the old encoder gave -18%).
     assert (decoded - scales).mean().abs().item() < 2e-3 * scales.mean().item()
+
+
+@pytest.mark.parametrize("scale_bits", [8.0, 16.0])
+def test_scale_storage_preserves_subnormal_magnitude_layers(scale_bits):
+    """Small but nonzero layers must not be amplified to fp16's normal floor."""
+    generator = torch.Generator().manual_seed(7)
+    weight = torch.randn(4, 256, generator=generator) * 1e-6
+    quantizer = Quantizer(QuantConfig(
+        bits=4,
+        codebook="gaussian",
+        scale="rms",
+        group_size=64,
+        scale_bits=scale_bits,
+        scale_quant_group_size=256,
+    ))
+    reconstructed = quantizer.quantize_weight(weight).dequantize()
+    nmse = (reconstructed - weight).square().sum() / weight.square().sum()
+    # The previous smallest-normal clamp gave NMSE > 47 for this layer.
+    assert nmse.item() < 0.02
 
 
 def test_gptq_scale_grid_reuses_retained_codes_for_narrow_range_blocks():

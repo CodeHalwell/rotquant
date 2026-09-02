@@ -4,6 +4,7 @@ from types import SimpleNamespace
 import pytest
 import torch
 
+import rotquant.eval.kv_cache as kv_cache_eval
 from rotquant.eval.kv_cache import (
     KVCacheEvalConfig,
     KVDynamicConfig,
@@ -530,10 +531,12 @@ def test_chunked_tiered_writes_pack_each_row_exactly_once():
 def test_chunked_tiered_writes_are_invariant_to_artifact_wide_quantizer_state():
     """Ageing must not group rows by how the decode happened to be chunked.
 
-    8-bit affine scale blocks and a calibrated codebook are fitted across the
-    matrix being packed, so quantizing a whole aged slice at once would make
-    the cache depend on chunk size. The repository's cache configurations use
-    ``scale_bits: 8``, which the 16-bit case above cannot detect.
+    8-bit affine scale blocks are fitted across the matrix being packed, so
+    quantizing a whole aged slice at once would make the cache depend on chunk
+    size. A calibrated grid is fitted once from prefill and reused for the
+    cache lifetime; this case also verifies that fixed grid remains invariant.
+    The repository's cache configurations use ``scale_bits: 8``, which the
+    16-bit case above cannot detect.
     """
     base = torch.arange(1, 9).reshape(1, -1)
     for new_ids, overrides in (
@@ -551,6 +554,52 @@ def test_chunked_tiered_writes_are_invariant_to_artifact_wide_quantizer_state():
         assert torch.equal(chunked.layers[0].keys, stepwise.layers[0].keys), overrides
         assert torch.equal(
             chunked.layers[0].values, stepwise.layers[0].values), overrides
+
+
+def test_calibrated_cache_reuses_prefill_grids_and_accounts_for_them(monkeypatch):
+    calls = []
+    original = kv_cache_eval.quantize_kv
+
+    def recording_quantize(*args, **kwargs):
+        calls.append(kwargs.get("codebook"))
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(kv_cache_eval, "quantize_kv", recording_quantize)
+    ids = torch.arange(1, 9).reshape(1, -1)
+    keys, values = _states(ids)
+    config = KVQuantConfig(
+        bits=2,
+        group_size=4,
+        rotation_block=8,
+        codebook="calibrated",
+        sink_tokens=1,
+        recent_window=2,
+    )
+    simulated, calibrated_metrics = simulate_packed_kv_cache(
+        _Cache(keys.clone(), values.clone()), config)
+    new_keys, new_values = _states(torch.tensor([[9, 10, 11, 12, 13]]))
+    simulated.update(new_keys, new_values, 0)
+
+    # Prefill fits one K and one V grid. Every incoming and aged-row pack must
+    # receive those grids explicitly instead of fitting a one-row codebook.
+    assert calls[:2] == [None, None]
+    assert len(calls) > 4
+    assert all(codebook is not None for codebook in calls[2:])
+
+    gaussian_metrics = simulate_packed_kv_cache(
+        _Cache(keys.clone(), values.clone()),
+        KVQuantConfig(
+            bits=2,
+            group_size=4,
+            rotation_block=8,
+            codebook="gaussian",
+            sink_tokens=1,
+            recent_window=2,
+        ),
+    )[1]
+    # Two fp32 four-centroid grids: one for keys and one for values.
+    assert calibrated_metrics["packed_kv_bytes"] == (
+        gaussian_metrics["packed_kv_bytes"] + 2 * (2 ** config.bits) * 4)
 
 def test_chunked_tiered_writes_decide_sinks_by_absolute_position():
     quant = KVQuantConfig(bits=2, group_size=4, rotation_block=8,

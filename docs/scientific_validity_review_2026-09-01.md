@@ -252,6 +252,13 @@ and mean-bias correction. Mechanisms checked here:
   the bundled "optimized W4" arm, and is another reason that arm cannot be
   interpreted. Fixed by dividing by the exact fp16 step and, in GPTQ, by
   reusing the retained codes instead of re-deriving them.
+- **A follow-up found that the first correction still excluded fp16
+  subnormal scales.** Offsets and ordinary 16-bit scales were clamped to the
+  smallest *normal*, although smaller positive fp16 values are representable.
+  Synthetic weights with sigma 1e-6 then produced NMSE above 47. Storage now
+  floors only at 2^-24, the smallest positive fp16 subnormal, and retained
+  affine steps round upward when nearest-fp16 rounding would otherwise make
+  the maximum unreachable; the same case now gives NMSE approximately 0.0109.
 - **Mean-bias correction did not misbehave in a synthetic sink test**
   (typical-token output MSE ×1.00 with 1/512 tokens carrying a 400× channel
   outlier), so it is not an obvious suspect, but its benefit will also be
@@ -278,6 +285,13 @@ smoke (32 continuation tokens ≤ 32-token window) is exact; the corrected 8k
 config (64 continuation tokens, 32-token window) will overstate quality and
 understate bytes for the second half of each continuation. Track absolute
 positions and re-pack rows as they age out.
+
+The subsequent ageing implementation exposed a second deployment issue for a
+`calibrated` codebook: packing one aged row at a time refitted and discarded a
+different scalar grid for every row. The cache now fits one K and one V grid
+per layer from prefill, reuses them for all writes, and includes their fp32
+centroids in deployed bytes. This does not change the fixed Gaussian/E8 grids,
+but it is required before calibrated-cache results are meaningful.
 
 ### 3.4 The TurboQuant weight sketch is a designed loser for weights
 

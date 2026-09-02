@@ -110,7 +110,7 @@ specialized around them:
 - [x] complete the seed-0 W4A8/E8 composition: retain promoted W4, reject the
   confounded learned-rotation bundle after catastrophic global collapse, keep
   A8 as a small-quality-cost/runtime-unproven candidate, and advance 2-bit E8P
-  from a 64-token smoke to corrected four-prompt 8k confirmation;
+  from a 64-token smoke to a provisional four-prompt 8k assessment;
 - [x] pin and implement the exact released Unsloth Qwen3.5-4B UD-Q4_K_XL
   same-engine KL/top-1 comparator, including BF16 references, complete artifact
   bytes/projector policy, checksums, prompt hashes, bootstrap intervals, and
@@ -120,9 +120,14 @@ specialized around them:
 - [ ] run the controlled W4 factor ablation (8-bit scales, bias correction,
   sharing, butterfly basis, Hessian training, and learned signs) with the new
   global KL/top-1 fail-fast gate; do not rerun the rejected bundled arm;
-- [x] run the corrected four-prompt 8k/64-token source-W4-W4A8 plus 2-bit E8P
-  cache confirmation: retain E8P at 2.188 effective bpv and 4.652x whole-cache
-  compression; do not select A8 because the cache-fidelity intervals overlap;
+- [ ] repeat the four-prompt 8k/64-token source-W4-W4A8 plus 2-bit E8P cache
+  engineering check on the current simulator, recording a passing 8-bit
+  endpoint. The previous 2.188-bpv/4.652x run predates tier ageing and the
+  corrected 8-bit scale encoder, so it is provisional and must not be promoted;
+- [ ] replace token bootstrap with prompt/document-cluster resampling, then run
+  a cache promotion protocol with at least 20 prompts and 10,000 continuation
+  tokens per arm. Compare Gaussian K2/K3 controls and E8P at exact deployed
+  bytes against one fixed FP16 full-cache teacher;
 - [ ] add a fixed-FP16-teacher long-context collector so combined W4/W4A8 plus
   E8 systems are measured end to end rather than only against each arm's own
   full-cache teacher;

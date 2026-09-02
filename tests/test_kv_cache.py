@@ -85,6 +85,27 @@ def test_kv_cache_accepts_finite_rate_e8_vector_codes():
     assert packed.dequantize().shape == keys.shape
 
 
+def test_calibrated_kv_cache_counts_its_deployable_codebook():
+    _, keys, _ = _triplet(47, length=6)
+    gaussian_config = KVQuantConfig(
+        bits=3, codebook="gaussian", group_size=64, seed=2)
+    calibrated_config = KVQuantConfig(
+        bits=3, codebook="calibrated", group_size=64, seed=2)
+    gaussian = quantize_kv(
+        keys, build_kv_rotation(128, gaussian_config), gaussian_config)
+    calibrated = quantize_kv(
+        keys, build_kv_rotation(128, calibrated_config), calibrated_config)
+
+    expected_codebook_bytes = (2 ** calibrated_config.bits) * 4
+    assert calibrated.codebook is not None
+    assert calibrated.codebook_storage_bytes == expected_codebook_bytes
+    # Codes and scale metadata have the same shape at the same precision.  The
+    # only storage difference is the calibrated fp32 centroid grid required to
+    # decode the artifact.
+    assert calibrated.packed_state_bytes() == (
+        gaussian.packed_state_bytes() + expected_codebook_bytes)
+
+
 def test_kv_length_correction_targets_self_dot_at_same_rate():
     queries, keys, values = _triplet(9)
     plain = kv_fidelity_metrics(

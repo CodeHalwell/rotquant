@@ -42,8 +42,8 @@ Google Drive.
 | 2026-08-29 | Qwen3.5-4B / MPS | FWHT 4-bit | Same | **18.9015 (+5.9%)** | Promising quality-only fallback result across 200 language layers. |
 | 2026-08-29 | Qwen3.5-4B / CUDA pilot | Source | WikiText-2 subset | 17.8458 | Pilot source reference. |
 | 2026-08-29 | Qwen3.5-4B / CUDA pilot | 4-bit RotQuant + attempted LoRA-QAT | Same | 18.7075 (+4.83%) | Passed 5% quality gate, but LoRA was not retained; this measured RotQuant/block recovery rather than useful LoRA. |
-| 2026-08-30 | Qwen3.5-4B / CUDA joint matrix + matched follow-up | Uniform W4 + frozen mixed 3.25-bpv K/V | WikiText-2, 256, 64 samples, seeds 0/1/2 | **14.5548 mean PPL (+4.71%)** | Passed the matched development release gates at 56.78% estimated weight reduction; worst candidate/control cache-KL ratio was 0.835. |
-| 2026-08-30 | Qwen3.5-4B / exported checkpoints | Pinned source vs joint RotQuant artifact | Exact tensor and snapshot bytes; native value conformance | **59.336% tensor-file reduction** | 200 packed projections, no LoRA, and all native packed codes/scales/rotations verified against the exact producer revision. |
+| 2026-08-30 | Qwen3.5-4B / CUDA joint matrix + matched follow-up | Uniform W4 + frozen mixed 3.25-bpv K/V | WikiText-2, 256, 64 samples, seeds 0/1/2 | **14.5548 mean PPL (+4.71%)** | The weight-only result remains valid; the cache map/gate is withdrawn because its simulator state was shared. |
+| 2026-08-30 | Qwen3.5-4B / exported checkpoints | Pinned source vs joint RotQuant artifact | Exact tensor and snapshot bytes; native value conformance | **58.26% like-for-like loaded-tensor reduction** | The raw 59.336% tensor-file figure included a source-only MTP head that the model did not load. Native code/scale/rotation conformance still passes. |
 
 ### Qwen3.5-4B CUDA trial matrix
 
@@ -749,7 +749,7 @@ the review branch; the planned single-factor ablation must use the fixed
 encoder and the per-member gate before 8-bit scales, sharing or learned
 rotations can be blamed or cleared.
 
-### 2026-09-02 — Unsloth anchor and four-prompt 8k E8 confirmation
+### 2026-09-02 — Unsloth anchor and provisional four-prompt 8k E8 run
 
 The pinned Unsloth comparator and corrected long-context stage completed at
 RotQuant revision `06c1e73eeae97aa0bfae432ea7f10d88fb70817f`. The exact raw
@@ -768,7 +768,7 @@ while its complete 3,584,533,344-byte artifact is 5.35% smaller than RotQuant's
 anchor rather than a formal provider result. See
 `docs/unsloth_qwen35_4b_comparison.md`.
 
-The E8 confirmation used the same four disjoint C4 calls for every arm, each
+The provisional E8 run used the same four disjoint C4 calls for every arm, each
 with 8,192 prefill and 64 continuation tokens. Across 256 evaluated tokens, the
 2-bit E8P cache reached 2.188 effective bpv, 7.313x raw K/V compression, and
 4.652x whole-cache compression after counting 26,738,688 bytes of recurrent
@@ -780,11 +780,15 @@ state. Results were:
 | Promoted W4 | 0.02000 `[0.01621, 0.02449]` | 92.97% `[89.84%, 96.09%]` | 0.03475 |
 | W4A8 | 0.02074 `[0.01727, 0.02452]` | 92.58% `[89.45%, 95.70%]` | 0.02902 |
 
-The expanded W4A8 result is consistent with the earlier 64-token smoke: its KL
+As recorded, the expanded W4A8 result is consistent with the earlier 64-token smoke: its KL
 intervals overlap, while longer context amortizes tiering overhead from 2.371
 to 2.188 effective bpv and raises whole-cache compression from 2.558x to
-4.652x. Retain E8P for the next stage. The three long-context intervals overlap,
-so this run does not select A8 over weight-only W4.
+4.652x. Retain E8P only as a candidate for the next stage. The three
+long-context intervals overlap, so this run does not select A8 over weight-only
+W4. The later validity assessment below supersedes promotion of the compression
+and quality figures: this run predates tier ageing, the 8-bit scale-encoder
+correction and the mandatory endpoint check, and four prompts cannot support a
+reliable interval.
 
 Most importantly, each arm uses its own full-cache version as teacher. These
 numbers isolate cache damage under that arm; they do not measure cumulative

@@ -1,16 +1,18 @@
 # Change report — 2026-09-01 validity review and follow-up
 
-This report records every change made on branch
-`claude/rotquant-validity-review-4rbsp1`, the reason for each change, the
-evidence behind it, what was verified, what is now withdrawn, and what the next
-generations of RotQuant need to improve or implement. It complements
+This report records the changes begun on branch
+`claude/rotquant-validity-review-4rbsp1` and the subsequent validity follow-ups,
+the reason for each change, the evidence behind it, what was verified, what is
+now withdrawn, and what the next generations of RotQuant need to improve or
+implement. It complements
 `docs/scientific_validity_review_2026-09-01.md`, which contains the review
 itself, and `docs/experiment_log.md`, which records the research decision.
 
-Nothing in the packed bitstream, the checkpoint format, the native runtime or
-the released artifacts was changed. The changes are to the evaluation code,
-one quantizer storage path, three calibration-time training details, notebook
-pins, tests, and documents.
+The checkpoint container format, native runtime and released artifacts are not
+changed retroactively. Correcting scale storage does change the numerical
+metadata and weight codes produced for affected future artifacts, and calibrated
+KV caches now carry explicit centroid metadata. The remaining changes are to
+evaluation, calibration-time training, notebook pins, tests and documents.
 
 ---
 
@@ -23,8 +25,10 @@ pins, tests, and documents.
 | KV simulator | `rotquant/eval/kv_cache.py` | Absolute-position tiers: decode writes are no longer their own sequence, sink rows are decided by absolute position, rows are packed once when they leave the recent window. | Previously every decode write stayed fp16 forever, so tiered results were optimistic beyond the recent window. |
 | Quantizer | `rotquant/quantize.py`, `rotquant/_internal.py`, `rotquant/linear.py` | `_encoded_storage_scales` encodes scales exactly once and every path retains that triple; GPTQ snaps lazily refit scales onto the frozen 8-bit grid. | With 8-bit scales, GPTQ assigned codes against per-group-encoded scales but stored row-major-encoded ones (1.1×10⁻³ relative mismatch); other paths re-encoded decoded values, which is not guaranteed idempotent. |
 | Quantizer (PR review follow-up) | `rotquant/quantize.py` | The 8-bit scale encoder divides by the exact fp16 step (subnormal steps allowed, zero step marks a constant block); the GPTQ grid path reuses the retained uint8 codes instead of re-deriving them. | Narrow-range blocks (range < 0.0156, typical for scales ≈ 0.01) had a subnormal step; the clamped divisor pulled every scale toward the block minimum (−18 % mean, −35 % worst on down-projection-like scales; weight NMSE +73 %). Raised as a P1 by the Codex review. |
+| Quantizer (validity follow-up) | `rotquant/quantize.py` | Preserve positive fp16 subnormal scales/offsets and round retained 8-bit affine steps upward when nearest-fp16 rounding under-covers the source maximum. | The exact-step fix left the offset and 16-bit paths clamped to fp16's smallest normal, catastrophically amplifying genuinely tiny layers; a downward-rounded step also clipped the upper endpoint. |
 | KV simulator (PR review follow-up) | `rotquant/eval/kv_cache.py` | Cloning, the shared-storage check and `_cache_tensor_bytes` share one `_iter_cache_tensors` traversal, which includes tensors held on the cache object rather than in a layer. | Codex P2 on the gate-fix head: such state was cloned and checked for sharing but omitted from `non_kv_state_bytes` and both total-cache figures, so a cache keeping state there reported a whole-cache compression ratio that was too favourable. The Qwen3.5 caches measured so far keep it in layers, so no recorded number changes. |
 | KV simulator (PR review follow-up) | `rotquant/eval/kv_cache.py` | With a recent window, every row of a decode write enters the fp16 recent tier and the ageing pass packs it exactly once when it leaves the window; the write pass no longer packs the leading rows of a write itself. | Codex P2 on the second head: a write longer than the recent window (chunked or speculative decode) had its leading rows packed in the write pass and again in the ageing pass, compounding the error. The evaluator decodes one token per step, so no recorded number changes. |
+| KV simulator (validity follow-up) | `rotquant/kv_cache.py`, `rotquant/eval/kv_cache.py` | Fit one calibrated K grid and one calibrated V grid per layer from prefill, reuse them for every write, and include their centroid bytes in cache storage. | Row-at-a-time ageing otherwise fitted and discarded a different codebook per row, which is neither a deployable cache format nor included in the reported bytes. |
 | Audit script (PR review follow-up) | `scripts/audit_publication.py` | `audit_source_checkpoint` derives the MTP head bytes and the loaded-tensor total from the safetensors shard headers and checks them against the manifest; the manifest's own MTP arithmetic is checked always. | Codex P2: a stale declared subtraction with a matching reported percentage would otherwise audit as passing. |
 | Rotation training | `rotquant/train_rotation.py`, `rotquant/patch.py` | `hessian_reconstruction_error` and `select_butterfly_checkpoint_hessian`; `patch_model` gates the Hessian objective against seeded FWHT under the deployed quantizer. | The Hessian objective trained under a proxy (RMS assignment, no GPTQ) and deployed the best proxy step with no packed-versus-FWHT comparison, unlike the activation objective. |
 | Rotation training (PR review follow-up) | `rotquant/train_rotation.py`, `rotquant/patch.py` | Both checkpoint gates take the shared site's member weights and aggregate their numerator and denominator, instead of scoring the concatenation. | Codex P2 on the damping head: `patch_model` packs each sibling projection separately, so a concatenated score fits one calibrated codebook across siblings and lets 8-bit scale blocks straddle their boundaries (measured 7.1e-2 and 6.9e-3 relative difference in the packed weight; identical for 16-bit scales, where per-row quantization makes concatenation equivalent). `configs/qwen35_4b_w4a8_e8_trials_cuda.yaml` sets `share_rotations: true` with `scale_bits: 8` and the Hessian objective, so the rejected bundled arm carried this confound too. |
@@ -165,6 +169,15 @@ the measured path is unchanged;
 `test_chunked_tiered_writes_are_invariant_to_artifact_wide_quantizer_state`
 covers 8-bit scales at two chunk sizes and a calibrated codebook.
 
+**Third follow-up (validity review).** A calibrated grid is model state, not a
+statistic that may be refitted independently for each aged row. The simulator
+now fits one key and one value grid from prefill for every full-attention layer,
+passes those exact objects into all incoming and ageing writes, and charges the
+two fp32 centroid arrays in `packed_kv_bytes`. Gaussian and finite E8 grids stay
+reconstructible from their format identifiers and therefore add no stored
+centroids. Regression tests verify both grid reuse and the exact metadata-byte
+difference from the same-width Gaussian cache.
+
 ### 2.4 Exact code/scale storage (8-bit double quantization)
 
 **What was wrong.** For 8-bit scales the affine grid of each 256-entry block is
@@ -221,13 +234,25 @@ blamed or cleared.
 treating only a zero step (constant block, or a range too small for even a
 subnormal step) specially. `_gptq_with_scale_grid` now receives the retained
 uint8 codes with the grid and uses them directly; refit scales are snapped
-with the same unclamped divisor. No storage layout, dtype or bitstream change.
+with the same unclamped divisor. The storage layout and dtypes are unchanged;
+the numerical metadata/codes change wherever the old encoder was wrong.
 
 **Tests.** `test_eight_bit_encoder_is_accurate_for_narrow_range_blocks`
 (decoded scales within half a step for three narrow distributions) and
 `test_gptq_scale_grid_reuses_retained_codes_for_narrow_range_blocks` (codes and
 decoded scales pass through unchanged without refits and match the stored
 artifact).
+
+**Additional validity follow-up.** The earlier correction fixed the step
+*divisor* but still clamped the fp16 offset and ordinary 16-bit stored scales to
+`torch.finfo(float16).smallest_normal`. That value excludes the representable
+subnormal interval. A real layer with weights around 1e-6 was therefore scaled
+as if it were roughly 6e-5, giving NMSE above 47 with 8-bit scale metadata. The
+storage paths now floor only at IEEE fp16's smallest positive subnormal, 2^-24.
+The retained affine step is rounded toward +infinity when nearest rounding
+would under-cover the maximum, preventing upper-tail clipping. Tests cover
+narrow blocks centred at 1e-5 and 5e-5 and small nonzero layers under both
+8- and 16-bit scale storage; measured NMSE is approximately 0.0109.
 
 ### 2.4c Follow-up from PR review: shard-derived MTP verification (2026-09-02)
 

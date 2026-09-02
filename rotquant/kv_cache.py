@@ -16,7 +16,7 @@ import torch
 import torch.nn.functional as F
 
 from ._internal import group_scales_rms, quantize_groups
-from .codebooks import build_scalar_codebook
+from .codebooks import ScalarCodebook, VectorCodebook, build_scalar_codebook
 from .pack import packed_bytes
 from .quantize import QuantConfig, QuantizedWeight, Quantizer
 from .rotate import ButterflyRotation, RandomizedHadamard, Rotation
@@ -72,6 +72,11 @@ class QuantizedKV:
     qweight: QuantizedWeight | None
     shape: tuple[int, ...]
     rotation: Rotation
+    # A calibrated cache grid is fitted once from the prefill and reused for
+    # every decode write.  It is explicit here because unlike Gaussian/E8 grids
+    # it cannot be reconstructed from the format name alone.
+    codebook: ScalarCodebook | VectorCodebook | None = None
+    codebook_storage_bytes: int = 0
     full_precision_rows: torch.Tensor | None = None
     sink_tokens: int = 0
     recent_window: int = 0
@@ -106,9 +111,9 @@ class QuantizedKV:
         return self.rotation.inverse_activation(tensor) if original_basis else tensor
 
     def packed_state_bytes(self) -> int:
-        size = 0
+        size = self.codebook_storage_bytes
         if self.qweight is not None:
-            size = packed_bytes(self.qweight.packed)
+            size += packed_bytes(self.qweight.packed)
             if self.qweight.scales is not None:
                 size += (self.qweight.scales.numel()
                          * self.qweight.scales.element_size())
@@ -135,7 +140,9 @@ def build_kv_rotation(dim: int, config: KVQuantConfig, *, value: bool = False,
 def quantize_kv(tensor: torch.Tensor, rotation: Rotation,
                 config: KVQuantConfig, *, value: bool = False,
                 sink_tokens: int | None = None,
-                recent_window: int | None = None) -> QuantizedKV:
+                recent_window: int | None = None,
+                codebook: ScalarCodebook | VectorCodebook | None = None,
+                ) -> QuantizedKV:
     if tensor.ndim < 2:
         raise ValueError("KV tensors require at least two dimensions")
     if tensor.shape[-1] != rotation.dim:
@@ -152,16 +159,38 @@ def quantize_kv(tensor: torch.Tensor, rotation: Rotation,
     if recent:
         positions[max(0, sequence - recent):] = True
     mask = positions.repeat(math.prod(tensor.shape[:-2]))
+    quantizer = Quantizer(config.quant_config(value=value), codebook=codebook)
     qweight = None
     if (~mask).any():
-        qweight = Quantizer(config.quant_config(value=value)).quantize_weight(
-            rows[~mask])
+        qweight = quantizer.quantize_weight(rows[~mask])
+    elif codebook is None and config.codebook.lower() in {
+        "calibrated", "empirical", "weight_calibrated"
+    }:
+        # Even an all-fp16 prefill must establish the one grid later packed
+        # decode rows will use.  Fit it to the available prefill distribution;
+        # the temporary codes are discarded, but the centroids are retained.
+        quantizer.quantize_weight(rows)
+    resolved_codebook = (
+        qweight.codebook if qweight is not None else quantizer.codebook
+    )
+    codebook_storage_bytes = 0
+    if config.codebook.lower() in {
+        "calibrated", "empirical", "weight_calibrated"
+    }:
+        if resolved_codebook is None:
+            raise RuntimeError("calibrated KV quantization did not fit a codebook")
+        codebook_storage_bytes = (
+            resolved_codebook.centroids.numel()
+            * resolved_codebook.centroids.element_size()
+        )
     full_precision_rows = (
         rows[mask].to(torch.float16).contiguous() if mask.any() else None)
     return QuantizedKV(
         qweight=qweight,
         shape=tuple(tensor.shape),
         rotation=rotation,
+        codebook=resolved_codebook,
+        codebook_storage_bytes=codebook_storage_bytes,
         full_precision_rows=full_precision_rows,
         sink_tokens=sinks,
         recent_window=recent,

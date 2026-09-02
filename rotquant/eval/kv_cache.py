@@ -263,6 +263,9 @@ def simulate_packed_kv_cache(
     packed_kv_bytes = 0
     full_precision_kv_elements = 0
     rotations: dict[int, tuple[Any, Any]] = {}
+    # Calibrated scalar grids are cache metadata, not per-write fitting state.
+    # Keep the prefill-fitted K/V grid for every later write in that layer.
+    codebooks: dict[int, tuple[Any, Any]] = {}
     # Position tiers are absolute.  ``pending_start`` is the first position
     # still held in fp16 only because it is inside the recent window; rows
     # below it (except the sink prefix) are packed, and rows are re-packed
@@ -304,6 +307,7 @@ def simulate_packed_kv_cache(
         layer.keys = reconstructed_keys
         layer.values = reconstructed_values
         rotations[layer_idx] = (key_rotation, value_rotation)
+        codebooks[layer_idx] = (packed_keys.codebook, packed_values.codebook)
         source_kv_bytes += keys.numel() * keys.element_size()
         source_kv_bytes += values.numel() * values.element_size()
         source_kv_elements += keys.numel() + values.numel()
@@ -332,8 +336,10 @@ def simulate_packed_kv_cache(
         if aged_end <= aged_start:
             return
         plain = replace(layer_config, sink_tokens=0, recent_window=0)
-        for name, rotation, value in (
-            ("keys", pair[0], False), ("values", pair[1], True)
+        layer_codebooks = codebooks[layer_idx]
+        for name, rotation, codebook, value in (
+            ("keys", pair[0], layer_codebooks[0], False),
+            ("values", pair[1], layer_codebooks[1], True),
         ):
             stored = getattr(layer, name)
             # One position at a time.  Packing the whole aged slice at once
@@ -344,7 +350,8 @@ def simulate_packed_kv_cache(
             # once on the measured path.
             for position in range(aged_start, aged_end):
                 row = stored[..., position:position + 1, :]
-                packed = quantize_kv(row, rotation, plain, value=value)
+                packed = quantize_kv(
+                    row, rotation, plain, value=value, codebook=codebook)
                 stored[..., position:position + 1, :] = _reconstruct(packed, row)
         pending_start[layer_idx] = aged_end
 
@@ -355,6 +362,7 @@ def simulate_packed_kv_cache(
                 key_states, value_states, layer_idx, *args, **kwargs)
         selected = ((layer_configs or {}).get(layer_idx, config))
         layer_config = replace(selected, seed=config.seed + 2 * layer_idx)
+        layer_codebooks = codebooks[layer_idx]
         sinks, recent = tiers[layer_idx]
         layer = _self.layers[layer_idx]
         start = int(layer.keys.shape[-2])
@@ -370,10 +378,12 @@ def simulate_packed_kv_cache(
         local_recent = written if recent else 0
         packed_keys = quantize_kv(
             key_states, pair[0], layer_config,
-            sink_tokens=local_sinks, recent_window=local_recent)
+            sink_tokens=local_sinks, recent_window=local_recent,
+            codebook=layer_codebooks[0])
         packed_values = quantize_kv(
             value_states, pair[1], layer_config, value=True,
-            sink_tokens=local_sinks, recent_window=local_recent)
+            sink_tokens=local_sinks, recent_window=local_recent,
+            codebook=layer_codebooks[1])
         key_states = _reconstruct(packed_keys, key_states)
         value_states = _reconstruct(packed_values, value_states)
         result = original_update(
