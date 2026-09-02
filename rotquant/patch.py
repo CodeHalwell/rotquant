@@ -127,6 +127,7 @@ def patch_model(model: nn.Module, cfg: PatchConfig,
                 hessians: Mapping[str, torch.Tensor] | None = None,
                 activations: dict[str, torch.Tensor] | None = None,
                 activation_means: Mapping[str, torch.Tensor] | None = None,
+                hessian_damp_frac: float = 0.0,
                 stats_out: dict | None = None) -> nn.Module:
     """Replace targeted ``nn.Linear`` layers with ``QuantLinear`` in-place.
 
@@ -343,7 +344,8 @@ def patch_model(model: nn.Module, cfg: PatchConfig,
                     activation_mean=(
                         activation_means.get(name)
                         if layer_quant.bias_correction in {"mean", "length_mean"}
-                        else None))
+                        else None),
+                    damp_frac=hessian_damp_frac)
                 stats.update(selection)
                 stats["selection_tokens"] = 0
             train_stats.append(stats)

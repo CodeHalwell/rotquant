@@ -63,6 +63,15 @@ software.
   deployed error is weighted by the centered second moment `H - mu^T mu` rather
   than by `H`, and scoring `H` ranks a component the deployment cancels. Found
   by the Codex review of the follow-up PR.
+- `hessian_reconstruction_error(..., damp_frac=...)` and
+  `patch_model(hessian_damp_frac=...)` remove the ridge that
+  `HessianAccumulator.finalize` folds into `H`, which GPTQ wants for Cholesky
+  stability but which scoring measures as an extra `lambda ||E||^2`.
+  `CalibrationResult.damp_frac` records what was applied. The default 0.0
+  matches `scripts/run_experiment.py`, which damps only inside the GPTQ solver,
+  so no recorded run is affected; measured on synthetic layers the ridge shifts
+  the score by at most 1.009x and reversed no decision in 120 trials, because
+  it inflates numerator and denominator of the ratio together.
 - `ButterflyRotation.enable_sign_training(init_magnitude=...)` and
   `RotationTrainConfig.sign_init_magnitude` (default 0.1): the previous ±1
   logit initialisation could never cross zero under the shipped learning

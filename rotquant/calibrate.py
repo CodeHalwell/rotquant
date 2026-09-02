@@ -57,6 +57,10 @@ class CalibrationResult:
     hessians: Mapping[str, torch.Tensor] = field(default_factory=dict)
     n_samples: dict[str, int] = field(default_factory=dict)
     means: dict[str, torch.Tensor] = field(default_factory=dict)
+    # The ridge finalize() folded into every Hessian.  Consumers that score an
+    # output error rather than solving with H need it to recover the true
+    # second moment; pass it to patch_model as hessian_damp_frac.
+    damp_frac: float = 0.0
 
 
 class DiskHessianStore(Mapping[str, torch.Tensor]):
@@ -170,7 +174,7 @@ def collect_hessians(model: nn.Module, dataloader: Iterable, device,
         for h in handles:
             h.remove()
 
-    result = CalibrationResult()
+    result = CalibrationResult(damp_frac=damp_frac)
     for name, acc in accums.items():
         H = acc.finalize(damp_frac=damp_frac)
         result.hessians[name] = H.to(offload_device) if offload_device else H
@@ -261,7 +265,8 @@ def collect_hessians_streamed(
             len(targets),
         )
     store = disk_store if disk_store is not None else collected
-    return CalibrationResult(hessians=store, n_samples=counts, means=means)
+    return CalibrationResult(hessians=store, n_samples=counts, means=means,
+                             damp_frac=damp_frac)
 
 
 @torch.no_grad()

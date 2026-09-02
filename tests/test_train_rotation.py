@@ -414,3 +414,40 @@ def test_patch_model_passes_the_activation_mean_to_the_hessian_gate():
             assert run(correction) is None, correction
     finally:
         monkey.undo()
+
+
+def test_hessian_error_removes_the_calibration_damping_ridge():
+    """finalize() folds a ridge into H; scoring through it is not the error."""
+    from rotquant.calibrate import HessianAccumulator
+    from rotquant.train_rotation import hessian_reconstruction_error
+
+    torch.manual_seed(3)
+    out, d, n = 16, 32, 4096
+    x = torch.randn(n, d) * torch.linspace(0.5, 2.0, d) + torch.randn(d)
+    weight = torch.randn(out, d) * 0.1
+    quant_cfg = QuantConfig(bits=3, group_size=8, bias_correction="mean")
+    rotation = RandomizedHadamard(d, block=d, seed=1)
+
+    accumulator = HessianAccumulator(d)
+    accumulator.update(x)
+    raw = accumulator.H.clone()
+    mean = accumulator.mean.clone()
+    damp = 0.01
+    damped = accumulator.finalize(damp_frac=damp)
+
+    # Removing the declared ridge recovers the undamped score exactly.
+    undamped = hessian_reconstruction_error(
+        rotation, weight, quant_cfg, raw, mean)
+    recovered = hessian_reconstruction_error(
+        rotation, weight, quant_cfg, damped, mean, damp_frac=damp)
+    assert recovered == pytest.approx(undamped, rel=1e-5)
+
+    # Leaving it in adds a lambda * ||E||^2 term, so the score is not identical.
+    left_in = hessian_reconstruction_error(
+        rotation, weight, quant_cfg, damped, mean)
+    assert left_in != pytest.approx(undamped, rel=1e-9)
+
+    # damp_frac defaults to 0, which is what run_experiment.py collects with.
+    assert hessian_reconstruction_error(
+        rotation, weight, quant_cfg, raw, mean, damp_frac=0.0) == pytest.approx(
+            undamped, rel=1e-9)

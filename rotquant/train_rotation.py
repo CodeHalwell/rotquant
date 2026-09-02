@@ -103,6 +103,7 @@ def hessian_reconstruction_error(rotation: Rotation, weight: torch.Tensor,
                                  quant_cfg: QuantConfig,
                                  hessian: torch.Tensor,
                                  activation_mean: torch.Tensor | None = None,
+                                 damp_frac: float = 0.0,
                                  ) -> float:
     """Hessian-weighted layer-output error of the exact deployed quantizer.
 
@@ -118,6 +119,14 @@ def hessian_reconstruction_error(rotation: Rotation, weight: torch.Tensor,
     rotation cancels.  Omit it for ``none``/``length`` correction, where no
     mean is folded into the bias.  (``length`` needs no special handling: it is
     applied inside ``quantize_weight`` and is already in ``E``.)
+
+    ``damp_frac`` is the value passed to ``collect_hessians``, whose
+    ``finalize`` adds ``damp_frac * mean(diag(H_raw)) * I``.  GPTQ wants that
+    ridge for Cholesky stability, but scoring through it measures
+    ``tr(E Sigma E^T) + lambda ||E||^2`` rather than the deployed error, so it
+    is removed here using ``lambda = damp_frac * mean(diag(H)) / (1 +
+    damp_frac)``.  The default 0.0 matches ``scripts/run_experiment.py``, which
+    damps only inside the GPTQ solver.
     """
     w = weight.detach().to(torch.float32)
     H = hessian.detach().to(device=w.device, dtype=torch.float32)
@@ -132,6 +141,10 @@ def hessian_reconstruction_error(rotation: Rotation, weight: torch.Tensor,
     error = rotation.inverse_activation(rotated - q)
     numerator = (error @ H * error).sum()
     denominator = (w @ H * w).sum()
+    if damp_frac:
+        ridge = damp_frac * torch.diagonal(H).mean() / (1.0 + damp_frac)
+        numerator = numerator - ridge * error.square().sum()
+        denominator = denominator - ridge * w.square().sum()
     if activation_mean is not None:
         mean = activation_mean.detach().reshape(1, w.shape[1]).to(
             device=w.device, dtype=torch.float32)
@@ -149,6 +162,7 @@ def select_butterfly_checkpoint_hessian(rotation: ButterflyRotation,
                                         hessian: torch.Tensor,
                                         min_improvement: float = 0.0,
                                         activation_mean: torch.Tensor | None = None,
+                                        damp_frac: float = 0.0,
                                         ) -> dict[str, Any]:
     """Deployed-quantizer gate for Hessian-objective butterflies.
 
@@ -161,9 +175,9 @@ def select_butterfly_checkpoint_hessian(rotation: ButterflyRotation,
     bias correction, so both arms are scored on the error that survives it.
     """
     reference_error = hessian_reconstruction_error(
-        reference, weight, quant_cfg, hessian, activation_mean)
+        reference, weight, quant_cfg, hessian, activation_mean, damp_frac)
     candidate_error = hessian_reconstruction_error(
-        rotation, weight, quant_cfg, hessian, activation_mean)
+        rotation, weight, quant_cfg, hessian, activation_mean, damp_frac)
     accepted = candidate_error <= reference_error * (1.0 - min_improvement)
     if not accepted:
         rotation.theta.copy_(reference.theta)
