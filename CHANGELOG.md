@@ -43,7 +43,8 @@ software.
   `endpoint_max_kl`, default 0.01). A uniform Gaussian cache at that width is
   evaluated on the held-out calls before any candidate or allocator; a run
   whose endpoint KL exceeds the limit is rejected, because a floor that
-  survives 8-bit codes is not quantization error. The report is stored under
+  survives 8-bit codes is not quantization error. `evaluate_kv_cache` returns
+  the report as `endpoint_check`; a run's result JSON therefore carries it at
   `metrics["kv_cache"]["endpoint_check"]`.
 - Tiered cache simulation now tracks absolute positions: a decode write is no
   longer treated as its own sequence, sink rows are decided by absolute
