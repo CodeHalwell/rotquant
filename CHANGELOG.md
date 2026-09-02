@@ -49,7 +49,11 @@ software.
 - Tiered cache simulation now tracks absolute positions: a decode write is no
   longer treated as its own sequence, sink rows are decided by absolute
   position, and rows are packed exactly once when they leave the recent
-  window (previously every decode write stayed fp16 forever).
+  window (previously every decode write stayed fp16 forever). A write longer
+  than the window (chunked or speculative decode) is packed identically to
+  the same rows written one token at a time; an earlier revision of this
+  change packed such a write's leading rows twice (found by the Codex
+  review).
 - `train_rotation.select_butterfly_checkpoint_hessian` and
   `hessian_reconstruction_error`: the Hessian rotation objective is now gated
   against seeded FWHT under the exact deployed quantizer (including GPTQ), as

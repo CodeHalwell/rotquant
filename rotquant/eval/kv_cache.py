@@ -347,15 +347,20 @@ def simulate_packed_kv_cache(
         start = int(layer.keys.shape[-2])
         written = int(key_states.shape[-2])
         # Only rows whose absolute position falls inside the sink prefix stay
-        # fp16 permanently; the newest ``recent`` rows stay fp16 until they age
-        # out below.  A one-token write is not its own sequence.
+        # fp16 permanently.  With a recent window, every incoming row first
+        # enters the fp16 recent tier (``recent_window=written``) and the
+        # ageing pass below packs each row exactly once when it leaves the
+        # window, so a chunked write is packed identically to the same rows
+        # written one token at a time.  A one-token write is not its own
+        # sequence.
         local_sinks = max(0, min(written, sinks - start))
+        local_recent = written if recent else 0
         packed_keys = quantize_kv(
             key_states, pair[0], layer_config,
-            sink_tokens=local_sinks, recent_window=recent)
+            sink_tokens=local_sinks, recent_window=local_recent)
         packed_values = quantize_kv(
             value_states, pair[1], layer_config, value=True,
-            sink_tokens=local_sinks, recent_window=recent)
+            sink_tokens=local_sinks, recent_window=local_recent)
         key_states = _reconstruct(packed_keys, key_states)
         value_states = _reconstruct(packed_values, value_states)
         result = original_update(

@@ -485,3 +485,62 @@ def test_decode_writes_without_tiers_are_packed_immediately():
     gap = (simulated.layers[0].keys[..., 8, :].float()
            - new_keys[..., 0, :].float()).abs().max().item()
     assert gap > 5e-2
+
+
+def _chunk_and_stepwise(prefill_ids, new_ids, quant):
+    keys, values = (state.half() for state in _states(prefill_ids))
+    chunked, _metrics = simulate_packed_kv_cache(
+        _Cache(keys.clone(), values.clone()), quant)
+    stepwise, _metrics = simulate_packed_kv_cache(
+        _Cache(keys.clone(), values.clone()), quant)
+    new_keys, new_values = (state.half() for state in _states(new_ids))
+    chunked.update(new_keys, new_values, 0)
+    for column in range(new_ids.shape[1]):
+        stepwise.update(new_keys[..., column:column + 1, :],
+                        new_values[..., column:column + 1, :], 0)
+    return chunked, stepwise, new_keys
+
+
+def _row_gap(cache, position: int, reference: torch.Tensor) -> float:
+    return (cache.layers[0].keys[..., position, :].float()
+            - reference.float()).abs().max().item()
+
+
+def test_chunked_tiered_writes_pack_each_row_exactly_once():
+    quant = KVQuantConfig(bits=2, group_size=4, rotation_block=8,
+                          sink_tokens=1, recent_window=2)
+    new_ids = torch.tensor([[9, 10, 11, 12, 13]])
+    chunked, stepwise, new_keys = _chunk_and_stepwise(
+        torch.arange(1, 9).reshape(1, -1), new_ids, quant)
+
+    assert chunked.layers[0].keys.shape[-2] == 13
+    # A five-row write whose first three rows leave the two-row window at
+    # once must produce the same cache as the same rows written one at a time
+    # (each row rotated, held in fp16 and packed exactly once).
+    assert torch.equal(chunked.layers[0].keys, stepwise.layers[0].keys)
+    assert torch.equal(chunked.layers[0].values, stepwise.layers[0].values)
+    # Rows that left the window are packed; rows inside it are exact up to
+    # the fp16 rotation round trip.
+    assert _row_gap(chunked, 8, new_keys[..., 0, :]) > 5e-2
+    assert _row_gap(chunked, 10, new_keys[..., 2, :]) > 5e-2
+    assert _row_gap(chunked, 11, new_keys[..., 3, :]) < 5e-3
+    assert _row_gap(chunked, 12, new_keys[..., 4, :]) < 5e-3
+
+
+def test_chunked_tiered_writes_decide_sinks_by_absolute_position():
+    quant = KVQuantConfig(bits=2, group_size=4, rotation_block=8,
+                          sink_tokens=3, recent_window=2)
+    new_ids = torch.tensor([[3, 4, 5, 6]])
+    # The two-row prefill is shorter than the sink prefix, so the write's
+    # first row (absolute position 2) is a sink and stays exact; position 3
+    # ages out of the window immediately; positions 4 and 5 stay exact.
+    chunked, stepwise, new_keys = _chunk_and_stepwise(
+        torch.arange(1, 3).reshape(1, -1), new_ids, quant)
+
+    assert chunked.layers[0].keys.shape[-2] == 6
+    assert torch.equal(chunked.layers[0].keys, stepwise.layers[0].keys)
+    assert torch.equal(chunked.layers[0].values, stepwise.layers[0].values)
+    assert _row_gap(chunked, 2, new_keys[..., 0, :]) < 5e-3
+    assert _row_gap(chunked, 3, new_keys[..., 1, :]) > 5e-2
+    assert _row_gap(chunked, 4, new_keys[..., 2, :]) < 5e-3
+    assert _row_gap(chunked, 5, new_keys[..., 3, :]) < 5e-3
