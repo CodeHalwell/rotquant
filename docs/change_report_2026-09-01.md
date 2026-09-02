@@ -153,6 +153,18 @@ number changes. `test_chunked_tiered_writes_pack_each_row_exactly_once` and
 multi-row write to produce bit-identical cache tensors to the same rows written
 one token at a time.
 
+**Second follow-up (PR review).** That equivalence held only for 16-bit scales.
+The ageing pass packed the whole aged slice in one `quantize_kv` call, so
+artifact-wide quantizer state -- 8-bit affine scale blocks, a calibrated
+codebook -- was fitted across whichever rows happened to age together, and the
+reconstructed cache depended on how the decode was chunked. Both cache
+configurations in the repository set `scale_bits: 8`, and the first equivalence
+test used the 16-bit default, so it could not see this. Aged positions are now
+packed one at a time, which is exactly what a one-token decode already did, so
+the measured path is unchanged;
+`test_chunked_tiered_writes_are_invariant_to_artifact_wide_quantizer_state`
+covers 8-bit scales at two chunk sizes and a calibrated codebook.
+
 ### 2.4 Exact code/scale storage (8-bit double quantization)
 
 **What was wrong.** For 8-bit scales the affine grid of each 256-entry block is

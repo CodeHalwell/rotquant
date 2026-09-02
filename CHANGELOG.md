@@ -52,8 +52,12 @@ software.
   window (previously every decode write stayed fp16 forever). A write longer
   than the window (chunked or speculative decode) is packed identically to
   the same rows written one token at a time; an earlier revision of this
-  change packed such a write's leading rows twice (found by the Codex
-  review).
+  change packed such a write's leading rows twice, and a later one packed the
+  whole aged slice as a single artifact, so 8-bit scale blocks and a
+  calibrated codebook were fitted across whichever rows happened to age
+  together and the cache depended on chunk size (both found by the Codex
+  review). Aged positions are now packed one at a time, which is what a
+  one-token decode already did.
 - `train_rotation.select_butterfly_checkpoint_hessian` and
   `hessian_reconstruction_error`: the Hessian rotation objective is now gated
   against seeded FWHT under the exact deployed quantizer (including GPTQ), as

@@ -527,6 +527,31 @@ def test_chunked_tiered_writes_pack_each_row_exactly_once():
     assert _row_gap(chunked, 12, new_keys[..., 4, :]) < 5e-3
 
 
+def test_chunked_tiered_writes_are_invariant_to_artifact_wide_quantizer_state():
+    """Ageing must not group rows by how the decode happened to be chunked.
+
+    8-bit affine scale blocks and a calibrated codebook are fitted across the
+    matrix being packed, so quantizing a whole aged slice at once would make
+    the cache depend on chunk size. The repository's cache configurations use
+    ``scale_bits: 8``, which the 16-bit case above cannot detect.
+    """
+    base = torch.arange(1, 9).reshape(1, -1)
+    for new_ids, overrides in (
+        (torch.tensor([[9, 10, 11, 12, 13]]),
+         {"scale_bits": 8, "scale_quant_group_size": 4}),
+        (torch.tensor([[9, 10, 11, 12, 13, 14, 15, 16, 17]]),
+         {"scale_bits": 8, "scale_quant_group_size": 4}),
+        (torch.tensor([[9, 10, 11, 12, 13]]),
+         {"scale_bits": 8, "scale_quant_group_size": 4,
+          "codebook": "calibrated"}),
+    ):
+        quant = KVQuantConfig(bits=2, group_size=4, rotation_block=8,
+                              sink_tokens=1, recent_window=2, **overrides)
+        chunked, stepwise, _ = _chunk_and_stepwise(base, new_ids, quant)
+        assert torch.equal(chunked.layers[0].keys, stepwise.layers[0].keys), overrides
+        assert torch.equal(
+            chunked.layers[0].values, stepwise.layers[0].values), overrides
+
 def test_chunked_tiered_writes_decide_sinks_by_absolute_position():
     quant = KVQuantConfig(bits=2, group_size=4, rotation_block=8,
                           sink_tokens=3, recent_window=2)

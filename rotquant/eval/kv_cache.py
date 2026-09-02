@@ -336,9 +336,16 @@ def simulate_packed_kv_cache(
             ("keys", pair[0], False), ("values", pair[1], True)
         ):
             stored = getattr(layer, name)
-            rows = stored[..., aged_start:aged_end, :]
-            packed = quantize_kv(rows, rotation, plain, value=value)
-            stored[..., aged_start:aged_end, :] = _reconstruct(packed, rows)
+            # One position at a time.  Packing the whole aged slice at once
+            # would fit artifact-wide state -- 8-bit affine scale blocks, a
+            # calibrated codebook -- across whichever rows happened to age
+            # together, so the cache would depend on how the decode was
+            # chunked.  A one-token decode ages one row, so this loop runs
+            # once on the measured path.
+            for position in range(aged_start, aged_end):
+                row = stored[..., position:position + 1, :]
+                packed = quantize_kv(row, rotation, plain, value=value)
+                stored[..., position:position + 1, :] = _reconstruct(packed, row)
         pending_start[layer_idx] = aged_end
 
     def quantized_update(_self, key_states, value_states, layer_idx, *args, **kwargs):
