@@ -1313,6 +1313,12 @@ def _apply_quantization(cfg: dict[str, Any], model, pcfg: PatchConfig,
         for key in (
             "allocation", "target_bpw", "target_complete_bytes",
             "target_tolerance_fraction", "require_target_match",
+            "allocation_granularity_bytes", "score_checkpoint_interval",
+            "allocation_min_bits",
+            "allocation_max_bits", "protect_top_fraction",
+            "protect_min_bits", "protect_metric",
+            "local_weight", "global_kl_weight", "local_normalization",
+            "score_normalization", "min_proxy_rank_correlation",
         ):
             dynamic_scoring.pop(key, None)
         score_context = {
@@ -1327,6 +1333,7 @@ def _apply_quantization(cfg: dict[str, Any], model, pcfg: PatchConfig,
                 "rotation_storage_dtype": pcfg.rotation_storage_dtype,
                 "include": pcfg.include,
                 "exclude": pcfg.exclude,
+                "adapter": pcfg.adapter,
             },
             "dynamic_scoring": dynamic_scoring,
             "activation_manifest": metrics.get("data_manifest", {}).get(
@@ -1334,6 +1341,9 @@ def _apply_quantization(cfg: dict[str, Any], model, pcfg: PatchConfig,
             ),
             "dynamic_manifest": metrics.get("data_manifest", {}).get(
                 "dynamic_calibration"
+            ),
+            "hessian_manifest": metrics.get("data_manifest", {}).get(
+                "hessian_calibration"
             ),
         }
         score_cache_key = hashlib.sha256(json.dumps(
@@ -1343,6 +1353,8 @@ def _apply_quantization(cfg: dict[str, Any], model, pcfg: PatchConfig,
             pcfg.layer_quant, dynamic_stats = select_dynamic_quantization(
                 model, pcfg,
                 activations=art.dynamic_activations or art.activations,
+                hessians=art.hessians,
+                activation_means=art.activation_means,
                 teacher_calls=art.dynamic_calls,
                 score_cache_key=score_cache_key,
             )

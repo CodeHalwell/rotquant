@@ -1,0 +1,137 @@
+{
+  "schema_version": 1,
+  "protocol": "qwen35-next-stage-v2",
+  "code_revision": "3dbae035f0d8bb603d57bb193cbfa0887e331528",
+  "model": "unsloth/Qwen3.5-4B",
+  "model_revision": "3764fa359b9082ea5a1e4a5e3ac3aaf6e9671636",
+  "validation_status": "ready_for_internal_decision",
+  "raw_file_sha256": {
+    "sign_replication": "fac56874c6c4b15437050b306f7cd85601e2bbcfd63f1c234f9af71b404119c5",
+    "dynamic_screen": "8d86719e3e036e5b5d79b8f1181965d8fc7f0714f194f8825cb05432b2cb3190",
+    "dynamic_finalists": "6ad893078d6dc0656c9c8a2efd857488193f4934a8dec9e2c90426f75dee2742",
+    "unsloth_ud_q4_kl": "cbc8dbdc92d5cb401eb2928e8ada994cdb7f0fd6aa031b32fc17e91e8ad7e273",
+    "validation": "03c433da5b8ae33ee48fff7a4ca81993800ebcc2d2a7e665d1e263dc3f82758f"
+  },
+  "learned_sign_three_seed_means": {
+    "promoted_w4": {
+      "mean_teacher_kl": 0.01705177509025222,
+      "top1_agreement": 0.9330832789736898,
+      "ppl_wikitext2": 9.791425387064615,
+      "ppl_c4": 14.259466489156088,
+      "diverse_mean_teacher_kl": 0.04180849813169079,
+      "diverse_top1_agreement": 0.8924494711488114,
+      "diverse_trajectory_token_agreement": 0.5891666666666667,
+      "complete_persistent_model_bytes": 3787286016
+    },
+    "learned_signs_fp32_w4": {
+      "mean_teacher_kl": 0.016697329875048565,
+      "top1_agreement": 0.9335181561208958,
+      "ppl_wikitext2": 9.669100443522135,
+      "ppl_c4": 14.270813941955566,
+      "diverse_mean_teacher_kl": 0.0425544089454046,
+      "diverse_top1_agreement": 0.8928683631793904,
+      "diverse_trajectory_token_agreement": 0.47375,
+      "complete_persistent_model_bytes": 3798124032
+    },
+    "learned_signs_fp16_w4": {
+      "mean_teacher_kl": 0.01693066539881566,
+      "top1_agreement": 0.931099151989563,
+      "ppl_wikitext2": 9.603130976359049,
+      "ppl_c4": 14.250312487284342,
+      "diverse_mean_teacher_kl": 0.04173472733107621,
+      "diverse_top1_agreement": 0.889726672950047,
+      "diverse_trajectory_token_agreement": 0.5,
+      "complete_persistent_model_bytes": 3792705024
+    }
+  },
+  "dynamic_seed0": {
+    "source_fp16": {
+      "mean_teacher_kl": -9.628970897423288e-10,
+      "top1_agreement": 1.0,
+      "ppl_wikitext2": 9.586260795593262,
+      "ppl_c4": 14.020668983459473,
+      "complete_persistent_model_bytes": 9078531072
+    },
+    "uniform_w3": {
+      "mean_teacher_kl": 0.07376912086521654,
+      "top1_agreement": 0.8595075016307893,
+      "ppl_wikitext2": 10.488499641418457,
+      "ppl_c4": 15.167580604553223,
+      "diverse_mean_teacher_kl": 0.19199492337379373,
+      "diverse_trajectory_token_agreement": 0.255,
+      "complete_persistent_model_bytes": 3314217216
+    },
+    "uniform_scale8_w4": {
+      "mean_teacher_kl": 0.01665437532575474,
+      "top1_agreement": 0.9341976516634051,
+      "ppl_wikitext2": 9.825742721557617,
+      "ppl_c4": 14.268806457519531,
+      "diverse_mean_teacher_kl": 0.04230486811087486,
+      "diverse_trajectory_token_agreement": 0.45625,
+      "complete_persistent_model_bytes": 3759868416
+    },
+    "random_mixed_fwht": {
+      "mean_teacher_kl": 0.11550152667270171,
+      "top1_agreement": 0.8347195042400521,
+      "ppl_wikitext2": 10.862332344055176,
+      "ppl_c4": 15.934511184692383,
+      "diverse_mean_teacher_kl": 0.3069234881579333,
+      "diverse_trajectory_token_agreement": 0.25625,
+      "complete_persistent_model_bytes": 3619301424
+    },
+    "dynamic_mixed_unrotated": {
+      "mean_teacher_kl": 0.20677610230616938,
+      "top1_agreement": 0.7917482061317678,
+      "ppl_wikitext2": 12.989282608032227,
+      "ppl_c4": 17.691614151000977,
+      "diverse_mean_teacher_kl": 0.7344122037848624,
+      "diverse_trajectory_token_agreement": 0.05375,
+      "complete_persistent_model_bytes": 3618527440
+    },
+    "dynamic_mixed_fwht": {
+      "mean_teacher_kl": 0.1381163506902905,
+      "top1_agreement": 0.821836268754077,
+      "ppl_wikitext2": 11.426566123962402,
+      "ppl_c4": 16.27350616455078,
+      "diverse_mean_teacher_kl": 0.3983046887919396,
+      "diverse_trajectory_token_agreement": 0.17375,
+      "complete_persistent_model_bytes": 3620278944
+    },
+    "dynamic_mixed_signs_fp16": {
+      "mean_teacher_kl": 0.13830746347734685,
+      "top1_agreement": 0.8243639921722113,
+      "ppl_wikitext2": 11.173957824707031,
+      "ppl_c4": 16.222251892089844,
+      "diverse_mean_teacher_kl": 0.39150263654185735,
+      "diverse_trajectory_token_agreement": 0.145,
+      "complete_persistent_model_bytes": 3620127296
+    }
+  },
+  "dynamic_selection": {
+    "finalists": [],
+    "confirmation_arms": ["uniform_scale8_w4", "random_mixed_fwht"]
+  },
+  "unsloth_anchor": {
+    "artifact": "Qwen3.5-4B-UD-Q4_K_XL.gguf plus mmproj-F16.gguf",
+    "complete_artifact_bytes": 3584533344,
+    "prompts": 24,
+    "tokens": 12264,
+    "mean_teacher_kl": 0.01188826747238636,
+    "mean_teacher_kl_interval": [0.01145706565967012, 0.012388283856970684],
+    "top1_agreement": 0.9408838878016961,
+    "top1_agreement_interval": [0.9365622961513372, 0.9447977821265493],
+    "nll_delta": 0.010750668449191148
+  },
+  "decision": {
+    "learned_signs": "shelve; small primary-metric movements did not reproduce a trajectory-safe improvement and cost additional bytes",
+    "allocator_v1": "retire; every sensitivity-selected recipe failed the registered selector and the FWHT recipe was worse than the matched random control",
+    "uniform_scale8_w4": "retain as the current RotQuant control",
+    "next": "run allocator v2 with faithful deployed-quantizer scoring, normalized local and marginal-KL distortion, Pareto byte allocation, proxy diagnostics, and automatic sensitive-layer protection"
+  },
+  "limitations": [
+    "The dynamic allocator screen used one seed because no recipe qualified for confirmation.",
+    "The Unsloth and RotQuant input hashes match, but their reference artifacts and inference engines differ; this is a directional anchor rather than an engine-neutral superiority comparison.",
+    "Uniform RotQuant W4 is 4.89% larger than the counted Unsloth artifact, so its direct quality comparison is not at the registered 1% byte match.",
+    "The authored 25-prompt suite is a development diagnostic, not the licensed 300-prompt publication protocol."
+  ]
+}

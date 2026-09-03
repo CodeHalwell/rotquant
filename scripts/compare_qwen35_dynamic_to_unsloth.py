@@ -27,7 +27,8 @@ def _mean(rows: list[dict[str, Any]], key: str) -> float:
 
 
 def compare(summary: dict[str, Any], unsloth: dict[str, Any],
-            arms: list[str], *, byte_tolerance: float = 0.01) -> dict[str, Any]:
+            arms: list[str], *, byte_tolerance: float = 0.01,
+            stage: str = "dynamic") -> dict[str, Any]:
     if not 0 <= byte_tolerance <= 0.25:
         raise ValueError("byte_tolerance must be in [0, 0.25]")
     unsloth_metrics = unsloth.get("metrics") or {}
@@ -40,10 +41,10 @@ def compare(summary: dict[str, Any], unsloth: dict[str, Any],
     for arm in arms:
         rows = [
             row for row in summary.get("rows", [])
-            if row.get("stage") == "dynamic" and row.get("arm") == arm
+            if row.get("stage") == stage and row.get("arm") == arm
         ]
         if not rows:
-            raise ValueError(f"summary contains no dynamic rows for {arm}")
+            raise ValueError(f"summary contains no {stage} rows for {arm}")
         for row in rows:
             if list(row.get("logit_fidelity_input_hashes") or []) != baseline_hashes:
                 raise ValueError(f"{arm}/seed-{row.get('seed')} input hashes differ")
@@ -95,6 +96,7 @@ def compare(summary: dict[str, Any], unsloth: dict[str, Any],
         })
     return {
         "protocol": PROTOCOL,
+        "rotquant_stage": stage,
         "rotquant_code_revision": summary.get("code_revision"),
         "unsloth_collection_fingerprint": unsloth.get("collection_fingerprint"),
         "prompt_manifest_fingerprint": unsloth.get(
@@ -115,6 +117,7 @@ def main() -> None:
     parser.add_argument("--summary", type=Path, required=True)
     parser.add_argument("--unsloth", type=Path, required=True)
     parser.add_argument("--arm", action="append", required=True)
+    parser.add_argument("--stage", default="dynamic")
     parser.add_argument("--byte-tolerance", type=float, default=0.01)
     parser.add_argument("--output", type=Path, required=True)
     args = parser.parse_args()
@@ -123,6 +126,7 @@ def main() -> None:
         json.loads(args.unsloth.read_text(encoding="utf-8")),
         list(dict.fromkeys(args.arm)),
         byte_tolerance=args.byte_tolerance,
+        stage=args.stage,
     )
     write_result(str(args.output), result)
     print(json.dumps(result, indent=2), flush=True)

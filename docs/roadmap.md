@@ -122,9 +122,10 @@ specialized around them:
   global KL/top-1 fail-fast gate; 8-bit scales show a small three-seed KL gain,
   sharing is neutral overall, and learned signs remain the strongest seed-0
   lead but require the dedicated replication below;
-- [ ] run the generated learned-sign replication at seeds 0/1/2, including the
-  fp16-angle-storage arm, on the expanded >10k-token C4 KL slice and authored
-  five-domain development suite;
+- [x] run the learned-sign replication at seeds 0/1/2, including fp16 angle
+  storage, on the expanded C4 and five-domain suites; shelve both learned-sign
+  arms because small KL/PPL movement did not survive the trajectory and byte
+  guards;
 - [ ] repeat the four-prompt 8k/64-token source-W4-W4A8 plus 2-bit E8P cache
   engineering check on the current simulator, recording a passing 8-bit
   endpoint. The previous 2.188-bpv/4.652x run predates tier ageing and the
@@ -141,12 +142,16 @@ specialized around them:
   including 2/3/4/5/6/8-bit candidates, complete persistent-byte accounting,
   a matched random-allocation control, an actual post-pack byte gate, and a
   serialized candidate table;
-- [ ] execute and confirm that allocator on Qwen3.5-4B with the generated
+- [x] execute the first allocator on Qwen3.5-4B with the generated
   [dynamic mixed-precision notebook](../notebooks/qwen35_4b_dynamic_mixed_precision_colab.ipynb);
-  compare standard uniform, standard mixed, uniform RotQuant, mixed RotQuant,
-  and Unsloth artifacts at matched bytes. Uniform W4 remains the control and
-  production default until held-out KL and trajectories prove a mixed W4 win;
-  mixed allocation is mandatory in the W2/W1 design space, while weight,
+  reject every selected recipe because none beat the matched random control;
+  retain uniform W4 as the production control;
+- [ ] execute the faithful second-generation allocator using the
+  [allocator-v2 Colab](../notebooks/qwen35_4b_allocator_v2_colab.ipynb), which
+  scores the deployed MSE-search/GPTQ candidates, audits local/global ranking,
+  solves the exact-byte Pareto problem, protects measured sensitive layers,
+  and resumes its candidate screen from persistent checkpoints; mixed
+  allocation remains mandatory in the W2/W1 design space, while weight,
   activation, and KV precision remain independently gated;
 - [ ] build a pinned, calibration-disjoint 300-prompt/32-token free-running
   divergence suite spanning agentic, code, maths, multilingual, and long-document

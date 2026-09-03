@@ -37,7 +37,7 @@ MIN_RELIABLE_BOOTSTRAP_SAMPLES = 20
 DEFAULT_STAGES = ("w4",)
 REGISTERED_STAGES = (
     "w4", "w4a8", "ablation", "recovery", "long-kv",
-    "signs", "dynamic",
+    "signs", "dynamic", "allocator-v2",
 )
 PAIRED_ARMS = {
     "w4": (
@@ -79,6 +79,15 @@ PAIRED_ARMS = {
         ("dynamic_mixed_fwht", "uniform_scale8_w4"),
         ("dynamic_mixed_signs_fp16", "dynamic_mixed_fwht"),
         ("dynamic_mixed_signs_fp16", "uniform_scale8_w4"),
+    ),
+    "allocator-v2": (
+        ("random_adjacent_w34", "uniform_scale8_w4"),
+        ("pareto_adjacent_local", "random_adjacent_w34"),
+        ("pareto_adjacent_global", "pareto_adjacent_local"),
+        ("pareto_broad_local", "random_adjacent_w34"),
+        ("pareto_broad_global", "pareto_broad_local"),
+        ("pareto_broad_global_protected", "pareto_broad_global"),
+        ("pareto_broad_global_protected", "uniform_scale8_w4"),
     ),
 }
 
@@ -397,6 +406,80 @@ def stage_trials(stage: str) -> tuple[Trial, ...]:
                 },
             ),
         )
+    if stage == "allocator-v2":
+        config = "configs/qwen35_4b_allocator_v2_cuda.yaml"
+        no_protection = {
+            "patch.dynamic.protect_top_fraction": 0.0,
+            "patch.dynamic.protect_min_bits": None,
+        }
+        return (
+            _trial(stage, "source_fp16", config, **{"patch.enabled": False}),
+            _trial(
+                stage, "uniform_w3", config,
+                **{"patch.dynamic": None, "quant.bits": 3},
+            ),
+            _trial(
+                stage, "uniform_scale8_w4", config,
+                **{"patch.dynamic": None, "quant.bits": 4},
+            ),
+            _trial(
+                stage, "random_adjacent_w34", config,
+                **{
+                    "patch.dynamic.allocation": "random",
+                    "patch.dynamic.allocation_min_bits": 3,
+                    "patch.dynamic.allocation_max_bits": 4,
+                    "patch.dynamic.local_weight": 1.0,
+                    "patch.dynamic.global_kl_weight": 0.0,
+                    **no_protection,
+                },
+            ),
+            _trial(
+                stage, "pareto_adjacent_local", config,
+                **{
+                    "patch.dynamic.allocation_min_bits": 3,
+                    "patch.dynamic.allocation_max_bits": 4,
+                    "patch.dynamic.local_weight": 1.0,
+                    "patch.dynamic.global_kl_weight": 0.0,
+                    **no_protection,
+                },
+            ),
+            _trial(
+                stage, "pareto_adjacent_global", config,
+                **{
+                    "patch.dynamic.allocation_min_bits": 3,
+                    "patch.dynamic.allocation_max_bits": 4,
+                    "patch.dynamic.local_weight": 0.25,
+                    "patch.dynamic.global_kl_weight": 1.0,
+                    **no_protection,
+                },
+            ),
+            _trial(
+                stage, "pareto_broad_local", config,
+                **{
+                    "patch.dynamic.local_weight": 1.0,
+                    "patch.dynamic.global_kl_weight": 0.0,
+                    **no_protection,
+                },
+            ),
+            _trial(
+                stage, "pareto_broad_global", config,
+                **{
+                    "patch.dynamic.local_weight": 0.25,
+                    "patch.dynamic.global_kl_weight": 1.0,
+                    **no_protection,
+                },
+            ),
+            _trial(
+                stage, "pareto_broad_global_protected", config,
+                **{
+                    "patch.dynamic.local_weight": 0.25,
+                    "patch.dynamic.global_kl_weight": 1.0,
+                    "patch.dynamic.protect_top_fraction": 0.10,
+                    "patch.dynamic.protect_min_bits": 4,
+                    "patch.dynamic.protect_metric": "global_kl",
+                },
+            ),
+        )
     raise ValueError(f"unknown stage {stage!r}; choose from {REGISTERED_STAGES}")
 
 
@@ -549,6 +632,35 @@ def summarize_results(
             ),
             "dynamic_score_cache_hit": _metric(
                 metrics, "dynamic_quantization", "candidate_score_cache_hit"
+            ),
+            "dynamic_score_cache_source": _metric(
+                metrics, "dynamic_quantization", "candidate_score_cache_source"
+            ),
+            "dynamic_scoring_matches_deployed": _metric(
+                metrics, "dynamic_quantization",
+                "candidate_scoring_matches_deployed",
+            ),
+            "dynamic_proxy_rank_correlation": _metric(
+                metrics, "dynamic_quantization", "score_diagnostics",
+                "local_global_spearman",
+            ),
+            "dynamic_local_monotonicity_violations": _metric(
+                metrics, "dynamic_quantization", "score_diagnostics",
+                "local_monotonicity_violation_fraction",
+            ),
+            "dynamic_global_monotonicity_violations": _metric(
+                metrics, "dynamic_quantization", "score_diagnostics",
+                "global_kl_monotonicity_violation_fraction",
+            ),
+            "dynamic_solver": _metric(
+                metrics, "dynamic_quantization", "solver", "solver"
+            ),
+            "dynamic_protected_layers": (
+                len(_metric(
+                    metrics, "dynamic_quantization", "protected_layers"
+                ) or [])
+                if isinstance(metrics.get("dynamic_quantization"), dict)
+                else None
             ),
             "packed_artifact_bytes": _metric(
                 metrics, "packed_checkpoint", "artifact_bytes"

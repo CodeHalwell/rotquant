@@ -958,6 +958,41 @@ runbook are `notebooks/qwen35_4b_dynamic_mixed_precision_colab.ipynb` and
 This remains a development selector. A public provider claim still requires
 the licensed 300-prompt engine-neutral protocol and task-level outcomes.
 
+### 2026-09-03 — learned signs shelved; allocator v1 rejected
+
+The completed revision `3dbae035f0d8bb603d57bb193cbfa0887e331528`
+bundle is recorded as
+`research/results/qwen35_4b_dynamic_mixed_3dbae035f0d8.json`. Validation found
+no missing records or provenance issues.
+
+Learned butterfly signs did not produce a promotion-worthy three-seed result.
+The fp32-angle arm improved mean KL from 0.017052 to 0.016697 and WikiText-2
+PPL from 9.7914 to 9.6691, but increased complete bytes by 10.84 MB and reduced
+32-token agreement from 58.92% to 47.38%. The fp16-angle arm had similarly
+mixed movement. Both are shelved rather than entering another expensive run.
+
+The original mixed-precision allocator failed its essential negative control.
+At seed 0, its FWHT recipe recorded KL 0.1381 versus 0.1155 for matched random
+allocation and 0.01665 for uniform scale8 W4. The unrotated and learned-sign
+recipes were also rejected; the registered selector produced no finalists.
+This shows that the RMS/no-GPTQ local proxy did not rank the eventual deployed
+MSE-search/GPTQ perturbations reliably.
+
+On the same 24 input hashes, the Unsloth UD-Q4_K_XL directional anchor recorded
+KL 0.011888 and 94.09% top-1 agreement over 12,264 tokens at 3,584,533,344
+counted bytes. Uniform RotQuant W4 recorded KL 0.016654 and 93.42% top-1 at
+3,759,868,416 bytes. These are not an engine-neutral matched-byte claim:
+RotQuant is 4.89% larger and the systems use different source artifacts and
+inference engines.
+
+Allocator v2 replaces the rejected proxy with the exact deployed quantizer,
+activation-relative distortion, marginal teacher KL, robust normalization,
+automatic sensitive-layer protection, and an exact-byte Pareto solver. Its
+candidate table is content-addressed, checkpointed every eight projections,
+and resumable across Colab processes. The design and executable experiment are
+`docs/dynamic_allocator_v2.md` and
+`notebooks/qwen35_4b_allocator_v2_colab.ipynb`.
+
 ## Entry template
 
 For each new run, append:

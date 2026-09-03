@@ -16,9 +16,16 @@ selection stages.
 from __future__ import annotations
 
 import fnmatch
+import hashlib
+import json
+import math
+import os
 import random
-from collections.abc import Sequence
+import statistics
+from collections.abc import Mapping, Sequence
 from dataclasses import asdict, dataclass, replace
+from itertools import pairwise
+from pathlib import Path
 from typing import Any
 
 import torch
@@ -26,6 +33,7 @@ import torch.nn.functional as F
 from torch import nn
 
 from ._internal import cpu_staging_linear, get_parent
+from .adapters import resolve_model_adapter
 from .linear import QuantLinear
 from .patch import commit_rotation_storage, make_rotations
 from .quantize import QuantConfig
@@ -55,18 +63,46 @@ class DynamicQuantConfig:
     require_target_match: bool = False
     max_tokens: int = 32
     local_weight: float = 1.0
-    global_kl_weight: float = 1.0
+    global_kl_weight: float = 0.0
     global_kl_temperature: float = 1.0
     global_kl_batches: int = 0
-    # Candidate importance scoring should be substantially cheaper than the
-    # final GPTQ pack.  These settings change the scoring proxy only; the recipe
-    # retains the base quantizer's exact error compensation and scale strategy.
-    scoring_error_comp: str = "none"
-    scoring_scale: str = "rms"
+    # ``inherit`` scores exactly the quantizer that will be deployed. Cheaper
+    # proxies remain available as explicit experimental controls, but are never
+    # silently substituted for the final pack.
+    scoring_error_comp: str = "inherit"
+    scoring_scale: str = "inherit"
+    # Absolute summed output error is the empirical tr(dW H dW^T). Relative
+    # error is safer when combining heterogeneous projection families. Robust
+    # median normalization puts local error and marginal teacher KL on
+    # commensurable scales before their user weights are applied.
+    local_normalization: str = "relative"
+    score_normalization: str = "median"
     # ``random`` is a matched-budget negative control. It follows a seeded
     # random downgrade order while retaining the exact same candidate formats
-    # and byte accounting as the sensitivity-guided allocator.
-    allocation: str = "greedy"
+    # and byte accounting as the sensitivity-guided allocator. ``pareto`` is a
+    # bucketed multiple-choice knapsack solver; unlike greedy downgrades it can
+    # choose non-adjacent formats and reject dominated candidates globally.
+    allocation: str = "pareto"
+    allocation_granularity_bytes: int = 262_144
+    # Persist an incomplete candidate table periodically when the runner gives
+    # the allocator a content-addressed cache key.  This turns a multi-hour
+    # model screen into resumable work without writing to Drive after every
+    # projection.
+    score_checkpoint_interval: int = 8
+    # Global bounds are allocation-only controls, so a broad 2--8-bit candidate
+    # screen can be reused by conservative adjacent-bit policies.
+    allocation_min_bits: int | None = None
+    allocation_max_bits: int | None = None
+    # Automatically keep the most sensitive fraction of projections at or
+    # above ``protect_min_bits``. Sensitivity is measured from the already
+    # collected final-quantizer candidate table, not from model-name folklore.
+    protect_top_fraction: float = 0.0
+    protect_min_bits: int | None = None
+    protect_metric: str = "global_kl"
+    # Optional fail-closed audit. When both local and marginal-KL measurements
+    # exist, abort allocation if their downgrade rankings correlate less than
+    # this threshold instead of trusting a demonstrably invalid proxy.
+    min_proxy_rank_correlation: float | None = None
     # Each rule is ``{"match": "pattern", "min_bits": 4}``,
     # ``max_bits`` or an exact ``bits`` value. Later rules take precedence.
     rules: tuple[dict[str, Any], ...] = ()
@@ -101,14 +137,87 @@ class DynamicQuantConfig:
             raise ValueError("global_kl_temperature must be > 0")
         if self.global_kl_batches < 0:
             raise ValueError("global_kl_batches must be >= 0")
-        if self.scoring_error_comp not in {"none", "gptq"}:
-            raise ValueError("scoring_error_comp must be 'none' or 'gptq'")
-        if self.scoring_scale not in {"rms", "mse_search", "turboquant"}:
+        if self.global_kl_weight > 0 and self.global_kl_batches == 0:
             raise ValueError(
-                "scoring_scale must be 'rms', 'mse_search', or 'turboquant'"
+                "global_kl_weight > 0 requires global_kl_batches > 0"
             )
-        if self.allocation not in {"greedy", "random"}:
-            raise ValueError("dynamic allocation must be 'greedy' or 'random'")
+        if self.scoring_error_comp not in {"inherit", "none", "gptq"}:
+            raise ValueError(
+                "scoring_error_comp must be 'inherit', 'none', or 'gptq'"
+            )
+        if self.scoring_scale not in {
+            "inherit", "rms", "mse_search", "turboquant"
+        }:
+            raise ValueError(
+                "scoring_scale must be 'inherit', 'rms', 'mse_search', or "
+                "'turboquant'"
+            )
+        if self.local_normalization not in {"absolute", "relative"}:
+            raise ValueError(
+                "local_normalization must be 'absolute' or 'relative'"
+            )
+        if self.score_normalization not in {"none", "median"}:
+            raise ValueError("score_normalization must be 'none' or 'median'")
+        if self.allocation not in {"greedy", "pareto", "random"}:
+            raise ValueError(
+                "dynamic allocation must be 'greedy', 'pareto', or 'random'"
+            )
+        if (
+            isinstance(self.allocation_granularity_bytes, bool)
+            or int(self.allocation_granularity_bytes) < 1
+        ):
+            raise ValueError("allocation_granularity_bytes must be positive")
+        if (
+            isinstance(self.score_checkpoint_interval, bool)
+            or int(self.score_checkpoint_interval) < 1
+        ):
+            raise ValueError("score_checkpoint_interval must be positive")
+        for field_name in ("allocation_min_bits", "allocation_max_bits"):
+            value = getattr(self, field_name)
+            if value is not None and (
+                isinstance(value, bool) or int(value) not in bits
+            ):
+                raise ValueError(
+                    f"{field_name} must be one of candidate_bits or None"
+                )
+        if (
+            self.allocation_min_bits is not None
+            and self.allocation_max_bits is not None
+            and self.allocation_min_bits > self.allocation_max_bits
+        ):
+            raise ValueError(
+                "allocation_min_bits must not exceed allocation_max_bits"
+            )
+        if not 0.0 <= self.protect_top_fraction <= 1.0:
+            raise ValueError("protect_top_fraction must be in [0, 1]")
+        if self.protect_min_bits is not None and (
+            isinstance(self.protect_min_bits, bool)
+            or int(self.protect_min_bits) not in bits
+        ):
+            raise ValueError("protect_min_bits must be one of candidate_bits")
+        if self.protect_top_fraction and self.protect_min_bits is None:
+            raise ValueError(
+                "protect_top_fraction requires protect_min_bits"
+            )
+        if self.protect_metric not in {
+            "score", "local_error", "local_relative_error", "global_kl"
+        }:
+            raise ValueError("unknown protect_metric")
+        if self.protect_metric == "global_kl" \
+                and self.protect_top_fraction \
+                and self.global_kl_batches == 0:
+            raise ValueError(
+                "global_kl protection requires global_kl_batches > 0"
+            )
+        if self.min_proxy_rank_correlation is not None and not (
+            -1.0 <= float(self.min_proxy_rank_correlation) <= 1.0
+        ):
+            raise ValueError("min_proxy_rank_correlation must be in [-1, 1]")
+        if self.min_proxy_rank_correlation is not None \
+                and self.global_kl_batches == 0:
+            raise ValueError(
+                "min_proxy_rank_correlation requires global_kl_batches > 0"
+            )
         object.__setattr__(self, "rules", tuple(self.rules or ()))
         for rule in self.rules:
             if "match" not in rule:
@@ -129,14 +238,101 @@ class CandidateScore:
     codebook_bytes: int
     complete_bytes: int
     local_error: float
+    reference_energy: float
+    local_relative_error: float
     global_kl: float
     score: float
+    normalized_local: float = 0.0
+    normalized_global_kl: float = 0.0
 
 
 # A stage runner evaluates matched arms in one Python process. Candidate
 # reconstruction scores are source-model facts, so random and greedy allocation
 # may share them when the runner supplies the same content-addressed context.
 _CANDIDATE_SCORE_CACHE: dict[str, dict[str, list[CandidateScore]]] = {}
+_CANDIDATE_CACHE_SCHEMA = 1
+
+
+def _candidate_cache_path(key: str) -> Path | None:
+    root = os.environ.get("ROTQUANT_DYNAMIC_SCORE_CACHE_DIR")
+    if not root:
+        return None
+    digest = hashlib.sha256(key.encode()).hexdigest()
+    return Path(root) / f"candidate-scores-v{_CANDIDATE_CACHE_SCHEMA}-{digest}.json"
+
+
+def _load_candidate_score_cache(
+    key: str,
+) -> dict[str, list[CandidateScore]] | None:
+    path = _candidate_cache_path(key)
+    if path is None or not path.is_file():
+        return None
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+        if (
+            payload.get("schema") != _CANDIDATE_CACHE_SCHEMA
+            or payload.get("key") != key
+        ):
+            return None
+        return {
+            name: [
+                CandidateScore(
+                    bits=int(row["bits"]),
+                    config=QuantConfig(**row["config"]),
+                    packed_bytes=int(row["packed_bytes"]),
+                    registered_bytes=int(row["registered_bytes"]),
+                    codebook_bytes=int(row["codebook_bytes"]),
+                    complete_bytes=int(row["complete_bytes"]),
+                    local_error=float(row["local_error"]),
+                    reference_energy=float(row["reference_energy"]),
+                    local_relative_error=float(row["local_relative_error"]),
+                    global_kl=float(row["global_kl"]),
+                    score=0.0,
+                )
+                for row in rows
+            ]
+            for name, rows in payload["scores"].items()
+        }
+    except (KeyError, OSError, TypeError, ValueError, json.JSONDecodeError) as exc:
+        logger.warning("Ignoring invalid dynamic score cache %s: %s", path, exc)
+        return None
+
+
+def _write_candidate_score_cache(
+    key: str, scores: Mapping[str, Sequence[CandidateScore]]
+) -> None:
+    path = _candidate_cache_path(key)
+    if path is None:
+        return
+    payload = {
+        "schema": _CANDIDATE_CACHE_SCHEMA,
+        "key": key,
+        "scores": {
+            name: [
+                {
+                    "bits": item.bits,
+                    "config": asdict(item.config),
+                    "packed_bytes": item.packed_bytes,
+                    "registered_bytes": item.registered_bytes,
+                    "codebook_bytes": item.codebook_bytes,
+                    "complete_bytes": item.complete_bytes,
+                    "local_error": item.local_error,
+                    "reference_energy": item.reference_energy,
+                    "local_relative_error": item.local_relative_error,
+                    "global_kl": item.global_kl,
+                }
+                for item in items
+            ]
+            for name, items in scores.items()
+        },
+    }
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        temporary = path.with_name(f".{path.name}.{os.getpid()}.tmp")
+        temporary.write_text(json.dumps(payload), encoding="utf-8")
+        temporary.replace(path)
+    except OSError as exc:
+        logger.warning("Could not persist dynamic score cache %s: %s", path, exc)
 
 
 def _matches(name: str, pattern: str) -> bool:
@@ -222,7 +418,8 @@ def teacher_logit_kl(model: nn.Module, calls: Sequence[Any], device,
 
 
 def _local_error(source: nn.Linear, candidate: QuantLinear,
-                 activations: torch.Tensor | None, max_tokens: int) -> float:
+                 activations: torch.Tensor | None,
+                 max_tokens: int) -> tuple[float, float, float]:
     """Expected summed output distortion for one invocation of ``source``.
 
     A per-layer relative mean is not comparable across projections with
@@ -236,17 +433,32 @@ def _local_error(source: nn.Linear, candidate: QuantLinear,
             source.weight.detach().to(device=device, dtype=torch.float32))
         quantized_weight = candidate.qweight.dequantize().float()
         if activations is None:
-            return float(
+            error = float(
                 (quantized_weight - rotated_weight).pow(2).sum().item()
             )
+            energy = float(rotated_weight.pow(2).sum().item())
+            return error, energy, error / max(energy, 1e-30)
         inputs = activations[:max_tokens].to(device=device, dtype=torch.float32)
         rotated_inputs = candidate.act_rotation.rotate_activation(inputs)
-        reference = F.linear(rotated_inputs, rotated_weight)
-        quantized = F.linear(rotated_inputs, quantized_weight)
+        source_bias = (
+            source.bias.detach().to(device=device, dtype=torch.float32)
+            if source.bias is not None else None
+        )
+        candidate_bias = (
+            candidate.bias.detach().to(device=device, dtype=torch.float32)
+            if candidate.bias is not None else None
+        )
+        reference = F.linear(rotated_inputs, rotated_weight, source_bias)
+        quantized = F.linear(rotated_inputs, quantized_weight, candidate_bias)
         token_errors = (quantized - reference).pow(2).reshape(
             -1, reference.shape[-1]
         ).sum(dim=-1)
-        return float(token_errors.mean().item())
+        token_energy = reference.pow(2).reshape(
+            -1, reference.shape[-1]
+        ).sum(dim=-1)
+        error = float(token_errors.mean().item())
+        energy = float(token_energy.mean().item())
+        return error, energy, error / max(energy, 1e-30)
 
 
 def _persistent_registered_tensors(module: nn.Module) -> list[torch.Tensor]:
@@ -290,8 +502,10 @@ def _candidate_codebook_bytes(candidate: QuantLinear) -> int:
     return _tensor_bytes(tuple(unique.values()))
 
 
-def _candidate_linear(source: nn.Linear, quant: QuantConfig, patch_cfg,
-                      seed: int) -> QuantLinear:
+def _candidate_context(source: nn.Linear, patch_cfg, seed: int,
+                       hessian: torch.Tensor | None):
+    """Build one deterministic rotation/Hessian context for every bit width."""
+
     source_device = source.weight.device
     source_dtype = source.weight.dtype
     stage = source_device.type == "mps"
@@ -299,41 +513,109 @@ def _candidate_linear(source: nn.Linear, quant: QuantConfig, patch_cfg,
     weight_rotation, act_rotation = make_rotations(
         work.in_features, patch_cfg, seed, device=work.weight.device)
     commit_rotation_storage(weight_rotation, patch_cfg.rotation_storage_dtype)
+    rotated_hessian = hessian
+    if rotated_hessian is not None:
+        rotated_hessian = rotated_hessian.to(work.weight.device)
+        if patch_cfg.rotation not in ("none", "identity"):
+            from ._internal import rotate_hessian
+            rotated_hessian = rotate_hessian(weight_rotation, rotated_hessian)
+    return (
+        work, weight_rotation, act_rotation, rotated_hessian,
+        source_device, source_dtype, stage,
+    )
+
+
+def _candidate_linear(source: nn.Linear, quant: QuantConfig, context,
+                      activation_mean: torch.Tensor | None) -> QuantLinear:
+    (work, weight_rotation, act_rotation, rotated_hessian,
+     source_device, source_dtype, stage) = context
     candidate = QuantLinear.from_linear(
         work, quant, weight_rotation=weight_rotation,
-        act_rotation=act_rotation, fallback=True, fallback_dtype=source_dtype)
+        act_rotation=act_rotation, H=rotated_hessian,
+        fallback=True, fallback_dtype=source_dtype)
+    if quant.bias_correction in {"mean", "length_mean"}:
+        if activation_mean is None:
+            raise ValueError(
+                "faithful dynamic scoring requires an activation mean for "
+                "bias-corrected candidates"
+            )
+        candidate.apply_mean_bias_correction(source.weight, activation_mean)
     if stage:
         candidate.to(device=source_device, dtype=source_dtype)
     return candidate
 
 
-def _score_candidates(model: nn.Module, targets, patch_cfg,
+def _score_candidates(model: nn.Module, targets, adapter, patch_cfg,
                       config: DynamicQuantConfig,
                       activations: dict[str, torch.Tensor],
+                      hessians: Mapping[str, torch.Tensor],
+                      activation_means: Mapping[str, torch.Tensor],
                       teacher_calls: Sequence[Any] | None,
+                      existing_scores: Mapping[
+                          str, Sequence[CandidateScore]
+                      ] | None = None,
+                      checkpoint=None,
                       ) -> dict[str, list[CandidateScore]]:
     device = next(model.parameters()).device
     dtype = next(parameter.dtype for parameter in model.parameters()
                  if parameter.is_floating_point())
     scores: dict[str, list[CandidateScore]] = {}
-    for index, (name, source) in enumerate(targets):
+    scored_since_checkpoint = 0
+    for index, (name, source_module, source) in enumerate(targets):
+        allowed_bits = _allowed_bits(name, config)
+        cached = list((existing_scores or {}).get(name, ()))
+        if (
+            len(cached) == len(allowed_bits)
+            and tuple(sorted(item.bits for item in cached)) == allowed_bits
+        ):
+            scores[name] = sorted(
+                (replace(item) for item in cached), key=lambda item: item.bits
+            )
+            logger.info(
+                "dynamic resume %d/%d %s from candidate-score checkpoint",
+                index + 1, len(targets), name,
+            )
+            continue
         layer_scores = []
-        for bits in _allowed_bits(name, config):
+        source_hessian = hessians.get(name)
+        effective_error_comp = (
+            patch_cfg.quant.error_comp
+            if config.scoring_error_comp == "inherit"
+            else config.scoring_error_comp
+        )
+        if effective_error_comp == "gptq" and source_hessian is None:
+            raise ValueError(
+                f"faithful GPTQ candidate scoring requires a Hessian for {name}"
+            )
+        context = _candidate_context(
+            source, patch_cfg, patch_cfg.seed + index, source_hessian
+        )
+        for bits in allowed_bits:
             quant = replace(patch_cfg.quant, bits=bits)
             scoring_quant = replace(
                 quant,
-                error_comp=config.scoring_error_comp,
-                scale=config.scoring_scale,
+                error_comp=(
+                    quant.error_comp
+                    if config.scoring_error_comp == "inherit"
+                    else config.scoring_error_comp
+                ),
+                scale=(
+                    quant.scale
+                    if config.scoring_scale == "inherit"
+                    else config.scoring_scale
+                ),
             )
             candidate = _candidate_linear(
-                source, scoring_quant, patch_cfg, patch_cfg.seed + index)
-            local = _local_error(
+                source, scoring_quant, context, activation_means.get(name))
+            local, reference_energy, local_relative = _local_error(
                 source, candidate, activations.get(name), config.max_tokens)
             global_kl = 0.0
             if teacher_calls is not None and config.global_kl_batches:
                 parent, attr = get_parent(model, name)
                 original = getattr(parent, attr)
-                setattr(parent, attr, candidate)
+                adapter.replace_quantized_module(
+                    parent, attr, source_module, candidate
+                )
                 try:
                     global_kl = teacher_logit_kl(
                         model, teacher_calls, device, dtype,
@@ -341,8 +623,6 @@ def _score_candidates(model: nn.Module, targets, patch_cfg,
                         max_batches=config.global_kl_batches)
                 finally:
                     setattr(parent, attr, original)
-            score = (config.local_weight * local
-                     + config.global_kl_weight * global_kl)
             registered_bytes = _tensor_bytes(
                 _persistent_registered_tensors(candidate)
             )
@@ -356,8 +636,10 @@ def _score_candidates(model: nn.Module, targets, patch_cfg,
                 codebook_bytes=codebook_bytes,
                 complete_bytes=packed_bytes + registered_bytes + codebook_bytes,
                 local_error=local,
+                reference_energy=reference_energy,
+                local_relative_error=local_relative,
                 global_kl=global_kl,
-                score=score,
+                score=0.0,
             ))
             del candidate
         scores[name] = sorted(layer_scores, key=lambda item: item.bits)
@@ -365,8 +647,375 @@ def _score_candidates(model: nn.Module, targets, patch_cfg,
             "dynamic scored %d/%d %s: %s", index + 1, len(targets), name,
             ", ".join(
                 f"{item.bits}b local={item.local_error:.3g} "
+                f"rel={item.local_relative_error:.3g} "
                 f"kl={item.global_kl:.3g}" for item in scores[name]))
+        scored_since_checkpoint += 1
+        if (
+            checkpoint is not None
+            and scored_since_checkpoint >= config.score_checkpoint_interval
+        ):
+            checkpoint(scores)
+            scored_since_checkpoint = 0
+        del context, source_hessian
+    if checkpoint is not None and scored_since_checkpoint:
+        checkpoint(scores)
     return scores
+
+
+def _clone_candidate_scores(
+    scores: Mapping[str, Sequence[CandidateScore]],
+) -> dict[str, list[CandidateScore]]:
+    """Detach objective-specific fields from the content-addressed raw cache."""
+
+    return {
+        name: [replace(item) for item in items]
+        for name, items in scores.items()
+    }
+
+
+def _median_positive(values: Sequence[float]) -> float:
+    positive = [float(value) for value in values if value > 0 and math.isfinite(value)]
+    return statistics.median(positive) if positive else 1.0
+
+
+def _compose_candidate_scores(
+    scores: Mapping[str, Sequence[CandidateScore]],
+    config: DynamicQuantConfig,
+) -> dict[str, Any]:
+    """Combine raw local and marginal-KL measurements on robust scales.
+
+    Every layer's best measured candidate is its zero point. Subtracting that
+    layer-specific constant does not change the allocation optimum, and avoids
+    charging a format for irreducible source/teacher numerical differences.
+    """
+
+    local_attr = (
+        "local_error"
+        if config.local_normalization == "absolute"
+        else "local_relative_error"
+    )
+    local_penalties: list[float] = []
+    global_penalties: list[float] = []
+    floors: dict[str, tuple[float, float]] = {}
+    for name, items in scores.items():
+        local_floor = min(float(getattr(item, local_attr)) for item in items)
+        global_floor = min(float(item.global_kl) for item in items)
+        floors[name] = (local_floor, global_floor)
+        local_penalties.extend(
+            max(0.0, float(getattr(item, local_attr)) - local_floor)
+            for item in items
+        )
+        global_penalties.extend(
+            max(0.0, float(item.global_kl) - global_floor)
+            for item in items
+        )
+    if config.score_normalization == "median":
+        local_scale = _median_positive(local_penalties)
+        global_scale = _median_positive(global_penalties)
+    else:
+        local_scale = global_scale = 1.0
+    for name, items in scores.items():
+        local_floor, global_floor = floors[name]
+        for item in items:
+            item.normalized_local = max(
+                0.0, float(getattr(item, local_attr)) - local_floor
+            ) / local_scale
+            item.normalized_global_kl = max(
+                0.0, float(item.global_kl) - global_floor
+            ) / global_scale
+            item.score = (
+                config.local_weight * item.normalized_local
+                + config.global_kl_weight * item.normalized_global_kl
+            )
+    return {
+        "local_metric": local_attr,
+        "normalization": config.score_normalization,
+        "local_scale": local_scale,
+        "global_kl_scale": global_scale,
+    }
+
+
+def _rankdata(values: Sequence[float]) -> list[float]:
+    """Return average ranks without requiring SciPy in the core package."""
+
+    ordered = sorted(range(len(values)), key=lambda index: values[index])
+    ranks = [0.0] * len(values)
+    start = 0
+    while start < len(ordered):
+        end = start + 1
+        while end < len(ordered) and values[ordered[end]] == values[ordered[start]]:
+            end += 1
+        rank = (start + end - 1) / 2.0
+        for position in range(start, end):
+            ranks[ordered[position]] = rank
+        start = end
+    return ranks
+
+
+def _pearson(left: Sequence[float], right: Sequence[float]) -> float | None:
+    if len(left) != len(right) or len(left) < 2:
+        return None
+    left_mean = sum(left) / len(left)
+    right_mean = sum(right) / len(right)
+    numerator = sum(
+        (lvalue - left_mean) * (rvalue - right_mean)
+        for lvalue, rvalue in zip(left, right)
+    )
+    left_norm = math.sqrt(sum((value - left_mean) ** 2 for value in left))
+    right_norm = math.sqrt(sum((value - right_mean) ** 2 for value in right))
+    if left_norm == 0 or right_norm == 0:
+        return None
+    return numerator / (left_norm * right_norm)
+
+
+def _score_diagnostics(
+    scores: Mapping[str, Sequence[CandidateScore]],
+    config: DynamicQuantConfig,
+) -> dict[str, Any]:
+    """Audit monotonicity and local/global downgrade-rank agreement."""
+
+    local_attr = (
+        "local_error"
+        if config.local_normalization == "absolute"
+        else "local_relative_error"
+    )
+    local_deltas: list[float] = []
+    global_deltas: list[float] = []
+    local_violations = global_violations = comparisons = 0
+    for items in scores.values():
+        ordered = sorted(items, key=lambda item: item.bits)
+        for lower, higher in pairwise(ordered):
+            lower_local = float(getattr(lower, local_attr))
+            higher_local = float(getattr(higher, local_attr))
+            local_deltas.append(lower_local - higher_local)
+            global_deltas.append(float(lower.global_kl - higher.global_kl))
+            local_violations += int(higher_local > lower_local + 1e-12)
+            global_violations += int(higher.global_kl > lower.global_kl + 1e-12)
+            comparisons += 1
+    correlation = None
+    if config.global_kl_batches and local_deltas:
+        correlation = _pearson(
+            _rankdata(local_deltas), _rankdata(global_deltas)
+        )
+    return {
+        "adjacent_comparisons": comparisons,
+        "local_monotonicity_violation_fraction": (
+            local_violations / comparisons if comparisons else None
+        ),
+        "global_kl_monotonicity_violation_fraction": (
+            global_violations / comparisons
+            if comparisons and config.global_kl_batches else None
+        ),
+        "local_global_spearman": correlation,
+    }
+
+
+def _metric_value(item: CandidateScore, metric: str) -> float:
+    if metric == "score":
+        return float(item.score)
+    return float(getattr(item, metric))
+
+
+def _allocation_candidates(
+    scores: Mapping[str, Sequence[CandidateScore]],
+    config: DynamicQuantConfig,
+) -> tuple[dict[str, list[CandidateScore]], list[dict[str, Any]]]:
+    """Apply allocation-only bounds and measured automatic protection."""
+
+    candidates: dict[str, list[CandidateScore]] = {}
+    for name, items in scores.items():
+        allowed = [
+            item for item in items
+            if (
+                config.allocation_min_bits is None
+                or item.bits >= config.allocation_min_bits
+            ) and (
+                config.allocation_max_bits is None
+                or item.bits <= config.allocation_max_bits
+            )
+        ]
+        if not allowed:
+            raise ValueError(
+                f"allocation bit bounds leave no candidate for {name}"
+            )
+        candidates[name] = allowed
+
+    protected: list[dict[str, Any]] = []
+    count = math.ceil(config.protect_top_fraction * len(candidates))
+    if count:
+        sensitivities = []
+        for order, (name, items) in enumerate(candidates.items()):
+            low = min(items, key=lambda item: item.bits)
+            high = max(items, key=lambda item: item.bits)
+            sensitivity = max(
+                0.0,
+                _metric_value(low, config.protect_metric)
+                - _metric_value(high, config.protect_metric),
+            )
+            sensitivities.append((-sensitivity, order, name, sensitivity))
+        for _negative, _order, name, sensitivity in sorted(sensitivities)[:count]:
+            original = candidates[name]
+            kept = [
+                item for item in original
+                if item.bits >= int(config.protect_min_bits or 0)
+            ]
+            if not kept:
+                raise ValueError(
+                    f"protect_min_bits leaves no candidate for {name}"
+                )
+            candidates[name] = kept
+            protected.append({
+                "name": name,
+                "metric": config.protect_metric,
+                "sensitivity": sensitivity,
+                "min_bits": config.protect_min_bits,
+            })
+    return candidates, protected
+
+
+def _pareto_selection(
+    candidates: Mapping[str, Sequence[CandidateScore]],
+    *,
+    size_attr: str,
+    fixed_bytes: int,
+    target_bytes: int,
+    tolerance_bytes: int,
+    granularity_bytes: int,
+) -> tuple[dict[str, CandidateScore], dict[str, Any]]:
+    """Solve a bucketed multiple-choice rate-distortion problem.
+
+    States are indexed by quantized savings relative to the all-highest-precision
+    recipe. Exact bytes are retained in every state and are used for the final
+    tolerance check; bucketing only bounds search memory.
+    """
+
+    names = list(candidates)
+    highest = {
+        name: max(candidates[name], key=lambda item: item.bits)
+        for name in names
+    }
+    high_total = fixed_bytes + sum(
+        int(getattr(item, size_attr)) for item in highest.values()
+    )
+    positive_steps = [
+        int(getattr(highest[name], size_attr)) - int(getattr(item, size_attr))
+        for name in names
+        for item in candidates[name]
+        if int(getattr(highest[name], size_attr)) > int(getattr(item, size_attr))
+    ]
+    # Unit tests and genuinely small models need exact arithmetic. Large LLMs
+    # retain the configured bounded-memory buckets even when their tensor byte
+    # sizes share a much smaller storage-alignment gcd.
+    if high_total <= 64 * granularity_bytes and positive_steps:
+        exact_granularity = positive_steps[0]
+        for step in positive_steps[1:]:
+            exact_granularity = math.gcd(exact_granularity, step)
+        granularity_bytes = max(1, exact_granularity)
+    upper = target_bytes + tolerance_bytes
+    lower = max(0, target_bytes - tolerance_bytes)
+    required_max = max(0, high_total - lower)
+    largest_step = max(
+        (
+            int(getattr(highest[name], size_attr))
+            - min(int(getattr(item, size_attr)) for item in candidates[name])
+        )
+        for name in names
+    )
+    max_units = max(
+        1,
+        math.ceil((required_max + largest_step) / granularity_bytes),
+    )
+    # A coarse bucket can contain several useful paths: the lowest-distortion
+    # state need not have enough exact savings, while the largest-saving state
+    # may be unnecessarily destructive. Retain a small nondominated frontier
+    # instead of collapsing every bucket to one point.
+    states_per_bucket = 4
+    # unit -> [(additive score, exact savings, choice indices), ...]
+    states: dict[int, list[tuple[float, int, tuple[int, ...]]]] = {
+        0: [(0.0, 0, ())]
+    }
+    peak_states = 1
+    for name in names:
+        high_size = int(getattr(highest[name], size_attr))
+        layer = list(candidates[name])
+        proposed: dict[int, list[tuple[float, int, tuple[int, ...]]]] = {}
+        for bucket_states in states.values():
+            for base_score, base_savings, choices in bucket_states:
+                for index, item in enumerate(layer):
+                    savings = (
+                        base_savings + high_size
+                        - int(getattr(item, size_attr))
+                    )
+                    unit = min(max_units, savings // granularity_bytes)
+                    proposed.setdefault(unit, []).append((
+                        base_score + float(item.score),
+                        savings,
+                        choices + (index,),
+                    ))
+        next_states = {}
+        for unit, bucket_states in proposed.items():
+            # Descending savings makes the best score seen so far the exact
+            # two-objective Pareto dominance test within this byte bucket.
+            frontier = []
+            best_score = math.inf
+            for state in sorted(bucket_states, key=lambda value: (-value[1], value[0])):
+                if state[0] < best_score:
+                    frontier.append(state)
+                    best_score = state[0]
+            if len(frontier) > states_per_bucket:
+                by_score = sorted(frontier, key=lambda value: value[0])
+                by_savings = sorted(frontier, key=lambda value: -value[1])
+                retained = []
+                for state in (*by_score[:2], *by_savings[:2]):
+                    if state not in retained:
+                        retained.append(state)
+                frontier = retained[:states_per_bucket]
+            next_states[unit] = frontier
+        states = next_states
+        peak_states = max(
+            peak_states, sum(len(bucket) for bucket in states.values())
+        )
+
+    feasible = [
+        state for bucket in states.values() for state in bucket
+        if lower <= high_total - state[1] <= upper
+    ]
+    if feasible:
+        chosen = min(
+            feasible,
+            key=lambda state: (
+                state[0], abs((high_total - state[1]) - target_bytes)
+            ),
+        )
+    else:
+        under_budget = [
+            state for bucket in states.values() for state in bucket
+            if high_total - state[1] <= upper
+        ]
+        pool = under_budget or [
+            state for bucket in states.values() for state in bucket
+        ]
+        chosen = min(
+            pool,
+            key=lambda state: (
+                abs((high_total - state[1]) - target_bytes), state[0]
+            ),
+        )
+    selected = {
+        name: list(candidates[name])[index]
+        for name, index in zip(names, chosen[2])
+    }
+    achieved = high_total - chosen[1]
+    return selected, {
+        "solver": "bucketed_multiple_choice_pareto",
+        "granularity_bytes": granularity_bytes,
+        "states_per_bucket": states_per_bucket,
+        "peak_states": peak_states,
+        "additive_score": chosen[0],
+        "search_high_bytes": high_total,
+        "search_achieved_bytes": achieved,
+        "search_within_tolerance": lower <= achieved <= upper,
+    }
 
 
 def select_dynamic_quantization(
@@ -374,47 +1023,108 @@ def select_dynamic_quantization(
     patch_cfg,
     *,
     activations: dict[str, torch.Tensor] | None = None,
+    hessians: Mapping[str, torch.Tensor] | None = None,
+    activation_means: Mapping[str, torch.Tensor] | None = None,
     teacher_calls: Sequence[Any] | None = None,
     score_cache_key: str | None = None,
 ) -> tuple[dict[str, QuantConfig], dict[str, Any]]:
     """Return a per-projection quantizer recipe and serializable diagnostics."""
 
     config = DynamicQuantConfig(**(patch_cfg.dynamic or {}))
+    if config.global_kl_batches and not teacher_calls:
+        raise ValueError(
+            "global_kl_batches requires source-model teacher calls"
+        )
     include = tuple(patch_cfg.include) if patch_cfg.include is not None else None
     exclude = tuple(patch_cfg.exclude or ())
-    targets = [(name, module) for name, module in model.named_modules()
-               if isinstance(module, nn.Linear)
-               and (include is None or any(term in name for term in include))
-               and not any(term in name for term in exclude)]
+    adapter = resolve_model_adapter(model, patch_cfg.adapter)
+    targets = [
+        (name, module, adapter.to_linear(module))
+        for name, module in adapter.iter_quantizable_modules(model)
+        if (include is None or any(term in name for term in include))
+        and not any(term in name for term in exclude)
+    ]
     if not targets:
-        raise ValueError("dynamic quantization found no target linear layers")
-    target_by_name = dict(targets)
-    scores = (
+        raise ValueError(
+            f"dynamic quantization found no targets through adapter={adapter.name}"
+        )
+    target_by_name = {name: linear for name, _module, linear in targets}
+    source_by_name = {name: module for name, module, _linear in targets}
+    raw_scores = (
         _CANDIDATE_SCORE_CACHE.get(score_cache_key)
         if score_cache_key is not None else None
     )
-    score_cache_hit = scores is not None
-    if scores is None:
-        scores = _score_candidates(
-            model, targets, patch_cfg, config, activations or {}, teacher_calls
+    score_cache_source = "memory" if raw_scores is not None else None
+    if raw_scores is None and score_cache_key is not None:
+        raw_scores = _load_candidate_score_cache(score_cache_key)
+        if raw_scores is not None:
+            _CANDIDATE_SCORE_CACHE[score_cache_key] = raw_scores
+            score_cache_source = "disk"
+    score_cache_hit = raw_scores is not None
+    expected_names = set(target_by_name)
+    if raw_scores is not None and not set(raw_scores) <= expected_names:
+        raise ValueError("dynamic candidate score cache target mismatch")
+    complete_cache = raw_scores is not None and all(
+        name in raw_scores
+        and tuple(sorted(item.bits for item in raw_scores[name]))
+        == _allowed_bits(name, config)
+        for name in expected_names
+    )
+    if not complete_cache:
+        partial_count = len(raw_scores or {})
+        if partial_count:
+            logger.info(
+                "Resuming partial dynamic candidate scores for %d/%d layers "
+                "(key=%s)",
+                partial_count, len(targets), score_cache_key,
+            )
+
+        def checkpoint(partial_scores):
+            if score_cache_key is None:
+                return
+            _CANDIDATE_SCORE_CACHE[score_cache_key] = partial_scores
+            _write_candidate_score_cache(score_cache_key, partial_scores)
+
+        raw_scores = _score_candidates(
+            model, targets, adapter, patch_cfg, config,
+            activations or {}, hessians or {}, activation_means or {},
+            teacher_calls,
+            existing_scores=raw_scores,
+            checkpoint=checkpoint if score_cache_key is not None else None,
         )
         if score_cache_key is not None:
-            _CANDIDATE_SCORE_CACHE[score_cache_key] = scores
+            _CANDIDATE_SCORE_CACHE[score_cache_key] = raw_scores
+            _write_candidate_score_cache(score_cache_key, raw_scores)
+        score_cache_source = (
+            "computed-resume" if partial_count else "computed"
+        )
     else:
-        if set(scores) != set(target_by_name):
-            raise ValueError("dynamic candidate score cache target mismatch")
         logger.info(
             "Reusing dynamic candidate scores for %d layers (key=%s)",
-            len(scores), score_cache_key,
+            len(raw_scores), score_cache_key,
         )
 
-    selected = {name: len(items) - 1 for name, items in scores.items()}
+    scores = _clone_candidate_scores(raw_scores)
+    score_composition = _compose_candidate_scores(scores, config)
+    score_diagnostics = _score_diagnostics(scores, config)
+    correlation = score_diagnostics["local_global_spearman"]
+    if config.min_proxy_rank_correlation is not None and (
+        correlation is None
+        or correlation < config.min_proxy_rank_correlation
+    ):
+        raise ValueError(
+            "dynamic local/global proxy correlation gate failed: "
+            f"observed={correlation}, "
+            f"required={config.min_proxy_rank_correlation}"
+        )
+    candidates, protected = _allocation_candidates(scores, config)
     randomizer = random.Random(patch_cfg.seed)
     total_weights = sum(
-        target_by_name[name].weight.numel() for name in selected)
+        target_by_name[name].weight.numel() for name in candidates
+    )
     target_tensor_ids = {
         id(tensor)
-        for _name, module in targets
+        for module in source_by_name.values()
         for tensor in _persistent_registered_tensors(module)
     }
     fixed_tensors = [
@@ -423,75 +1133,90 @@ def select_dynamic_quantization(
     ]
     fixed_complete_bytes = _tensor_bytes(fixed_tensors)
     target_bits = config.target_bpw * total_weights
-
-    def stored_bits() -> int:
-        return sum(scores[name][index].packed_bytes * 8
-                   for name, index in selected.items())
-
-    def selected_complete_bytes() -> int:
-        return fixed_complete_bytes + sum(
-            scores[name][index].complete_bytes
-            for name, index in selected.items()
-        )
-
     if config.target_complete_bytes is not None:
         target_bytes = int(config.target_complete_bytes)
         tolerance_bytes = round(
             target_bytes * config.target_tolerance_fraction
         )
-
-        def over_budget() -> bool:
-            return selected_complete_bytes() > target_bytes + tolerance_bytes
-
-        def move_savings(current: CandidateScore, lower: CandidateScore) -> int:
-            return current.complete_bytes - lower.complete_bytes
+        size_attr = "complete_bytes"
+        fixed_search_bytes = fixed_complete_bytes
     else:
-        target_bytes = None
-        tolerance_bytes = None
+        target_bytes = math.floor(target_bits / 8)
+        tolerance_bytes = 0
+        size_attr = "packed_bytes"
+        fixed_search_bytes = 0
 
-        def over_budget() -> bool:
-            return stored_bits() > target_bits
+    solver_stats: dict[str, Any]
+    if config.allocation == "pareto":
+        selected, solver_stats = _pareto_selection(
+            candidates,
+            size_attr=size_attr,
+            fixed_bytes=fixed_search_bytes,
+            target_bytes=target_bytes,
+            tolerance_bytes=tolerance_bytes,
+            granularity_bytes=config.allocation_granularity_bytes,
+        )
+    else:
+        selected_indices = {
+            name: len(items) - 1 for name, items in candidates.items()
+        }
 
-        def move_savings(current: CandidateScore, lower: CandidateScore) -> int:
-            return current.packed_bytes - lower.packed_bytes
+        def search_bytes() -> int:
+            return fixed_search_bytes + sum(
+                int(getattr(candidates[name][index], size_attr))
+                for name, index in selected_indices.items()
+            )
 
-    # Multiple-choice rate allocation: begin at each tensor's highest allowed
-    # precision, then repeatedly take the least harmful next downgrade per byte.
-    while over_budget():
-        moves = []
-        for order, name in enumerate(selected):
-            index = selected[name]
-            if index == 0:
-                continue
-            current = scores[name][index]
-            lower = scores[name][index - 1]
-            savings = move_savings(current, lower)
-            if savings <= 0:
-                continue
-            penalty = max(0.0, lower.score - current.score)
-            # A deterministic infinitesimal tie-break prefers the larger saving,
-            # then source module order.
-            ratio = penalty / savings
-            key = (ratio, -savings, order)
-            moves.append((key, name))
-        if not moves:
-            break
-        if config.allocation == "random":
-            _, selected_name = randomizer.choice(moves)
-        else:
-            _, selected_name = min(moves)
-        selected[selected_name] -= 1
+        while search_bytes() > target_bytes + tolerance_bytes:
+            moves = []
+            for order, name in enumerate(selected_indices):
+                index = selected_indices[name]
+                if index == 0:
+                    continue
+                current = candidates[name][index]
+                lower = candidates[name][index - 1]
+                savings = int(getattr(current, size_attr)) - int(
+                    getattr(lower, size_attr)
+                )
+                if savings <= 0:
+                    continue
+                penalty = max(0.0, lower.score - current.score)
+                moves.append(((penalty / savings, -savings, order), name))
+            if not moves:
+                break
+            if config.allocation == "random":
+                _, selected_name = randomizer.choice(moves)
+            else:
+                _, selected_name = min(moves)
+            selected_indices[selected_name] -= 1
+        selected = {
+            name: candidates[name][index]
+            for name, index in selected_indices.items()
+        }
+        solver_stats = {
+            "solver": (
+                "seeded_random_adjacent_downgrade"
+                if config.allocation == "random"
+                else "greedy_adjacent_rate_distortion"
+            ),
+            "search_achieved_bytes": search_bytes(),
+            "search_within_tolerance": (
+                abs(search_bytes() - target_bytes) <= tolerance_bytes
+                if config.target_complete_bytes is not None
+                else search_bytes() <= target_bytes
+            ),
+        }
 
-    achieved_bits = stored_bits()
-    achieved_complete_bytes = selected_complete_bytes()
+    achieved_bits = sum(item.packed_bytes * 8 for item in selected.values())
+    achieved_complete_bytes = fixed_complete_bytes + sum(
+        item.complete_bytes for item in selected.values()
+    )
     recipe = {
-        name: scores[name][index].config
-        for name, index in selected.items()
+        name: item.config for name, item in selected.items()
     }
     count_by_bits: dict[str, int] = {}
     details = []
-    for name, index in selected.items():
-        item = scores[name][index]
+    for name, item in selected.items():
         count_by_bits[str(item.bits)] = count_by_bits.get(str(item.bits), 0) + 1
         details.append({
             "name": name,
@@ -501,14 +1226,32 @@ def select_dynamic_quantization(
             "codebook_bytes": item.codebook_bytes,
             "complete_bytes": item.complete_bytes,
             "local_error": item.local_error,
+            "reference_energy": item.reference_energy,
+            "local_relative_error": item.local_relative_error,
             "global_kl": item.global_kl,
+            "normalized_local": item.normalized_local,
+            "normalized_global_kl": item.normalized_global_kl,
             "score": item.score,
         })
+    eligible_ids = {
+        name: {id(item) for item in items}
+        for name, items in candidates.items()
+    }
     stats = {
         "config": asdict(config),
+        "adapter": adapter.name,
         "candidate_score_cache_key": score_cache_key,
         "candidate_score_cache_hit": score_cache_hit,
+        "candidate_score_cache_source": score_cache_source,
         "layers": len(targets),
+        "candidate_scoring_matches_deployed": (
+            config.scoring_error_comp == "inherit"
+            and config.scoring_scale == "inherit"
+        ),
+        "score_composition": score_composition,
+        "score_diagnostics": score_diagnostics,
+        "protected_layers": protected,
+        "solver": solver_stats,
         "target_bpw": config.target_bpw,
         "achieved_bpw": achieved_bits / total_weights,
         "target_reached": (
@@ -521,14 +1264,16 @@ def select_dynamic_quantization(
         "fixed_complete_bytes": fixed_complete_bytes,
         "estimated_complete_bytes": achieved_complete_bytes,
         "target_complete_bytes": config.target_complete_bytes,
-        "target_tolerance_bytes": tolerance_bytes,
+        "target_tolerance_bytes": (
+            tolerance_bytes if config.target_complete_bytes is not None else None
+        ),
         "target_error_bytes": (
             achieved_complete_bytes - int(config.target_complete_bytes)
             if config.target_complete_bytes is not None else None
         ),
         "within_target_tolerance": (
             abs(achieved_complete_bytes - int(config.target_complete_bytes))
-            <= int(tolerance_bytes or 0)
+            <= int(tolerance_bytes)
             if config.target_complete_bytes is not None else None
         ),
         "weights": total_weights,
@@ -543,12 +1288,17 @@ def select_dynamic_quantization(
                 "codebook_bytes": item.codebook_bytes,
                 "complete_bytes": item.complete_bytes,
                 "local_error": item.local_error,
+                "reference_energy": item.reference_energy,
+                "local_relative_error": item.local_relative_error,
                 "global_kl": item.global_kl,
+                "normalized_local": item.normalized_local,
+                "normalized_global_kl": item.normalized_global_kl,
                 "score": item.score,
-                "selected": selected[name] == index,
+                "eligible": id(item) in eligible_ids[name],
+                "selected": selected[name] is item,
             }
             for name, items in scores.items()
-            for index, item in enumerate(items)
+            for item in items
         ],
     }
     logger.info(

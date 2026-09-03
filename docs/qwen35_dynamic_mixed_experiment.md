@@ -65,6 +65,22 @@ trajectory comparison. They are authored development diagnostics, not the
 registered licensed 300-prompt suite. A successful run can select the next
 RotQuant recipe, but cannot by itself support a public Dynamic 3.0 parity claim.
 
+## Completed outcome
+
+Revision `3dbae035f0d8bb603d57bb193cbfa0887e331528` completed this
+runbook. Learned signs showed small, inconsistent KL/PPL gains but regressed
+the trajectory guard and increased bytes, so they are shelved. More
+importantly, all three sensitivity-allocated recipes failed selection: the
+FWHT recipe's mean KL was 0.1381 versus 0.1155 for the matched random recipe
+and 0.01665 for uniform scale8 W4. No mixed finalist advanced.
+
+Do not rerun this allocator as a promotion experiment. Its useful role is now
+historical negative-control evidence. The successor is
+`notebooks/qwen35_4b_allocator_v2_colab.ipynb`, documented in
+`docs/dynamic_allocator_v2.md`; it scores the actual deployed quantizer and
+uses a constrained Pareto allocator with proxy audits and resumable candidate
+checkpoints.
+
 ## Local structural validation
 
 The A100 work cannot be reproduced on a CPU laptop, but the complete plan and

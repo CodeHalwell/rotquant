@@ -29,6 +29,14 @@ software.
   persistent token caches, multi-suite/domain fidelity metrics, three-seed
   finalist selection, packed export, and same-input Unsloth comparison in a
   resumable Colab notebook.
+- Dynamic allocator v2: model-adapter projection discovery, faithful
+  MSE-search/GPTQ candidate scoring, activation-relative and marginal-logit
+  distortion, robust score normalization, a bucketed multiple-choice Pareto
+  solver with exact final byte checks, measured sensitive-layer protection,
+  proxy-rank diagnostics, and a persistent partial candidate-score cache.
+- A generated Qwen3.5-4B allocator-v2 Colab, registered seed-0 finalist
+  selector, and compact content-addressed result record for the completed
+  learned-sign/dynamic-mixed experiment.
 
 ### Changed
 

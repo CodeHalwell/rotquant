@@ -1,13 +1,19 @@
 """Dynamic mixed-precision selection and teacher-logit fidelity metrics."""
+import json
 from dataclasses import replace
 from types import SimpleNamespace
 
+import pytest
 import torch
 from torch import nn
 
 from rotquant.block_train import TeacherCall
 from rotquant.dynamic import (
+    CandidateScore,
     DynamicQuantConfig,
+    _allocation_candidates,
+    _compose_candidate_scores,
+    _pareto_selection,
     select_dynamic_quantization,
     teacher_logit_kl,
 )
@@ -72,6 +78,13 @@ def test_dynamic_config_validation_and_rule_selection():
     patch_model(model, patch_cfg)
     assert model.layers[0].qweight.packed.bits == 4
     assert model.layers[1].qweight.packed.bits == 3
+
+
+def test_dynamic_config_requires_real_global_measurements():
+    with pytest.raises(ValueError, match="global_kl_batches"):
+        DynamicQuantConfig(global_kl_weight=1.0, global_kl_batches=0)
+    with pytest.raises(ValueError, match="protect_min_bits"):
+        DynamicQuantConfig(protect_top_fraction=0.1)
 
 
 def test_teacher_logit_kl_is_zero_for_source_and_positive_after_perturbation():
@@ -247,3 +260,185 @@ def test_candidate_score_cache_reuses_screen_but_not_allocation(monkeypatch):
     assert calls["count"] == 1
     assert first["candidate_score_cache_hit"] is False
     assert second["candidate_score_cache_hit"] is True
+
+
+def test_candidate_score_cache_survives_process_memory_reset(tmp_path, monkeypatch):
+    import rotquant.dynamic as dynamic_module
+
+    monkeypatch.setenv("ROTQUANT_DYNAMIC_SCORE_CACHE_DIR", str(tmp_path))
+    dynamic_module._CANDIDATE_SCORE_CACHE.clear()
+    torch.manual_seed(11)
+    model = TinyLM().eval()
+    patch_cfg = _patch_cfg(
+        candidate_bits=[3, 4], target_bpw=3.5, global_kl_weight=0.0
+    )
+    _, first = select_dynamic_quantization(
+        model, patch_cfg, score_cache_key="persistent-source-context"
+    )
+    assert first["candidate_score_cache_source"] == "computed"
+    assert len(list(tmp_path.glob("candidate-scores-v1-*.json"))) == 1
+
+    dynamic_module._CANDIDATE_SCORE_CACHE.clear()
+    _, second = select_dynamic_quantization(
+        model, patch_cfg, score_cache_key="persistent-source-context"
+    )
+    assert second["candidate_score_cache_hit"] is True
+    assert second["candidate_score_cache_source"] == "disk"
+
+
+def test_candidate_score_cache_resumes_an_incomplete_layer_screen(
+    tmp_path, monkeypatch
+):
+    import rotquant.dynamic as dynamic_module
+
+    monkeypatch.setenv("ROTQUANT_DYNAMIC_SCORE_CACHE_DIR", str(tmp_path))
+    dynamic_module._CANDIDATE_SCORE_CACHE.clear()
+    torch.manual_seed(12)
+    patch_cfg = _patch_cfg(
+        candidate_bits=[3, 4], target_bpw=3.5,
+        global_kl_weight=0.0, score_checkpoint_interval=1,
+    )
+    model = TinyLM().eval()
+    select_dynamic_quantization(
+        model, patch_cfg, score_cache_key="partial-source-context"
+    )
+    cache_path = next(tmp_path.glob("candidate-scores-v1-*.json"))
+    payload = json.loads(cache_path.read_text(encoding="utf-8"))
+    payload["scores"].pop("layers.1")
+    cache_path.write_text(json.dumps(payload), encoding="utf-8")
+
+    dynamic_module._CANDIDATE_SCORE_CACHE.clear()
+    _recipe, resumed = select_dynamic_quantization(
+        model, patch_cfg, score_cache_key="partial-source-context"
+    )
+    assert resumed["candidate_score_cache_hit"] is True
+    assert resumed["candidate_score_cache_source"] == "computed-resume"
+    assert len(resumed["candidate_table"]) == 4
+    completed = json.loads(cache_path.read_text(encoding="utf-8"))
+    assert set(completed["scores"]) == {"layers.0", "layers.1"}
+
+
+def test_faithful_gptq_scoring_uses_hessians_and_records_relative_error():
+    torch.manual_seed(10)
+    model = TinyLM().eval()
+    patch_cfg = PatchConfig(
+        quant=QuantConfig(
+            bits=4, scale="mse_search", group_size=16,
+            error_comp="gptq", gptq_block=16,
+        ),
+        rotation="none",
+        block=16,
+        include=("layers.",),
+        exclude=(),
+        dynamic={
+            "candidate_bits": [3, 4],
+            "target_bpw": 4.5,
+            "scoring_error_comp": "inherit",
+            "scoring_scale": "inherit",
+            "global_kl_weight": 0.0,
+        },
+    )
+    activations = {
+        "layers.0": torch.randn(32, 16),
+        "layers.1": torch.randn(32, 16),
+    }
+    hessians = {
+        name: values.T.float() @ values.float() / values.shape[0]
+        for name, values in activations.items()
+    }
+    recipe, stats = select_dynamic_quantization(
+        model, patch_cfg, activations=activations, hessians=hessians
+    )
+    assert set(recipe) == {"layers.0", "layers.1"}
+    assert stats["candidate_scoring_matches_deployed"] is True
+    assert stats["score_composition"]["local_metric"] == "local_relative_error"
+    assert stats["solver"]["solver"] == "bucketed_multiple_choice_pareto"
+    for row in stats["candidate_table"]:
+        assert row["reference_energy"] > 0
+        assert row["local_relative_error"] >= 0
+        assert row["normalized_local"] >= 0
+
+    missing = TinyLM().eval()
+    with pytest.raises(ValueError, match="requires a Hessian"):
+        select_dynamic_quantization(missing, patch_cfg, activations=activations)
+
+
+def _synthetic_candidate(name: str, bits: int, size: int,
+                         local: float, kl: float) -> CandidateScore:
+    del name
+    return CandidateScore(
+        bits=bits,
+        config=QuantConfig(bits=bits, scale="rms", group_size=16),
+        packed_bytes=size,
+        registered_bytes=0,
+        codebook_bytes=0,
+        complete_bytes=size,
+        local_error=local,
+        reference_energy=1.0,
+        local_relative_error=local,
+        global_kl=kl,
+        score=0.0,
+    )
+
+
+def test_pareto_solver_and_measured_protection_choose_global_recipe():
+    scores = {
+        "sensitive": [
+            _synthetic_candidate("sensitive", 2, 20, 10.0, 20.0),
+            _synthetic_candidate("sensitive", 4, 40, 1.0, 1.0),
+        ],
+        "robust": [
+            _synthetic_candidate("robust", 2, 20, 2.0, 2.0),
+            _synthetic_candidate("robust", 4, 40, 1.0, 1.0),
+        ],
+    }
+    config = DynamicQuantConfig(
+        candidate_bits=(2, 4),
+        target_bpw=3.0,
+        local_weight=0.0,
+        global_kl_weight=1.0,
+        global_kl_batches=1,
+        protect_top_fraction=0.5,
+        protect_min_bits=4,
+        protect_metric="global_kl",
+    )
+    _compose_candidate_scores(scores, config)
+    candidates, protected = _allocation_candidates(scores, config)
+    selected, diagnostics = _pareto_selection(
+        candidates,
+        size_attr="complete_bytes",
+        fixed_bytes=0,
+        target_bytes=60,
+        tolerance_bytes=0,
+        granularity_bytes=1,
+    )
+    assert protected[0]["name"] == "sensitive"
+    assert selected["sensitive"].bits == 4
+    assert selected["robust"].bits == 2
+    assert diagnostics["search_within_tolerance"] is True
+
+
+def test_pareto_solver_retains_cumulative_sub_bucket_savings():
+    candidates = {
+        name: [
+            _synthetic_candidate(name, 2, 6, 2.0, 0.0),
+            _synthetic_candidate(name, 4, 10, 1.0, 0.0),
+        ]
+        for name in (f"layer-{index}" for index in range(100))
+    }
+    config = DynamicQuantConfig(
+        candidate_bits=(2, 4), target_bpw=2.0,
+        local_weight=1.0, global_kl_weight=0.0,
+    )
+    _compose_candidate_scores(candidates, config)
+    selected, diagnostics = _pareto_selection(
+        candidates,
+        size_attr="complete_bytes",
+        fixed_bytes=0,
+        target_bytes=600,
+        tolerance_bytes=0,
+        # Each individual four-byte saving is smaller than this bucket.
+        granularity_bytes=10,
+    )
+    assert {item.bits for item in selected.values()} == {2}
+    assert diagnostics["search_achieved_bytes"] == 600

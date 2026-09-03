@@ -101,6 +101,14 @@ teacher-forced tokens. See the
 [runbook](docs/qwen35_dynamic_mixed_experiment.md) for phase boundaries,
 resumption, and the remaining public-claim limitations.
 
+That first mixed allocator failed its matched random-control test. The active
+successor is the
+[allocator-v2 Colab](notebooks/qwen35_4b_allocator_v2_colab.ipynb): it scores
+the exact deployed MSE-search/GPTQ candidates, combines normalized local and
+marginal-logit distortion, solves an exact-byte Pareto allocation, protects
+measured sensitive layers, and persists partial candidate tables for Colab
+resumption. See the [allocator-v2 design](docs/dynamic_allocator_v2.md).
+
 ## Install
 
 ```bash
