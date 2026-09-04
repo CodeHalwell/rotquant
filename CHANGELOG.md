@@ -37,6 +37,12 @@ software.
 - A generated Qwen3.5-4B allocator-v2 Colab, registered seed-0 finalist
   selector, and compact content-addressed result record for the completed
   learned-sign/dynamic-mixed experiment.
+- Dynamic allocator v3: complete exported-artifact byte targets, deterministic
+  exact-byte random Pareto controls, allocation fingerprints, and bounded
+  single/pair exchange refinement over the measured rate-distortion objective.
+- A generated allocator-v3 Colab and fail-closed selection/confirmation tools
+  for binding W6/W8 sensitivity islands, direct three-seed paired random
+  comparisons, duplicate-recipe rejection, and compact result downloads.
 
 ### Changed
 

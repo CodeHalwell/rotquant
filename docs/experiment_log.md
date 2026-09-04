@@ -993,6 +993,39 @@ and resumable across Colab processes. The design and executable experiment are
 `docs/dynamic_allocator_v2.md` and
 `notebooks/qwen35_4b_allocator_v2_colab.ipynb`.
 
+### 2026-09-04 — allocator v2 validated; allocator v3 prepared
+
+The completed revision `2dce3aa4302948d53df3438a046d2d27754835a4`
+bundle is recorded as
+`research/results/qwen35_4b_allocator_v2_2dce3aa43029.json`. All 12 registered
+confirmation rows completed across seeds 0/1/2 with common input hashes and no
+halted evaluations.
+
+The broad global recipe reduced three-seed mean teacher KL from 0.034534 for
+random W3/W4 allocation to 0.025872 at effectively identical registered model
+bytes, a 25.1% reduction. It also improved primary top-1 agreement by 1.26
+points, WikiText-2 PPL by 2.85%, C4 PPL by 0.99%, diverse KL by 24.0%, and
+32-token trajectory agreement by 8.42 points. This validates the global
+allocation signal, not the resulting artifact as a provider-level winner.
+
+Uniform W4 retained better fidelity at 3.71% more registered model bytes. The
+cross-engine Unsloth anchor remained ahead: KL 0.011888 and 94.09% top-1 versus
+0.025872 and 91.62% for RotQuant. The RotQuant export was also 1.57% larger than
+the pinned 3,584,533,344-byte Unsloth bundle, outside the registered 1% gate.
+
+Post-run review found that the two selected finalists had identical bit
+assignments in every seed because the W4 protection floor was non-binding. The
+selector therefore wasted a confirmation slot. The final summary also omitted
+the required direct paired finalist-versus-random interval, and the internal
+byte target failed to reserve serialization/tokenizer overhead.
+
+Allocator v3 is now prepared to correct those defects. It targets the complete
+exported artifact, fingerprints and deduplicates recipes, emits direct paired
+random comparisons, adds exact-byte pair-exchange refinement, and tests
+actually binding W6/W8 islands. Its design and generated notebook are
+`docs/dynamic_allocator_v3.md` and
+`notebooks/qwen35_4b_allocator_v3_colab.ipynb`.
+
 ## Entry template
 
 For each new run, append:

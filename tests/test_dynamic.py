@@ -14,6 +14,7 @@ from rotquant.dynamic import (
     _allocation_candidates,
     _compose_candidate_scores,
     _pareto_selection,
+    _refine_selection,
     select_dynamic_quantization,
     teacher_logit_kl,
 )
@@ -85,6 +86,15 @@ def test_dynamic_config_requires_real_global_measurements():
         DynamicQuantConfig(global_kl_weight=1.0, global_kl_batches=0)
     with pytest.raises(ValueError, match="protect_min_bits"):
         DynamicQuantConfig(protect_top_fraction=0.1)
+    with pytest.raises(ValueError, match="mutually exclusive"):
+        DynamicQuantConfig(
+            target_complete_bytes=100,
+            target_artifact_bytes=120,
+        )
+    with pytest.raises(ValueError, match="requires target_artifact_bytes"):
+        DynamicQuantConfig(artifact_overhead_bytes=20)
+    with pytest.raises(ValueError, match="requires a complete or artifact"):
+        DynamicQuantConfig(require_target_match=True)
 
 
 def test_teacher_logit_kl_is_zero_for_source_and_positive_after_perturbation():
@@ -228,6 +238,78 @@ def test_dynamic_allocator_targets_complete_persistent_bytes():
         centroids = module.qweight.codebook.centroids
         codebook_bytes += centroids.numel() * centroids.element_size()
     assert registered_bytes + packed_bytes + codebook_bytes == target
+
+
+def test_dynamic_allocator_targets_serialized_artifact_bytes():
+    torch.manual_seed(18)
+    activations = {
+        "layers.0": torch.randn(16, 16),
+        "layers.1": torch.randn(16, 16),
+    }
+    probe = TinyLM().eval()
+    probe_cfg = _patch_cfg(
+        candidate_bits=[2, 4], target_bpw=2.0,
+        global_kl_weight=0.0,
+    )
+    _recipe, probe_stats = select_dynamic_quantization(
+        probe, probe_cfg, activations=activations
+    )
+    rows = probe_stats["candidate_table"]
+    high = {row["name"]: row for row in rows if row["bits"] == 4}
+    low = {row["name"]: row for row in rows if row["bits"] == 2}
+    first_name = min(high)
+    model_target = (
+        probe_stats["fixed_complete_bytes"]
+        + sum(row["complete_bytes"] for row in high.values())
+        - (high[first_name]["complete_bytes"] - low[first_name]["complete_bytes"])
+    )
+    overhead = 123
+    artifact_target = model_target + overhead
+
+    model = TinyLM().eval()
+    patch_cfg = _patch_cfg(
+        candidate_bits=[2, 4],
+        target_bpw=4.0,
+        target_artifact_bytes=artifact_target,
+        artifact_overhead_bytes=overhead,
+        target_tolerance_fraction=0.0,
+        require_target_match=True,
+        global_kl_weight=0.0,
+    )
+    recipe, stats = select_dynamic_quantization(
+        model, patch_cfg, activations=activations
+    )
+    assert stats["estimated_complete_bytes"] == model_target
+    assert stats["estimated_artifact_bytes"] == artifact_target
+    assert stats["within_target_tolerance"] is True
+    assert sorted(config.bits for config in recipe.values()) == [2, 4]
+
+
+def test_random_pareto_is_deterministic_and_exact_budget():
+    torch.manual_seed(19)
+    activations = {
+        "layers.0": torch.randn(16, 16),
+        "layers.1": torch.randn(16, 16),
+    }
+    recipes = []
+    for _ in range(2):
+        model = TinyLM().eval()
+        patch_cfg = _patch_cfg(
+            candidate_bits=[2, 4],
+            target_bpw=3.0,
+            global_kl_weight=0.0,
+            allocation="random_pareto",
+            allocation_granularity_bytes=1,
+        )
+        recipe, stats = select_dynamic_quantization(
+            model, patch_cfg, activations=activations
+        )
+        assert stats["target_reached"] is True
+        assert stats["solver"]["solver"] == "seeded_random_multiple_choice_pareto"
+        assert stats["solver"]["search_achieved_bytes"] == 192
+        assert stats["solver"]["search_within_tolerance"] is True
+        recipes.append({name: config.bits for name, config in recipe.items()})
+    assert recipes[0] == recipes[1]
 
 
 def test_candidate_score_cache_reuses_screen_but_not_allocation(monkeypatch):
@@ -442,3 +524,36 @@ def test_pareto_solver_retains_cumulative_sub_bucket_savings():
     )
     assert {item.bits for item in selected.values()} == {2}
     assert diagnostics["search_achieved_bytes"] == 600
+
+
+def test_exact_byte_refinement_can_accept_a_paired_exchange():
+    candidates = {
+        "left": [
+            replace(_synthetic_candidate("left", 2, 40, 0.0, 0.0), score=6.0),
+            replace(_synthetic_candidate("left", 4, 60, 0.0, 0.0), score=5.0),
+        ],
+        "right": [
+            replace(_synthetic_candidate("right", 2, 40, 0.0, 0.0), score=5.0),
+            replace(_synthetic_candidate("right", 4, 60, 0.0, 0.0), score=0.0),
+        ],
+    }
+    initial = {
+        "left": candidates["left"][1],
+        "right": candidates["right"][0],
+    }
+    refined, stats = _refine_selection(
+        candidates,
+        initial,
+        size_attr="complete_bytes",
+        fixed_bytes=0,
+        target_bytes=100,
+        tolerance_bytes=0,
+        max_passes=2,
+    )
+    assert {name: item.bits for name, item in refined.items()} == {
+        "left": 2,
+        "right": 4,
+    }
+    assert stats["applied_passes"] == 1
+    assert stats["score_improvement"] == pytest.approx(4.0)
+    assert stats["within_tolerance"] is True

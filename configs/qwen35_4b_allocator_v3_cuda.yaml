@@ -1,0 +1,98 @@
+# Third-generation Qwen3.5-4B mixed-precision allocator experiment.
+#
+# This keeps allocator-v2's faithful MSE-search/GPTQ candidate measurements,
+# but targets the complete serialized artifact, tightens the byte interval,
+# supports exact-byte exchange refinement, and makes W6/W8 protection binding.
+# The 20.75 MB overhead is deliberately conservative relative to the
+# 20,441,655-byte difference measured in the allocator-v2 seed-0 export.
+experiment: QWEN35_ALLOCATOR_V3_CUDA
+label: qwen35_4b_allocator_v3_cuda
+model: unsloth/Qwen3.5-4B
+model_revision: 3764fa359b9082ea5a1e4a5e3ac3aaf6e9671636
+calib_dataset_revision: 1588ec454efa1a09f29cd18ddd04fe05fc8653a2
+model_loader: multimodal_lm
+device: cuda
+dtype: float16
+seed: 0
+n_calib: 128
+calib_seq_len: 512
+activation_min_documents: 8
+dynamic_teacher_skip: 2048
+hessian_collection: streamed
+hessian_layers_per_pass: 4
+quant:
+  bits: 4
+  codebook: gaussian
+  scale: mse_search
+  scale_bits: 8
+  group_size: 128
+  error_comp: gptq
+  gptq_block: 128
+  gptq_actorder: true
+  gptq_recompute_scales: true
+  bias_correction: none
+patch:
+  rotation: fwht
+  block: 128
+  mode: consistent
+  share_rotations: false
+  fallback: true
+  rotation_storage_dtype: float32
+  include: [model.language_model.layers.]
+  exclude: [linear_attn.in_proj_a, linear_attn.in_proj_b, lm_head, embed_out]
+  dynamic:
+    candidate_bits: [2, 3, 4, 5, 6, 8]
+    target_bpw: 3.5
+    target_artifact_bytes: 3584533344
+    artifact_overhead_bytes: 20750000
+    target_tolerance_fraction: 0.001
+    require_target_match: true
+    max_tokens: 512
+    local_weight: 0.25
+    global_kl_weight: 1.0
+    global_kl_temperature: 1.0
+    global_kl_batches: 2
+    scoring_error_comp: inherit
+    scoring_scale: inherit
+    local_normalization: relative
+    score_normalization: median
+    allocation: pareto
+    allocation_granularity_bytes: 262144
+    refinement_passes: 0
+    score_checkpoint_interval: 8
+    allocation_min_bits: null
+    allocation_max_bits: null
+    protect_top_fraction: 0.0
+    protect_min_bits: null
+    protect_metric: global_kl
+    min_proxy_rank_correlation: null
+eval:
+  perplexity: true
+  ppl_datasets: [wikitext2, c4]
+  ppl:
+    seq_len: 2048
+    max_samples: 32
+  zeroshot: false
+  logit_fidelity:
+    batches: 24
+    prompt_len: 512
+    skip: 4096
+    bootstrap_draws: 4000
+  logit_fidelity_suites:
+    diverse:
+      batches: 25
+      prompt_len: 512
+      prompt_file: research/eval_suites/qwen35_diverse_development_v1.json
+      prompt_field: text
+      bootstrap_draws: 4000
+  fail_fast:
+    mean_teacher_kl_max: 0.25
+    top1_agreement_min: 0.75
+  trajectory_suites:
+    diverse:
+      batches: 25
+      prompt_len: 256
+      new_tokens: 32
+      prompt_file: research/eval_suites/qwen35_diverse_development_v1.json
+      prompt_field: prompt
+      bootstrap_draws: 4000

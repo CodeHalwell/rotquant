@@ -59,6 +59,13 @@ class DynamicQuantConfig:
     # projections plus each candidate's codes, scales, codebook, bias, and
     # rotation state.  This is the mode used for same-size provider comparisons.
     target_complete_bytes: int | None = None
+    # Serialized checkpoints include deterministic framing and required
+    # tokenizer/config files that are not registered model tensors.  For a
+    # provider-size comparison, target the complete exported artifact and
+    # subtract a measured conservative overhead during allocation.  The final
+    # exported artifact remains the authority for the release gate.
+    target_artifact_bytes: int | None = None
+    artifact_overhead_bytes: int = 0
     target_tolerance_fraction: float = 0.01
     require_target_match: bool = False
     max_tokens: int = 32
@@ -84,6 +91,10 @@ class DynamicQuantConfig:
     # choose non-adjacent formats and reject dominated candidates globally.
     allocation: str = "pareto"
     allocation_granularity_bytes: int = 262_144
+    # Optional exact-byte single/pair exchange passes after the bucketed
+    # dynamic program. This repairs bucket-frontier approximation error while
+    # preserving the same additive measured objective and byte interval.
+    refinement_passes: int = 0
     # Persist an incomplete candidate table periodically when the runner gives
     # the allocator a content-addressed cache key.  This turns a multi-hour
     # model screen into resumable work without writing to Drive after every
@@ -114,18 +125,47 @@ class DynamicQuantConfig:
         object.__setattr__(self, "candidate_bits", bits)
         if self.target_bpw <= 0:
             raise ValueError("target_bpw must be > 0")
-        if self.target_complete_bytes is not None and (
-            isinstance(self.target_complete_bytes, bool)
-            or int(self.target_complete_bytes) < 1
+        for field_name in ("target_complete_bytes", "target_artifact_bytes"):
+            value = getattr(self, field_name)
+            if value is not None and (
+                isinstance(value, bool) or int(value) < 1
+            ):
+                raise ValueError(f"{field_name} must be a positive integer")
+        if (
+            self.target_complete_bytes is not None
+            and self.target_artifact_bytes is not None
         ):
-            raise ValueError("target_complete_bytes must be a positive integer")
+            raise ValueError(
+                "target_complete_bytes and target_artifact_bytes are mutually "
+                "exclusive"
+            )
+        if (
+            isinstance(self.artifact_overhead_bytes, bool)
+            or int(self.artifact_overhead_bytes) < 0
+        ):
+            raise ValueError("artifact_overhead_bytes must be non-negative")
+        if self.target_artifact_bytes is None and self.artifact_overhead_bytes:
+            raise ValueError(
+                "artifact_overhead_bytes requires target_artifact_bytes"
+            )
+        if (
+            self.target_artifact_bytes is not None
+            and self.artifact_overhead_bytes >= self.target_artifact_bytes
+        ):
+            raise ValueError(
+                "artifact_overhead_bytes must be smaller than "
+                "target_artifact_bytes"
+            )
         if not 0 <= self.target_tolerance_fraction <= 0.25:
             raise ValueError("target_tolerance_fraction must be in [0, 0.25]")
         if not isinstance(self.require_target_match, bool):
             raise TypeError("require_target_match must be boolean")
-        if self.require_target_match and self.target_complete_bytes is None:
+        if self.require_target_match and (
+            self.target_complete_bytes is None
+            and self.target_artifact_bytes is None
+        ):
             raise ValueError(
-                "require_target_match requires target_complete_bytes"
+                "require_target_match requires a complete or artifact byte target"
             )
         if self.max_tokens < 1:
             raise ValueError("max_tokens must be >= 1")
@@ -158,15 +198,23 @@ class DynamicQuantConfig:
             )
         if self.score_normalization not in {"none", "median"}:
             raise ValueError("score_normalization must be 'none' or 'median'")
-        if self.allocation not in {"greedy", "pareto", "random"}:
+        if self.allocation not in {
+            "greedy", "pareto", "random", "random_pareto"
+        }:
             raise ValueError(
-                "dynamic allocation must be 'greedy', 'pareto', or 'random'"
+                "dynamic allocation must be 'greedy', 'pareto', 'random', "
+                "or 'random_pareto'"
             )
         if (
             isinstance(self.allocation_granularity_bytes, bool)
             or int(self.allocation_granularity_bytes) < 1
         ):
             raise ValueError("allocation_granularity_bytes must be positive")
+        if (
+            isinstance(self.refinement_passes, bool)
+            or int(self.refinement_passes) < 0
+        ):
+            raise ValueError("refinement_passes must be non-negative")
         if (
             isinstance(self.score_checkpoint_interval, bool)
             or int(self.score_checkpoint_interval) < 1
@@ -1018,6 +1066,140 @@ def _pareto_selection(
     }
 
 
+def _refine_selection(
+    candidates: Mapping[str, Sequence[CandidateScore]],
+    selected: Mapping[str, CandidateScore],
+    *,
+    size_attr: str,
+    fixed_bytes: int,
+    target_bytes: int,
+    tolerance_bytes: int,
+    max_passes: int,
+) -> tuple[dict[str, CandidateScore], dict[str, Any]]:
+    """Improve an allocation with exact-byte single and pair exchanges.
+
+    The bucketed dynamic program deliberately keeps a bounded frontier.  This
+    deterministic local search repairs a missed exact-byte combination without
+    pretending to model cross-layer quantization interactions: every accepted
+    move strictly lowers the same measured additive objective and remains in
+    the registered byte interval.
+    """
+
+    current = dict(selected)
+    lower = max(0, target_bytes - tolerance_bytes)
+    upper = target_bytes + tolerance_bytes
+
+    def allocation_bytes() -> int:
+        return fixed_bytes + sum(
+            int(getattr(item, size_attr)) for item in current.values()
+        )
+
+    def allocation_score() -> float:
+        return sum(float(item.score) for item in current.values())
+
+    start_bytes = allocation_bytes()
+    start_score = allocation_score()
+    history: list[dict[str, Any]] = []
+    for pass_index in range(int(max_passes)):
+        base_bytes = allocation_bytes()
+        moves: list[tuple[str, CandidateScore, int, float]] = []
+        for name, items in candidates.items():
+            chosen = current[name]
+            for item in items:
+                if item.bits == chosen.bits:
+                    continue
+                moves.append((
+                    name,
+                    item,
+                    int(getattr(item, size_attr))
+                    - int(getattr(chosen, size_attr)),
+                    float(item.score) - float(chosen.score),
+                ))
+
+        best: tuple[
+            tuple[float, int, int, str, str],
+            tuple[str, CandidateScore],
+            tuple[str, CandidateScore] | None,
+        ] | None = None
+
+        def consider(
+            delta_bytes: int,
+            delta_score: float,
+            first: tuple[str, CandidateScore],
+            second: tuple[str, CandidateScore] | None = None,
+            current_base_bytes: int = base_bytes,
+        ) -> None:
+            nonlocal best
+            achieved = current_base_bytes + delta_bytes
+            if not lower <= achieved <= upper or delta_score >= -1e-12:
+                return
+            names = (
+                first[0]
+                if second is None
+                else "/".join(sorted((first[0], second[0])))
+            )
+            bits = (
+                str(first[1].bits)
+                if second is None
+                else "/".join(map(str, sorted((first[1].bits, second[1].bits))))
+            )
+            key = (
+                delta_score,
+                abs(achieved - target_bytes),
+                1 if second is None else 2,
+                names,
+                bits,
+            )
+            if best is None or key < best[0]:
+                best = (key, first, second)
+
+        for name, item, delta_bytes, delta_score in moves:
+            consider(delta_bytes, delta_score, (name, item))
+        for left_index, left in enumerate(moves):
+            for right in moves[left_index + 1:]:
+                if left[0] == right[0]:
+                    continue
+                consider(
+                    left[2] + right[2],
+                    left[3] + right[3],
+                    (left[0], left[1]),
+                    (right[0], right[1]),
+                )
+        if best is None:
+            break
+        _key, first, second = best
+        changes = []
+        chosen_moves = (first,) if second is None else (first, second)
+        for name, item in chosen_moves:
+            previous = current[name]
+            current[name] = item
+            changes.append({
+                "name": name,
+                "from_bits": previous.bits,
+                "to_bits": item.bits,
+            })
+        history.append({
+            "pass": pass_index + 1,
+            "changes": changes,
+            "bytes": allocation_bytes(),
+            "additive_score": allocation_score(),
+        })
+
+    end_bytes = allocation_bytes()
+    end_score = allocation_score()
+    return current, {
+        "requested_passes": int(max_passes),
+        "applied_passes": len(history),
+        "start_bytes": start_bytes,
+        "end_bytes": end_bytes,
+        "start_additive_score": start_score,
+        "end_additive_score": end_score,
+        "score_improvement": start_score - end_score,
+        "within_tolerance": lower <= end_bytes <= upper,
+        "history": history,
+    }
+
+
 def select_dynamic_quantization(
     model: nn.Module,
     patch_cfg,
@@ -1133,7 +1315,17 @@ def select_dynamic_quantization(
     ]
     fixed_complete_bytes = _tensor_bytes(fixed_tensors)
     target_bits = config.target_bpw * total_weights
-    if config.target_complete_bytes is not None:
+    if config.target_artifact_bytes is not None:
+        artifact_target_bytes = int(config.target_artifact_bytes)
+        target_bytes = (
+            artifact_target_bytes - int(config.artifact_overhead_bytes)
+        )
+        tolerance_bytes = round(
+            artifact_target_bytes * config.target_tolerance_fraction
+        )
+        size_attr = "complete_bytes"
+        fixed_search_bytes = fixed_complete_bytes
+    elif config.target_complete_bytes is not None:
         target_bytes = int(config.target_complete_bytes)
         tolerance_bytes = round(
             target_bytes * config.target_tolerance_fraction
@@ -1147,15 +1339,49 @@ def select_dynamic_quantization(
         fixed_search_bytes = 0
 
     solver_stats: dict[str, Any]
-    if config.allocation == "pareto":
+    if config.allocation in {"pareto", "random_pareto"}:
+        allocation_candidates = candidates
+        if config.allocation == "random_pareto":
+            # Preserve the exact same candidate palette and byte solver while
+            # deliberately destroying any relationship between measured
+            # sensitivity and the chosen allocation.
+            allocation_candidates = {
+                name: [
+                    replace(item, score=randomizer.random())
+                    for item in items
+                ]
+                for name, items in candidates.items()
+            }
         selected, solver_stats = _pareto_selection(
-            candidates,
+            allocation_candidates,
             size_attr=size_attr,
             fixed_bytes=fixed_search_bytes,
             target_bytes=target_bytes,
             tolerance_bytes=tolerance_bytes,
             granularity_bytes=config.allocation_granularity_bytes,
         )
+        if config.allocation == "random_pareto":
+            solver_stats["solver"] = "seeded_random_multiple_choice_pareto"
+            solver_stats["random_seed"] = patch_cfg.seed
+        if config.refinement_passes:
+            selected, refinement_stats = _refine_selection(
+                allocation_candidates,
+                selected,
+                size_attr=size_attr,
+                fixed_bytes=fixed_search_bytes,
+                target_bytes=target_bytes,
+                tolerance_bytes=tolerance_bytes,
+                max_passes=config.refinement_passes,
+            )
+            solver_stats["refinement"] = refinement_stats
+        if config.allocation == "random_pareto":
+            selected = {
+                name: next(
+                    item for item in candidates[name]
+                    if item.bits == random_item.bits
+                )
+                for name, random_item in selected.items()
+            }
     else:
         selected_indices = {
             name: len(items) - 1 for name, items in candidates.items()
@@ -1202,7 +1428,10 @@ def select_dynamic_quantization(
             "search_achieved_bytes": search_bytes(),
             "search_within_tolerance": (
                 abs(search_bytes() - target_bytes) <= tolerance_bytes
-                if config.target_complete_bytes is not None
+                if (
+                    config.target_complete_bytes is not None
+                    or config.target_artifact_bytes is not None
+                )
                 else search_bytes() <= target_bytes
             ),
         }
@@ -1233,10 +1462,27 @@ def select_dynamic_quantization(
             "normalized_global_kl": item.normalized_global_kl,
             "score": item.score,
         })
-    eligible_ids = {
-        name: {id(item) for item in items}
+    eligible_bits = {
+        name: {item.bits for item in items}
         for name, items in candidates.items()
     }
+    allocation_payload = [
+        {"name": name, "quant": asdict(item.config)}
+        for name, item in sorted(selected.items())
+    ]
+    allocation_fingerprint = hashlib.sha256(json.dumps(
+        allocation_payload, sort_keys=True, separators=(",", ":"), default=str
+    ).encode()).hexdigest()
+    target_domain_bytes = (
+        int(config.target_artifact_bytes)
+        if config.target_artifact_bytes is not None
+        else config.target_complete_bytes
+    )
+    achieved_domain_bytes = (
+        achieved_complete_bytes + int(config.artifact_overhead_bytes)
+        if config.target_artifact_bytes is not None
+        else achieved_complete_bytes
+    )
     stats = {
         "config": asdict(config),
         "adapter": adapter.name,
@@ -1255,27 +1501,34 @@ def select_dynamic_quantization(
         "target_bpw": config.target_bpw,
         "achieved_bpw": achieved_bits / total_weights,
         "target_reached": (
-            achieved_complete_bytes <= int(config.target_complete_bytes)
+            achieved_domain_bytes <= int(target_domain_bytes)
             + int(tolerance_bytes or 0)
-            if config.target_complete_bytes is not None
+            if target_domain_bytes is not None
             else achieved_bits <= target_bits
         ),
         "packed_bytes": achieved_bits // 8,
         "fixed_complete_bytes": fixed_complete_bytes,
         "estimated_complete_bytes": achieved_complete_bytes,
         "target_complete_bytes": config.target_complete_bytes,
+        "target_artifact_bytes": config.target_artifact_bytes,
+        "artifact_overhead_bytes": config.artifact_overhead_bytes,
+        "estimated_artifact_bytes": (
+            achieved_complete_bytes + int(config.artifact_overhead_bytes)
+            if config.target_artifact_bytes is not None else None
+        ),
         "target_tolerance_bytes": (
-            tolerance_bytes if config.target_complete_bytes is not None else None
+            tolerance_bytes if target_domain_bytes is not None else None
         ),
         "target_error_bytes": (
-            achieved_complete_bytes - int(config.target_complete_bytes)
-            if config.target_complete_bytes is not None else None
+            achieved_domain_bytes - int(target_domain_bytes)
+            if target_domain_bytes is not None else None
         ),
         "within_target_tolerance": (
-            abs(achieved_complete_bytes - int(config.target_complete_bytes))
+            abs(achieved_domain_bytes - int(target_domain_bytes))
             <= int(tolerance_bytes)
-            if config.target_complete_bytes is not None else None
+            if target_domain_bytes is not None else None
         ),
+        "allocation_fingerprint": allocation_fingerprint,
         "weights": total_weights,
         "counts_by_bits": count_by_bits,
         "details": details,
@@ -1294,8 +1547,8 @@ def select_dynamic_quantization(
                 "normalized_local": item.normalized_local,
                 "normalized_global_kl": item.normalized_global_kl,
                 "score": item.score,
-                "eligible": id(item) in eligible_ids[name],
-                "selected": selected[name] is item,
+                "eligible": item.bits in eligible_bits[name],
+                "selected": selected[name].bits == item.bits,
             }
             for name, items in scores.items()
             for item in items
@@ -1303,14 +1556,15 @@ def select_dynamic_quantization(
     }
     logger.info(
         "dynamic allocation: %.4f bpw target -> %.4f bpw; "
-        "complete=%d target=%s (%s)",
+        "complete=%d complete_target=%s artifact_target=%s (%s)",
         config.target_bpw, stats["achieved_bpw"], achieved_complete_bytes,
-        config.target_complete_bytes, count_by_bits)
+        config.target_complete_bytes, config.target_artifact_bytes,
+        count_by_bits)
     if config.require_target_match and not stats["within_target_tolerance"]:
         raise ValueError(
-            "dynamic allocation missed complete-model byte target: "
-            f"estimated={achieved_complete_bytes}, "
-            f"target={config.target_complete_bytes}, "
+            "dynamic allocation missed byte target: "
+            f"estimated={achieved_domain_bytes}, "
+            f"target={target_domain_bytes}, "
             f"tolerance={tolerance_bytes}"
         )
     return recipe, stats

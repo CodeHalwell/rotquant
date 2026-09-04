@@ -101,13 +101,20 @@ teacher-forced tokens. See the
 [runbook](docs/qwen35_dynamic_mixed_experiment.md) for phase boundaries,
 resumption, and the remaining public-claim limitations.
 
-That first mixed allocator failed its matched random-control test. The active
-successor is the
-[allocator-v2 Colab](notebooks/qwen35_4b_allocator_v2_colab.ipynb): it scores
-the exact deployed MSE-search/GPTQ candidates, combines normalized local and
-marginal-logit distortion, solves an exact-byte Pareto allocation, protects
-measured sensitive layers, and persists partial candidate tables for Colab
-resumption. See the [allocator-v2 design](docs/dynamic_allocator_v2.md).
+That first mixed allocator failed its matched random-control test. The
+[allocator-v2 Colab](notebooks/qwen35_4b_allocator_v2_colab.ipynb) then scored
+the exact deployed MSE-search/GPTQ candidates, combined normalized local and
+marginal-logit distortion in a byte-constrained Pareto allocation, protected
+measured sensitive layers, and persisted partial candidate tables for Colab
+resumption. Its completed run reduced KL by 25.1% versus random allocation but
+duplicated a finalist and missed the exported-artifact byte gate.
+
+The active successor is the
+[allocator-v3 Colab](notebooks/qwen35_4b_allocator_v3_colab.ipynb). It targets
+complete serialized bytes, uses allocation fingerprints to eliminate duplicate
+recipes, adds direct paired random-control evidence and exact-byte exchange
+refinement, and tests binding W6/W8 high-precision islands. See the
+[allocator-v3 design](docs/dynamic_allocator_v3.md).
 
 ## Install
 

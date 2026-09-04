@@ -146,13 +146,21 @@ specialized around them:
   [dynamic mixed-precision notebook](../notebooks/qwen35_4b_dynamic_mixed_precision_colab.ipynb);
   reject every selected recipe because none beat the matched random control;
   retain uniform W4 as the production control;
-- [ ] execute the faithful second-generation allocator using the
+- [x] execute the faithful second-generation allocator using the
   [allocator-v2 Colab](../notebooks/qwen35_4b_allocator_v2_colab.ipynb), which
   scores the deployed MSE-search/GPTQ candidates, audits local/global ranking,
   solves the exact-byte Pareto problem, protects measured sensitive layers,
-  and resumes its candidate screen from persistent checkpoints; mixed
+  and resumes its candidate screen from persistent checkpoints; it reduced
+  three-seed KL by 25.1% versus random at matched registered bytes, but its two
+  selected finalists were identical and the exported artifact missed the 1%
+  provider byte gate; mixed
   allocation remains mandatory in the W2/W1 design space, while weight,
   activation, and KV precision remain independently gated;
+- [ ] execute the corrected [allocator-v3 Colab](../notebooks/qwen35_4b_allocator_v3_colab.ipynb):
+  target complete exported bytes with a 0.1% internal interval, use a broad
+  exact-byte random control, deduplicate allocation fingerprints, test pairwise
+  solver refinement plus binding W6/W8 islands, and require direct paired
+  random-control evidence across all three seeds;
 - [ ] build a pinned, calibration-disjoint 300-prompt/32-token free-running
   divergence suite spanning agentic, code, maths, multilingual, and long-document
   prompts; compare the source, RotQuant, same-size GGUF, and Unsloth baselines;

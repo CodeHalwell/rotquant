@@ -1,0 +1,92 @@
+{
+  "schema_version": 1,
+  "protocol": "qwen35-next-stage-v2",
+  "code_revision": "2dce3aa4302948d53df3438a046d2d27754835a4",
+  "model": "unsloth/Qwen3.5-4B",
+  "model_revision": "3764fa359b9082ea5a1e4a5e3ac3aaf6e9671636",
+  "validation_status": "ready_for_internal_decision_with_post_review_corrections",
+  "raw_file_sha256": {
+    "screen": "b5b46c9a3cde384b6e6f6083e9768fb77dfbc356898af6be555414f24fcf3a44",
+    "finalists": "0ab0a41cc354a48ca4859f48bcd6d8af84db61ee8f56bf150d751a9be10219a2",
+    "confirmation": "649c0fb23ecce76414dc0065ef05fcce5ec19e64e92f3cee8f54f51ff83e1df7",
+    "comparison": "a41cc8a9df15a1bd3678cadb473aeaea842f77a5c6e6fcc61548e097ab7d06a6",
+    "unsloth_ud_q4_kl": "cbc8dbdc92d5cb401eb2928e8ada994cdb7f0fd6aa031b32fc17e91e8ad7e273",
+    "validation": "468dc036dd36193bbc2dc04617155379698b6d4f1aaf594e87cda53c01564a9c"
+  },
+  "three_seed_means": {
+    "uniform_scale8_w4": {
+      "mean_teacher_kl": 0.01680071011370331,
+      "p95_teacher_kl": 0.05154244229197502,
+      "top1_agreement": 0.9317242878886715,
+      "nll_delta": 0.009667055014294887,
+      "ppl_wikitext2": 9.798540751139322,
+      "ppl_c4": 14.259516080220541,
+      "diverse_mean_teacher_kl": 0.04147501992535149,
+      "diverse_top1_agreement": 0.8905644570112053,
+      "diverse_trajectory_token_agreement": 0.5070833333333332,
+      "complete_persistent_model_bytes": 3759868416
+    },
+    "random_adjacent_w34": {
+      "mean_teacher_kl": 0.03453366438651453,
+      "p95_teacher_kl": 0.10566491882006328,
+      "top1_agreement": 0.9036203522504892,
+      "nll_delta": 0.024116409942102734,
+      "ppl_wikitext2": 10.137824376424154,
+      "ppl_c4": 14.52216370900472,
+      "diverse_mean_teacher_kl": 0.08614866168527206,
+      "diverse_top1_agreement": 0.8455335637239502,
+      "diverse_trajectory_token_agreement": 0.39208333333333334,
+      "complete_persistent_model_bytes": 3619837792
+    },
+    "pareto_broad_global": {
+      "mean_teacher_kl": 0.02587196722733609,
+      "p95_teacher_kl": 0.07970396429300308,
+      "top1_agreement": 0.91617742987606,
+      "nll_delta": 0.016773438707697156,
+      "ppl_wikitext2": 9.848824501037598,
+      "ppl_c4": 14.37864907582601,
+      "diverse_mean_teacher_kl": 0.06544764229909002,
+      "diverse_top1_agreement": 0.8622892449471148,
+      "diverse_trajectory_token_agreement": 0.47625,
+      "complete_persistent_model_bytes": 3620275338.6666665
+    }
+  },
+  "allocator_vs_random": {
+    "mean_teacher_kl_reduction_fraction": 0.25081894183696445,
+    "p95_teacher_kl_reduction_fraction": 0.24569133083108774,
+    "top1_agreement_delta": 0.01255707762557079,
+    "nll_delta_reduction_fraction": 0.30448027928013143,
+    "ppl_wikitext2_reduction_fraction": 0.0285070903436279,
+    "ppl_c4_reduction_fraction": 0.009882455263172814,
+    "diverse_mean_teacher_kl_reduction_fraction": 0.24029414945306204,
+    "diverse_top1_agreement_delta": 0.01675568122316462,
+    "diverse_trajectory_token_agreement_delta": 0.08416666666666667,
+    "complete_bytes_delta_fraction": 0.00012087466118882593
+  },
+  "unsloth_anchor": {
+    "complete_artifact_bytes": 3584533344,
+    "mean_teacher_kl": 0.01188826747238636,
+    "p95_teacher_kl": 0.03248514607548714,
+    "top1_agreement": 0.9408838878016961,
+    "nll_delta": 0.010750668449191148,
+    "rotquant_exported_artifact_bytes": 3640716983,
+    "rotquant_byte_delta_fraction": 0.015673906087118272,
+    "within_registered_one_percent_gate": false
+  },
+  "post_review_findings": [
+    "The global allocator beat random allocation on primary KL, top-1 agreement, WikiText-2 PPL, C4 PPL, diverse KL, and diverse top-1 in all three seeds.",
+    "The two selected finalists had identical per-layer bit assignments at every seed because the W4 protection floor was non-binding.",
+    "The confirmation summary omitted the required direct paired finalist-versus-random interval even though both raw arms were present.",
+    "Internal persistent-byte targeting did not reserve serialized checkpoint and tokenizer overhead, so the exported artifact missed the one-percent provider byte gate."
+  ],
+  "decision": {
+    "allocator_v2": "retain as positive evidence that measured global allocation beats random at matched internal size",
+    "recipe": "do not promote as provider competitive",
+    "next": "run allocator v3 with exact exported-artifact targeting, distinct allocation fingerprints, direct paired random comparisons, exact-byte pair refinement, and binding W6/W8 islands"
+  },
+  "limitations": [
+    "The primary and diverse development suites contain 24 and 25 prompts respectively.",
+    "The RotQuant and Unsloth prompts match but the comparison remains cross-engine.",
+    "The registered 300-prompt engine-neutral suite remains mandatory for public claims."
+  ]
+}

@@ -37,7 +37,7 @@ MIN_RELIABLE_BOOTSTRAP_SAMPLES = 20
 DEFAULT_STAGES = ("w4",)
 REGISTERED_STAGES = (
     "w4", "w4a8", "ablation", "recovery", "long-kv",
-    "signs", "dynamic", "allocator-v2",
+    "signs", "dynamic", "allocator-v2", "allocator-v3",
 )
 PAIRED_ARMS = {
     "w4": (
@@ -84,10 +84,28 @@ PAIRED_ARMS = {
         ("random_adjacent_w34", "uniform_scale8_w4"),
         ("pareto_adjacent_local", "random_adjacent_w34"),
         ("pareto_adjacent_global", "pareto_adjacent_local"),
+        ("pareto_adjacent_global", "random_adjacent_w34"),
         ("pareto_broad_local", "random_adjacent_w34"),
         ("pareto_broad_global", "pareto_broad_local"),
+        ("pareto_broad_global", "random_adjacent_w34"),
         ("pareto_broad_global_protected", "pareto_broad_global"),
+        ("pareto_broad_global_protected", "random_adjacent_w34"),
         ("pareto_broad_global_protected", "uniform_scale8_w4"),
+    ),
+    "allocator-v3": (
+        ("random_broad_exact", "uniform_scale8_w4"),
+        ("pareto_global", "random_broad_exact"),
+        ("pareto_global", "uniform_scale8_w4"),
+        ("pareto_global_refined", "random_broad_exact"),
+        ("pareto_global_refined", "uniform_scale8_w4"),
+        ("pareto_w6_top5_refined", "random_broad_exact"),
+        ("pareto_w6_top5_refined", "uniform_scale8_w4"),
+        ("pareto_w8_top1_refined", "random_broad_exact"),
+        ("pareto_w8_top1_refined", "uniform_scale8_w4"),
+        ("pareto_w8_top2p5_refined", "random_broad_exact"),
+        ("pareto_w8_top2p5_refined", "uniform_scale8_w4"),
+        ("pareto_w8_top5_refined", "random_broad_exact"),
+        ("pareto_w8_top5_refined", "uniform_scale8_w4"),
     ),
 }
 
@@ -480,6 +498,57 @@ def stage_trials(stage: str) -> tuple[Trial, ...]:
                 },
             ),
         )
+    if stage == "allocator-v3":
+        config = "configs/qwen35_4b_allocator_v3_cuda.yaml"
+        no_protection = {
+            "patch.dynamic.protect_top_fraction": 0.0,
+            "patch.dynamic.protect_min_bits": None,
+        }
+        refined = {"patch.dynamic.refinement_passes": 8}
+
+        def protected(fraction: float, bits: int) -> dict[str, Any]:
+            return {
+                "patch.dynamic.protect_top_fraction": fraction,
+                "patch.dynamic.protect_min_bits": bits,
+                "patch.dynamic.protect_metric": "global_kl",
+                **refined,
+            }
+
+        return (
+            _trial(stage, "source_fp16", config, **{"patch.enabled": False}),
+            _trial(
+                stage, "uniform_scale8_w4", config,
+                **{"patch.dynamic": None, "quant.bits": 4},
+            ),
+            _trial(
+                stage, "random_broad_exact", config,
+                **{
+                    "patch.dynamic.allocation": "random_pareto",
+                    **no_protection,
+                },
+            ),
+            _trial(stage, "pareto_global", config, **no_protection),
+            _trial(
+                stage, "pareto_global_refined", config,
+                **{**no_protection, **refined},
+            ),
+            _trial(
+                stage, "pareto_w6_top5_refined", config,
+                **protected(0.05, 6),
+            ),
+            _trial(
+                stage, "pareto_w8_top1_refined", config,
+                **protected(0.01, 8),
+            ),
+            _trial(
+                stage, "pareto_w8_top2p5_refined", config,
+                **protected(0.025, 8),
+            ),
+            _trial(
+                stage, "pareto_w8_top5_refined", config,
+                **protected(0.05, 8),
+            ),
+        )
     raise ValueError(f"unknown stage {stage!r}; choose from {REGISTERED_STAGES}")
 
 
@@ -626,9 +695,21 @@ def summarize_results(
             "dynamic_estimated_complete_bytes": _metric(
                 metrics, "dynamic_quantization", "estimated_complete_bytes"
             ),
+            "dynamic_target_artifact_bytes": _metric(
+                metrics, "dynamic_quantization", "target_artifact_bytes"
+            ),
+            "dynamic_artifact_overhead_bytes": _metric(
+                metrics, "dynamic_quantization", "artifact_overhead_bytes"
+            ),
+            "dynamic_estimated_artifact_bytes": _metric(
+                metrics, "dynamic_quantization", "estimated_artifact_bytes"
+            ),
             "dynamic_actual_target_match": _metric(
                 metrics, "dynamic_quantization", "actual_target_validation",
                 "within_tolerance",
+            ),
+            "dynamic_allocation_fingerprint": _metric(
+                metrics, "dynamic_quantization", "allocation_fingerprint"
             ),
             "dynamic_score_cache_hit": _metric(
                 metrics, "dynamic_quantization", "candidate_score_cache_hit"
@@ -654,6 +735,14 @@ def summarize_results(
             ),
             "dynamic_solver": _metric(
                 metrics, "dynamic_quantization", "solver", "solver"
+            ),
+            "dynamic_refinement_applied": _metric(
+                metrics, "dynamic_quantization", "solver", "refinement",
+                "applied_passes",
+            ),
+            "dynamic_refinement_score_improvement": _metric(
+                metrics, "dynamic_quantization", "solver", "refinement",
+                "score_improvement",
             ),
             "dynamic_protected_layers": (
                 len(_metric(

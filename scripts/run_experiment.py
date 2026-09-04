@@ -1312,8 +1312,10 @@ def _apply_quantization(cfg: dict[str, Any], model, pcfg: PatchConfig,
         # random control and greedy allocator to reuse one expensive screen.
         for key in (
             "allocation", "target_bpw", "target_complete_bytes",
+            "target_artifact_bytes", "artifact_overhead_bytes",
             "target_tolerance_fraction", "require_target_match",
-            "allocation_granularity_bytes", "score_checkpoint_interval",
+            "allocation_granularity_bytes", "refinement_passes",
+            "score_checkpoint_interval",
             "allocation_min_bits",
             "allocation_max_bits", "protect_top_fraction",
             "protect_min_bits", "protect_metric",
@@ -1392,14 +1394,29 @@ def _apply_quantization(cfg: dict[str, Any], model, pcfg: PatchConfig,
     metrics.update(patch_stats)
     metrics.update(footprint_metrics(model, cfg))
     dynamic = metrics.get("dynamic_quantization")
-    if isinstance(dynamic, dict) and dynamic.get("target_complete_bytes") is not None:
-        target = int(dynamic["target_complete_bytes"])
+    target_mode = None
+    if isinstance(dynamic, dict):
+        if dynamic.get("target_artifact_bytes") is not None:
+            target_mode = "artifact"
+        elif dynamic.get("target_complete_bytes") is not None:
+            target_mode = "complete"
+    if isinstance(dynamic, dict) and target_mode is not None:
+        target_key = f"target_{target_mode}_bytes"
+        target = int(dynamic[target_key])
         tolerance = int(dynamic.get("target_tolerance_bytes") or 0)
-        actual = int(metrics["complete_persistent_model_bytes"])
+        model_bytes = int(metrics["complete_persistent_model_bytes"])
+        overhead = (
+            int(dynamic.get("artifact_overhead_bytes") or 0)
+            if target_mode == "artifact"
+            else 0
+        )
+        actual = model_bytes + overhead
         validation = {
-            "target_complete_bytes": target,
+            target_key: target,
             "tolerance_bytes": tolerance,
-            "actual_complete_bytes": actual,
+            "actual_complete_bytes": model_bytes,
+            "artifact_overhead_bytes": overhead,
+            f"actual_{target_mode}_bytes": actual,
             "error_bytes": actual - target,
             "within_tolerance": abs(actual - target) <= tolerance,
         }
@@ -1407,7 +1424,7 @@ def _apply_quantization(cfg: dict[str, Any], model, pcfg: PatchConfig,
         require = bool((pcfg.dynamic or {}).get("require_target_match", False))
         if require and not validation["within_tolerance"]:
             raise ValueError(
-                "patched model missed complete-model byte target: "
+                f"patched model missed {target_mode}-byte target: "
                 f"actual={actual}, target={target}, tolerance={tolerance}"
             )
 
