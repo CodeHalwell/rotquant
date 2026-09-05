@@ -8,6 +8,14 @@ postponed cleanup.
 
 ## Stage 2: canonical GPU serving
 
+Immediate execution order after the September review: finish the reliability
+regressions, run the bounded 4B format-aware allocator experiment, freeze a
+quality-improving recipe, then implement one measured packed GPU operator.
+The [2026-09-05 performance plan](performance_plan_2026-09-05.md) defines the
+promotion gates and the interaction/recovery branches if v4 does not improve
+the result. Wider model sweeps and multiple serving-engine forks are not the
+next experiment.
+
 ### 2.0 Reliability gate
 
 Current gate status:
@@ -21,7 +29,11 @@ Current gate status:
 - [x] cover decoder-only, encoder, encoder-decoder, and custom-adapter round
   trips, plus empty-selection failures, in CI (`python-ci.yml` runs the full
   pytest suite, including the cross-language native conformance tests, on
-  Python 3.10/3.11/3.12; previously no workflow executed any Python test);
+  Python 3.10/3.11/3.12/3.13; previously no workflow executed any Python test);
+- [x] inference-mode-safe shared rotation reuse, bounded activation lifetime,
+  unsafe parent exclusions, transactional checkpoint export, and hash-bound
+  experiment resume;
+- [x] finite, per-seed no-regression confirmation and measured export provenance;
 - [ ] add the small multimodal round-trip fixture without relying on a remote
   checkpoint or GPU.
 
@@ -156,11 +168,16 @@ specialized around them:
   provider byte gate; mixed
   allocation remains mandatory in the W2/W1 design space, while weight,
   activation, and KV precision remain independently gated;
-- [ ] execute the corrected [allocator-v3 Colab](../notebooks/qwen35_4b_allocator_v3_colab.ipynb):
-  target complete exported bytes with a 0.1% internal interval, use a broad
-  exact-byte random control, deduplicate allocation fingerprints, test pairwise
-  solver refinement plus binding W6/W8 islands, and require direct paired
-  random-control evidence across all three seeds;
+- [x] execute the corrected [allocator-v3 Colab](../notebooks/qwen35_4b_allocator_v3_colab.ipynb):
+  the global recipe beat broad random allocation by 72.8% mean KL at matched
+  bytes and passed the export gate, while exact pair refinement was a no-op and
+  forced W6/W8 islands reduced fidelity; retain its W3/W4/W5 global recipe as
+  the bits-only allocator baseline, not as provider competitive;
+- [ ] execute the [format-aware allocator-v4 Colab](../notebooks/qwen35_4b_allocator_v4_colab.ipynb):
+  choose among named Gaussian/calibrated and group-64/group-128 W3/W4/W5
+  formats, reuse one resumable candidate table for causal palette ablations,
+  and require three-seed paired wins over both bits-only Pareto and an exact
+  same-palette random control before promotion;
 - [ ] build a pinned, calibration-disjoint 300-prompt/32-token free-running
   divergence suite spanning agentic, code, maths, multilingual, and long-document
   prompts; compare the source, RotQuant, same-size GGUF, and Unsloth baselines;

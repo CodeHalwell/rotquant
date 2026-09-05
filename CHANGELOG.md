@@ -9,6 +9,26 @@ software.
 
 ## [Unreleased]
 
+### Project review fixes (2026-09-05)
+
+- Shared rotations support inference tensors and no longer retain activation
+  inputs/outputs after a projection site returns, including exceptional returns.
+- Parent-aware adapter exclusions protect PyTorch attention/transformer fast
+  paths that read child weights; support reports distinguish discovery from
+  validated execution.
+- Packed exports stage a new generation before publication, retain a recoverable
+  prior directory during replacement, and record per-file hashes. Resume checks
+  require the exact recorded manifest digest. Overwrite never removes unrelated
+  user files or unverified legacy directories.
+- Allocator confirmation reapplies all quality guards on every seed and rejects
+  nonfinite/unreliable evidence. Estimated bytes cannot satisfy measured-export
+  gates; export identity includes revision, seed, trial and allocation.
+- Dynamic scoring rejects unsupported shared/A8/trained-rotation combinations
+  before calibration/cache reuse. Exact-byte allocation no longer treats larger
+  savings as unconditional dominance; missed intervals get bounded integer repair.
+- Notebook dependencies are locked; CI includes Python 3.13. The v4 notebook
+  runs a six-format scored/deployed correctness preflight before Qwen calibration.
+
 ### Added
 
 - MIT `LICENSE`, `CITATION.cff`, `CONTRIBUTING.md`, and this changelog.
@@ -43,6 +63,13 @@ software.
 - A generated allocator-v3 Colab and fail-closed selection/confirmation tools
   for binding W6/W8 sensitivity islands, direct three-seed paired random
   comparisons, duplicate-recipe rejection, and compact result downloads.
+- Format-aware dynamic allocation: named full-`QuantConfig` candidate palettes,
+  same-width format identity across caches, controls, and refinement,
+  allocation-only palette restrictions, per-format diagnostics, and compatible
+  reuse of earlier bit-only score caches.
+- A generated Qwen3.5-4B allocator-v4 Colab, registered six-format W3/W4/W5
+  experiment, fail-closed finalist/confirmation tools, and a compact validated
+  record of the completed allocator-v3 run.
 
 ### Changed
 

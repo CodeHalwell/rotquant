@@ -110,6 +110,20 @@ def test_unsloth_comparison_requires_prompt_match_and_reports_byte_gate():
     assert row["candidate_metrics"]["mean_teacher_kl"] == pytest.approx(0.019)
     assert row["relative_kl_delta"] > 0
 
+    for candidate in summary["rows"]:
+        candidate.pop("packed_artifact_bytes")
+        candidate["complete_persistent_model_bytes"] = 3_584_533_344
+    estimated = comparison.compare(summary, unsloth, ["dynamic_mixed_fwht"])["comparisons"][0]
+    assert estimated["within_estimated_byte_gate"] is True
+    assert estimated["within_byte_gate"] is False
+    assert estimated["exported_seeds"] == []
+    assert estimated["byte_basis"] == "persistent_tensor_estimate"
+
+    summary["rows"][0]["packed_artifact_bytes"] = 3_584_533_344
+    measured = comparison.compare(summary, unsloth, ["dynamic_mixed_fwht"])["comparisons"][0]
+    assert measured["within_byte_gate"] is True
+    assert measured["exported_seeds"] == [0]
+
     summary["rows"][1]["logit_fidelity_input_hashes"] = ["different"]
     with pytest.raises(ValueError, match="input hashes differ"):
         comparison.compare(summary, unsloth, ["dynamic_mixed_fwht"])

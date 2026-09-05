@@ -31,3 +31,26 @@ reference before making correctness or performance claims.
 
 See [packed format v1](packed_format_v1.md) for the unchanged word-level
 bitstream and artifact-layout rules.
+
+## Generation integrity and publication
+
+New writers also record a `generation_id` and `files_sha256` map for the
+configuration, tokenizer/processor and both tensor files. These additive fields
+do not change the quantization layout. Export results include `manifest_sha256`;
+experiment exports additionally embed revision/seed/trial/allocation identity
+under `deployment.experiment_identity`.
+
+The writer builds a complete sibling staging directory before publication.
+An overwrite first moves the old artifact to `.NAME.rotquant-previous`, then
+publishes the new directory. Normal publication errors restore the old directory;
+if the process dies between renames, the Python loader resolves the recovery
+copy. A surviving recovery copy is never overwritten automatically. This needs
+temporary space for two generations and assumes one writer per destination.
+It is not a guarantee of power-loss durability on arbitrary filesystems.
+
+`verify_checkpoint` checks file contents, and experiment resume also requires
+the manifest digest recorded by that trial. Loaders remain compatible with
+hashless v1/v2 artifacts, but those older artifacts cannot satisfy the new
+integrity-bound resume gate. Overwrite of an unverified/legacy directory, or a
+checkpoint containing additional user files, requires choosing a new export
+path. No unrelated directory contents are removed.

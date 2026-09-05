@@ -25,6 +25,8 @@ from __future__ import annotations
 
 import math
 import os
+from contextlib import contextmanager
+from contextvars import ContextVar
 
 import torch
 from torch import nn
@@ -38,6 +40,41 @@ except Exception as exc:  # pragma: no cover - kernel only present with CUDA bui
     _fht_import_error = exc
 
 _slow_fwht_warned = False
+
+# Activations belong to an invocation, never to a persistent model object.
+# Context-local frames also isolate concurrent/reentrant model calls.
+_activation_cache_frames: ContextVar[tuple[dict, ...]] = ContextVar(
+    "rotquant_activation_cache_frames", default=()
+)
+
+
+@contextmanager
+def activation_cache_scope():
+    """Bound same-input rotation reuse to one explicit invocation."""
+    token = _activation_cache_frames.set((*_activation_cache_frames.get(), {}))
+    try:
+        yield
+    finally:
+        _activation_cache_frames.reset(token)
+
+
+def _enter_activation_cache(_module, _inputs):
+    _activation_cache_frames.set((*_activation_cache_frames.get(), {}))
+
+
+def _leave_activation_cache(_module, _inputs, _output):
+    frames = _activation_cache_frames.get()
+    if frames:
+        _activation_cache_frames.set(frames[:-1])
+
+
+def install_activation_cache_scope(module: nn.Module) -> None:
+    """Release shared-site activations on return, including exceptional returns."""
+    if module.__dict__.get("_rotquant_activation_scope_installed", False):
+        return
+    module.register_forward_pre_hook(_enter_activation_cache)
+    module.register_forward_hook(_leave_activation_cache, always_call=True)
+    module.__dict__["_rotquant_activation_scope_installed"] = True
 
 
 def _fast_hadamard_disabled() -> bool:
@@ -146,20 +183,26 @@ class Rotation(nn.Module):
         self._cached_activation_input = None
         self._cached_activation_output = None
         self._cached_activation_version = None
+        for frame in _activation_cache_frames.get():
+            frame.pop(id(self), None)
 
     def cached_rotate_activation(self, x: torch.Tensor) -> torch.Tensor:
-        """Rotate, caching only safe no-grad inference calls by object identity."""
+        """Reuse version-tracked inputs only inside a bounded shared-site call.
 
-        if not self._activation_cache_enabled or torch.is_grad_enabled():
+        Inference tensors have no mutation counter. Recompute for those tensors
+        instead of risking stale reuse after an in-place mutation.
+        """
+
+        frames = _activation_cache_frames.get()
+        if (not self._activation_cache_enabled or torch.is_grad_enabled()
+                or not frames or torch.is_inference(x)):
             return self.rotate_activation(x)
-        if (self._cached_activation_input is x
-                and self._cached_activation_output is not None
-                and self._cached_activation_version == x._version):
-            return self._cached_activation_output
+        cache = frames[-1]
+        cached = cache.get(id(self))
+        if cached is not None and cached[0] is x and cached[2] == x._version:
+            return cached[1]
         output = self.rotate_activation(x)
-        self._cached_activation_input = x
-        self._cached_activation_output = output
-        self._cached_activation_version = x._version
+        cache[id(self)] = (x, output, x._version)
         return output
 
     def rotate_activation(self, x: torch.Tensor) -> torch.Tensor:

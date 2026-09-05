@@ -807,6 +807,9 @@ def _prepare_calibration(cfg: dict[str, Any], model, tokenizer, device: str,
     rotation_train_cfg = pcfg.train_rotation or {}
     dynamic_cfg = pcfg.dynamic or {}
     art.needs_dynamic = pcfg.enabled and bool(pcfg.dynamic)
+    if art.needs_dynamic:
+        from rotquant.dynamic import validate_dynamic_deployment
+        validate_dynamic_deployment(pcfg)
     art.needs_block_calls = (pcfg.enabled
                              and rotation_train_cfg.get("objective") == "block")
     needs_hessians = pcfg.enabled and (
@@ -1305,7 +1308,10 @@ def _apply_quantization(cfg: dict[str, Any], model, pcfg: PatchConfig,
     """Run optional dynamic allocation, then patch or block-train the model."""
     patch_stats: dict[str, Any] = {}
     if art.needs_dynamic:
-        from rotquant.dynamic import select_dynamic_quantization
+        from rotquant.dynamic import select_dynamic_quantization, validate_dynamic_deployment
+        # Validate before any historical score lookup. Supported deployment
+        # values retain the existing weight-only cache identity.
+        validate_dynamic_deployment(pcfg)
         dynamic_scoring = dict(pcfg.dynamic or {})
         # Allocation policy and rate target consume the candidate table but do
         # not change its layer/bit errors. Excluding them allows the seeded
@@ -1317,12 +1323,18 @@ def _apply_quantization(cfg: dict[str, Any], model, pcfg: PatchConfig,
             "allocation_granularity_bytes", "refinement_passes",
             "score_checkpoint_interval",
             "allocation_min_bits",
-            "allocation_max_bits", "protect_top_fraction",
+            "allocation_max_bits", "allocation_formats",
+            "protect_top_fraction",
             "protect_min_bits", "protect_metric",
             "local_weight", "global_kl_weight", "local_normalization",
             "score_normalization", "min_proxy_rank_correlation",
         ):
             dynamic_scoring.pop(key, None)
+        # Preserve cache compatibility with pre-format-aware bit-only runs.
+        # An explicit empty palette and an absent palette have identical
+        # scoring semantics.
+        if not dynamic_scoring.get("candidate_formats"):
+            dynamic_scoring.pop("candidate_formats", None)
         score_context = {
             "model": cfg.get("model"),
             "model_revision": cfg.get("model_revision"),
@@ -1621,6 +1633,17 @@ def _export_checkpoint(cfg: dict[str, Any], model, tokenizer, model_name: str,
         if not isinstance(deployment_metadata, dict):
             raise TypeError(
                 "--export-deployment-metadata must contain a JSON object")
+    deployment_metadata = dict(deployment_metadata or {})
+    deployment_metadata["experiment_identity"] = {
+        "code_revision": cfg.get("stage_code_revision"),
+        "seed": cfg.get("seed"),
+        "stage": cfg.get("stage_name"),
+        "arm": cfg.get("stage_arm"),
+        "trial_fingerprint": cfg.get("stage_trial_fingerprint"),
+        "allocation_fingerprint": metrics.get("dynamic_quantization", {}).get(
+            "allocation_fingerprint"
+        ),
+    }
     processor = None
     if export_processor:
         try:

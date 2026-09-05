@@ -12,7 +12,12 @@ No pickle is used.  The artifact consists of Transformers configuration files,
 """
 from __future__ import annotations
 
+import hashlib
 import json
+import os
+import shutil
+import tempfile
+import uuid
 from pathlib import Path
 from typing import Any
 
@@ -38,6 +43,7 @@ from .rotate import (
     LearnedRotation,
     RandomizedHadamard,
     Rotation,
+    install_activation_cache_scope,
 )
 
 MANIFEST_NAME = "rotquant_config.json"
@@ -311,7 +317,123 @@ def _first_float_dtype(model: nn.Module) -> torch.dtype:
     return torch.float32
 
 
-def save_packed_checkpoint(
+def _sha256(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for block in iter(lambda: handle.read(8 * 1024 * 1024), b""):
+            digest.update(block)
+    return digest.hexdigest()
+
+
+def _previous_checkpoint(path: Path) -> Path:
+    return path.with_name(f".{path.name}.rotquant-previous")
+
+
+def resolve_checkpoint_directory(path: str | Path) -> Path:
+    """Recover the last complete directory if a process died between renames."""
+    path = Path(path)
+    previous = _previous_checkpoint(path)
+    if not path.exists() and (previous / MANIFEST_NAME).is_file():
+        return previous
+    return path
+
+
+def verify_checkpoint(checkpoint_dir: str | Path, *, require_integrity: bool = True,
+                      expected_manifest_sha256: str | None = None) -> dict[str, Any]:
+    """Validate generation integrity without loading tensors or trusting pickle."""
+    checkpoint = resolve_checkpoint_directory(checkpoint_dir)
+    manifest = checkpoint_manifest(checkpoint)
+    if expected_manifest_sha256 is not None and _sha256(
+        checkpoint / MANIFEST_NAME
+    ) != expected_manifest_sha256:
+        raise ValueError("checkpoint manifest does not match the recorded trial")
+    files = manifest.get("files_sha256")
+    if not files:
+        if require_integrity:
+            raise ValueError("legacy checkpoint lacks generation integrity hashes")
+        for name in (manifest["model_state"], manifest["packed_state"], "config.json"):
+            if not (checkpoint / name).is_file():
+                raise ValueError(f"checkpoint is missing {name}")
+        return manifest
+    if not isinstance(files, dict) or not {
+        manifest["model_state"], manifest["packed_state"], "config.json"
+    } <= files.keys():
+        raise ValueError("checkpoint integrity table is incomplete")
+    for name, expected in files.items():
+        relative = Path(name)
+        if relative.is_absolute() or ".." in relative.parts or not relative.parts:
+            raise ValueError("invalid checkpoint integrity path")
+        path = checkpoint / relative
+        if not path.is_file() or _sha256(path) != expected:
+            raise ValueError(f"checkpoint integrity mismatch: {name}")
+    return manifest
+
+
+def save_packed_checkpoint(model: nn.Module, output_dir: str | Path, *,
+                           overwrite: bool = False, **kwargs) -> dict[str, Any]:
+    """Stage a complete generation before replacing the previous checkpoint.
+
+    The old directory is never modified in place. A process interruption in the
+    two-rename publication window leaves it at a known recovery location. Hashes
+    and the manifest digest bind resume decisions to the exact exported trial.
+    Concurrent writers to the same destination are not supported.
+    """
+    output = Path(output_dir).absolute()
+    if output.is_symlink():
+        raise ValueError("checkpoint destination must not be a symlink")
+    if output.exists() and any(output.iterdir()):
+        if not overwrite:
+            raise FileExistsError(f"checkpoint directory is not empty: {output}")
+        # Replacing a directory must never erase unrelated user files. Only
+        # an integrity-recorded artifact may be transactionally overwritten.
+        try:
+            old_manifest = verify_checkpoint(output)
+        except (OSError, ValueError, TypeError, KeyError) as exc:
+            raise ValueError(
+                "overwrite requires an intact, integrity-recorded checkpoint; "
+                "use a new path for legacy or incomplete artifacts"
+            ) from exc
+        recorded = {Path(name) for name in old_manifest["files_sha256"]} | {Path(MANIFEST_NAME)}
+        allowed_dirs = {parent for name in recorded for parent in name.parents}
+        unrelated = [path for path in output.rglob("*")
+                     if path.relative_to(output) not in recorded
+                     and not (path.is_dir() and path.relative_to(output) in allowed_dirs)]
+        if unrelated:
+            raise ValueError("checkpoint contains unrecorded user files; choose a new export path")
+    previous = _previous_checkpoint(output)
+    if previous.exists():
+        # Do not overwrite a recovery copy from an interrupted earlier export.
+        raise FileExistsError(
+            f"checkpoint recovery copy exists at {previous}; verify it and "
+            "choose a new export path (load_packed_model can read it directly)"
+        )
+    output.parent.mkdir(parents=True, exist_ok=True)
+    staging = Path(tempfile.mkdtemp(prefix=f".{output.name}.staging-", dir=output.parent))
+    moved_previous = False
+    published = False
+    try:
+        result = _write_packed_checkpoint(model, staging, **kwargs)
+        if output.exists():
+            os.replace(output, previous)
+            moved_previous = True
+        try:
+            os.replace(staging, output)
+            published = True
+        except BaseException:
+            if moved_previous:
+                os.replace(previous, output)
+                moved_previous = False
+            raise
+        result["path"] = str(output)
+        return result
+    finally:
+        if staging.exists():
+            shutil.rmtree(staging)
+        if published and moved_previous:
+            shutil.rmtree(previous)
+
+
+def _write_packed_checkpoint(
     model: nn.Module,
     output_dir: str | Path,
     *,
@@ -328,8 +450,7 @@ def save_packed_checkpoint(
     ``model`` must already contain ``QuantLinear`` modules.  The cached
     dequantized fallback weights are ordinary Python attributes and are not
     written. Optional deployment metadata must be a plain JSON object and is
-    embedded in the manifest. The manifest is saved last so a partially written
-    directory is never mistaken for a complete checkpoint.
+    embedded in the manifest. This helper writes only to a fresh staging directory.
     """
     _, _, save_file, save_model = _require_safetensors()
     serialized_deployment = None
@@ -427,10 +548,17 @@ def save_packed_checkpoint(
     }
     if serialized_deployment is not None:
         manifest["deployment"] = serialized_deployment
+    manifest["generation_id"] = uuid.uuid4().hex
+    manifest["files_sha256"] = {
+        str(path.relative_to(output)): _sha256(path)
+        for path in sorted(output.rglob("*")) if path.is_file()
+    }
     validate_checkpoint_manifest(manifest)
     with (output / MANIFEST_NAME).open("w", encoding="utf-8") as handle:
         json.dump(manifest, handle, indent=2)
         handle.write("\n")
+        handle.flush()
+        os.fsync(handle.fileno())
 
     artifact_bytes = sum(
         path.stat().st_size for path in output.rglob("*") if path.is_file()
@@ -441,6 +569,8 @@ def save_packed_checkpoint(
         "format_version": FORMAT_VERSION,
         "quantized_modules": len(modules),
         "artifact_bytes": artifact_bytes,
+        "manifest_sha256": _sha256(output / MANIFEST_NAME),
+        "identity": (serialized_deployment or {}).get("experiment_identity"),
         "fallback_cache_serialized": False,
     }
 
@@ -495,13 +625,14 @@ def load_packed_model(
     therefore forfeits the runtime-memory reduction.
     """
     safe_open, load_model, _, _ = _require_safetensors()
-    checkpoint = Path(checkpoint_dir)
+    checkpoint = resolve_checkpoint_directory(checkpoint_dir)
     manifest_path = checkpoint / MANIFEST_NAME
     if not manifest_path.exists():
         raise FileNotFoundError(f"not a complete RotQuant checkpoint: {manifest_path}")
     with manifest_path.open(encoding="utf-8") as handle:
         manifest = json.load(handle)
     validate_checkpoint_manifest(manifest)
+    verify_checkpoint(checkpoint, require_integrity=False)
 
     from transformers import AutoConfig
 
@@ -550,6 +681,8 @@ def load_packed_model(
             rotation_id = module_spec.get("rotation_id")
             if rotation_id is not None and rotation_id in rotations:
                 rotation = rotations[rotation_id]
+                rotation.enable_activation_cache(True)
+                install_activation_cache_scope(parent)
             else:
                 rotation = _build_rotation(module_spec["rotation"])
                 if rotation_id is not None:
@@ -607,7 +740,7 @@ def load_packed_model(
 
 def checkpoint_manifest(checkpoint_dir: str | Path) -> dict[str, Any]:
     """Read and minimally validate checkpoint metadata without loading weights."""
-    path = Path(checkpoint_dir) / MANIFEST_NAME
+    path = resolve_checkpoint_directory(checkpoint_dir) / MANIFEST_NAME
     with path.open(encoding="utf-8") as handle:
         manifest = json.load(handle)
     validate_checkpoint_manifest(manifest)

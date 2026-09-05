@@ -20,6 +20,7 @@ classifiers = [
     "Programming Language :: Python :: 3.10",
     "Programming Language :: Python :: 3.11",
     "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
     "Programming Language :: C++",
     "Topic :: Scientific/Engineering :: Artificial Intelligence",
     "Operating System :: OS Independent",
@@ -29,7 +30,7 @@ dependencies = [
     # quantization/device code; raise deliberately, with the suite green.
     "torch>=2.4,<3",
     "numpy",
-    "scipy",
+    "scipy>=1.9",  # bounded MILP repair for two-sided exact-byte allocation
     "pyyaml",  # scripts/run_experiment.py reads the experiment YAMLs
 ]
 
@@ -74,6 +75,7 @@ dev = [
     "pytest",
     "pytest-cov",
     "ruff",
+    "nbformat>=5.10,<6",
 ]
 
 [tool.setuptools]

@@ -37,7 +37,7 @@ MIN_RELIABLE_BOOTSTRAP_SAMPLES = 20
 DEFAULT_STAGES = ("w4",)
 REGISTERED_STAGES = (
     "w4", "w4a8", "ablation", "recovery", "long-kv",
-    "signs", "dynamic", "allocator-v2", "allocator-v3",
+    "signs", "dynamic", "allocator-v2", "allocator-v3", "allocator-v4",
 )
 PAIRED_ARMS = {
     "w4": (
@@ -106,6 +106,16 @@ PAIRED_ARMS = {
         ("pareto_w8_top2p5_refined", "uniform_scale8_w4"),
         ("pareto_w8_top5_refined", "random_broad_exact"),
         ("pareto_w8_top5_refined", "uniform_scale8_w4"),
+    ),
+    "allocator-v4": (
+        ("bits_only_pareto", "uniform_scale8_w4"),
+        ("format_random_exact", "bits_only_pareto"),
+        ("format_pareto_all", "format_random_exact"),
+        ("format_pareto_all", "bits_only_pareto"),
+        ("format_pareto_gaussian", "format_random_exact"),
+        ("format_pareto_gaussian", "bits_only_pareto"),
+        ("format_pareto_g128", "format_random_exact"),
+        ("format_pareto_g128", "bits_only_pareto"),
     ),
 }
 
@@ -549,6 +559,45 @@ def stage_trials(stage: str) -> tuple[Trial, ...]:
                 **protected(0.05, 8),
             ),
         )
+    if stage == "allocator-v4":
+        config = "configs/qwen35_4b_allocator_v4_cuda.yaml"
+        gaussian_formats = [
+            "gaussian_w3_g128", "gaussian_w3_g64",
+            "gaussian_w4_g128", "gaussian_w5_g128",
+        ]
+        group128_formats = [
+            "gaussian_w3_g128", "calibrated_w3_g128",
+            "gaussian_w4_g128", "calibrated_w4_g128",
+            "gaussian_w5_g128",
+        ]
+        return (
+            _trial(stage, "source_fp16", config, **{"patch.enabled": False}),
+            _trial(
+                stage, "uniform_scale8_w4", config,
+                **{"patch.dynamic": None, "quant.bits": 4},
+            ),
+            _trial(
+                stage, "bits_only_pareto", config,
+                **{
+                    "patch.dynamic.candidate_formats": [],
+                    "patch.dynamic.candidate_bits": [2, 3, 4, 5, 6, 8],
+                    "patch.dynamic.allocation_formats": None,
+                },
+            ),
+            _trial(
+                stage, "format_random_exact", config,
+                **{"patch.dynamic.allocation": "random_pareto"},
+            ),
+            _trial(stage, "format_pareto_all", config),
+            _trial(
+                stage, "format_pareto_gaussian", config,
+                **{"patch.dynamic.allocation_formats": gaussian_formats},
+            ),
+            _trial(
+                stage, "format_pareto_g128", config,
+                **{"patch.dynamic.allocation_formats": group128_formats},
+            ),
+        )
     raise ValueError(f"unknown stage {stage!r}; choose from {REGISTERED_STAGES}")
 
 
@@ -608,12 +657,16 @@ def _load_matching_result(
     return max(matches, key=lambda entry: entry[0])[1] if matches else None
 
 
-def _complete_artifact(path: Path) -> bool:
-    return all((path / name).is_file() for name in (
-        "rotquant_config.json",
-        "rotquant_model.safetensors",
-        "rotquant_packed.safetensors",
-    ))
+def _complete_artifact(path: Path, expected: dict[str, Any] | None = None) -> bool:
+    from rotquant.checkpoint import verify_checkpoint
+    digest = (expected or {}).get("manifest_sha256")
+    if expected is not None and not digest:
+        return False
+    try:
+        verify_checkpoint(path, expected_manifest_sha256=digest)
+        return True
+    except (OSError, ValueError, TypeError, KeyError):
+        return False
 
 
 def _metric(metrics: dict[str, Any], *path: str) -> Any:
@@ -646,6 +699,7 @@ def summarize_results(
             "arm": trial.arm,
             "seed": seed,
             "run_id": payload.get("run_id"),
+            "trial_fingerprint": payload.get("config", {}).get("stage_trial_fingerprint"),
             "resumed": resumed,
             "runner_wall_seconds": seconds,
             "model_load_seconds": metrics.get("model_load_seconds"),
@@ -691,6 +745,9 @@ def summarize_results(
             ),
             "dynamic_counts_by_bits": _metric(
                 metrics, "dynamic_quantization", "counts_by_bits"
+            ),
+            "dynamic_counts_by_format": _metric(
+                metrics, "dynamic_quantization", "counts_by_format"
             ),
             "dynamic_estimated_complete_bytes": _metric(
                 metrics, "dynamic_quantization", "estimated_complete_bytes"
@@ -754,6 +811,8 @@ def summarize_results(
             "packed_artifact_bytes": _metric(
                 metrics, "packed_checkpoint", "artifact_bytes"
             ),
+            "packed_artifact_identity": _metric(metrics, "packed_checkpoint", "identity"),
+            "packed_manifest_sha256": _metric(metrics, "packed_checkpoint", "manifest_sha256"),
             "trajectory_token_agreement": _metric(
                 metrics, "trajectory", "token_agreement"
             ),
@@ -998,7 +1057,9 @@ def _run_trial(
             fingerprint=fingerprint,
         )
         if existing is not None and (
-            export_dir is None or _complete_artifact(export_dir)
+            export_dir is None or _complete_artifact(
+                export_dir, existing["metrics"].get("packed_checkpoint", {})
+            )
         ):
             print(
                 f"[{_timestamp()}] RESUME [{position}/{total}] {label}",

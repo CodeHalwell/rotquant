@@ -661,7 +661,8 @@ def test_same_input_projections_share_one_cached_rotation():
     assert model.attn.o_proj.act_rotation is not shared
     assert stats["shared_rotation_sites"] == 1
     values = torch.randn(2, 16)
-    with torch.no_grad():
+    from rotquant.rotate import activation_cache_scope
+    with torch.no_grad(), activation_cache_scope():
         first = shared.cached_rotate_activation(values)
         repeated = shared.cached_rotate_activation(values)
         assert repeated is first

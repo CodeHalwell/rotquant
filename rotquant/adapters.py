@@ -22,6 +22,7 @@ class ModelSupport:
     quantizable_modules: int
     quantizable_parameters: int
     capabilities: tuple[str, ...]
+    excluded_modules: tuple[str, ...] = ()
 
     @property
     def supported(self) -> bool:
@@ -35,6 +36,8 @@ class ModelSupport:
             "quantizable_parameters": self.quantizable_parameters,
             "capabilities": list(self.capabilities),
             "supported": self.supported,
+            "excluded_modules": list(self.excluded_modules),
+            "execution_validated": False,
         }
 
 
@@ -67,9 +70,32 @@ class ModelAdapter:
     def iter_quantizable_modules(
         self, model: nn.Module
     ) -> Iterator[tuple[str, nn.Module]]:
+        excluded = self.incompatible_modules(model)
         for name, module in model.named_modules():
-            if isinstance(module, nn.Linear):
+            if isinstance(module, nn.Linear) and name not in excluded:
                 yield name, module
+
+    def incompatible_modules(self, model: nn.Module) -> tuple[str, ...]:
+        """Protect parents that read child weights without invoking the child.
+
+        These built-in attention/transformer fast paths require parent-level
+        adapters. Discovering a Linear underneath them is not sufficient.
+        Custom adapters can override this contract when replacing the parent.
+        """
+        parents = tuple(
+            name for name, module in model.named_modules()
+            if isinstance(module, (
+                nn.MultiheadAttention, nn.TransformerEncoderLayer,
+                nn.TransformerDecoderLayer,
+            ))
+        )
+        return tuple(
+            name for name, module in model.named_modules()
+            if isinstance(module, nn.Linear) and (
+                isinstance(module, nn.modules.linear.NonDynamicallyQuantizableLinear)
+                or any(not parent or name.startswith(parent + ".") for parent in parents)
+            )
+        )
 
     def to_linear(self, module: nn.Module) -> nn.Linear:
         """Return an equivalent ``nn.Linear`` for the quantization pipeline."""
@@ -102,6 +128,7 @@ class ModelAdapter:
             quantizable_modules=len(modules),
             quantizable_parameters=parameters,
             capabilities=self.capabilities,
+            excluded_modules=self.incompatible_modules(model),
         )
 
 

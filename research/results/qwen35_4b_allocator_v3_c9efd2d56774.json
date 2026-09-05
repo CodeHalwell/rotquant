@@ -1,0 +1,127 @@
+{
+  "schema_version": 1,
+  "protocol": "qwen35-next-stage-v2",
+  "code_revision": "c9efd2d5677420d231d88ed80292f6fe0656a052",
+  "model": "unsloth/Qwen3.5-4B",
+  "model_revision": "3764fa359b9082ea5a1e4a5e3ac3aaf6e9671636",
+  "validation_status": "ready_for_internal_decision",
+  "raw_file_sha256": {
+    "screen": "49429aedff7cc503dba85ab60eb3ff571a3c7ba63df8b83cc128d9a2497c5777",
+    "finalists": "656b30f61a0d2c5c23a1e0bb4b56ca0ee5e45a16db3975d87185ea4e7e543992",
+    "confirmation": "8132211b09dabbc46e6542b488473ba64bca39f0d3e0768409a38ed6da5c2653",
+    "comparison": "8f66322647940bf6eaa7d05f6203f006d8f0000a921facca1c5050c3c6ad84a4",
+    "unsloth_ud_q4_kl": "cbc8dbdc92d5cb401eb2928e8ada994cdb7f0fd6aa031b32fc17e91e8ad7e273",
+    "validation": "3a2d6425a1d19c0b63206332c5943158c876195610fe1ca3cc4887a4115d3177",
+    "decision": "61a7bef12e766eaabc5d68de5151875c854da6df47d4a372e20fc24681f6fdd2"
+  },
+  "three_seed_means": {
+    "uniform_scale8_w4": {
+      "mean_teacher_kl": 0.01680071011370331,
+      "p95_teacher_kl": 0.05154244229197502,
+      "top1_agreement": 0.9317242878886715,
+      "nll_delta": 0.009667055014294887,
+      "ppl_wikitext2": 9.798540751139322,
+      "ppl_c4": 14.259516080220541,
+      "diverse_mean_teacher_kl": 0.04147501992535149,
+      "diverse_top1_agreement": 0.8905644570112053,
+      "diverse_trajectory_token_agreement": 0.5070833333333332,
+      "complete_persistent_model_bytes": 3759868416
+    },
+    "random_broad_exact": {
+      "mean_teacher_kl": 0.11433961531939156,
+      "p95_teacher_kl": 0.35716134309768677,
+      "top1_agreement": 0.8303163731245923,
+      "nll_delta": 0.09327597388964058,
+      "ppl_wikitext2": 10.963977495829264,
+      "ppl_c4": 15.829883893330893,
+      "diverse_mean_teacher_kl": 0.29720765995797043,
+      "diverse_top1_agreement": 0.722065137710755,
+      "diverse_trajectory_token_agreement": 0.14916666666666667,
+      "complete_persistent_model_bytes": 3567204725.3333335
+    },
+    "pareto_global": {
+      "mean_teacher_kl": 0.031128988262880727,
+      "p95_teacher_kl": 0.09589817623297374,
+      "top1_agreement": 0.9078060447923462,
+      "nll_delta": 0.0206486435915289,
+      "ppl_wikitext2": 9.93799622853597,
+      "ppl_c4": 14.46035099029541,
+      "diverse_mean_teacher_kl": 0.07896199727235683,
+      "diverse_top1_agreement": 0.8512933291444131,
+      "diverse_trajectory_token_agreement": 0.36833333333333335,
+      "complete_persistent_model_bytes": 3567190325.3333335
+    },
+    "pareto_w8_top1_refined": {
+      "mean_teacher_kl": 0.03306826258980987,
+      "p95_teacher_kl": 0.10226537535587947,
+      "top1_agreement": 0.9066644922809307,
+      "nll_delta": 0.021993704686141008,
+      "ppl_wikitext2": 9.93795108795166,
+      "ppl_c4": 14.488806088765463,
+      "diverse_mean_teacher_kl": 0.08411077619601774,
+      "diverse_trajectory_token_agreement": 0.3745833333333333
+    },
+    "pareto_w6_top5_refined": {
+      "mean_teacher_kl": 0.03514053048349303,
+      "p95_teacher_kl": 0.10802658398946126,
+      "top1_agreement": 0.9020167427701674,
+      "nll_delta": 0.024047401993915963,
+      "ppl_wikitext2": 9.937891642252604,
+      "ppl_c4": 14.518447240193685,
+      "diverse_mean_teacher_kl": 0.08809495274340724,
+      "diverse_trajectory_token_agreement": 0.3933333333333333
+    }
+  },
+  "global_allocator_vs_random": {
+    "mean_teacher_kl_reduction_fraction": 0.7277497551839203,
+    "top1_agreement_delta": 0.0774896716677539,
+    "ppl_wikitext2_reduction_fraction": 0.09357746927915345,
+    "ppl_c4_reduction_fraction": 0.08651566317630821,
+    "diverse_mean_teacher_kl_reduction_fraction": 0.7343204502753287,
+    "diverse_top1_agreement_delta": 0.1292281914336581,
+    "diverse_trajectory_token_agreement_delta": 0.21916666666666668,
+    "complete_bytes_delta_fraction": -0.000004036774199578375
+  },
+  "global_allocator_vs_uniform_w4": {
+    "mean_teacher_kl_increase_fraction": 0.8528376510401616,
+    "top1_agreement_delta": -0.0239182430963253,
+    "ppl_wikitext2_increase_fraction": 0.014232269981673928,
+    "ppl_c4_increase_fraction": 0.014084272491788674,
+    "diverse_mean_teacher_kl_increase_fraction": 0.9038447097668909,
+    "diverse_trajectory_token_agreement_delta": -0.13875,
+    "registered_bytes_reduction_fraction": 0.0512459664404028
+  },
+  "allocation_findings": {
+    "pareto_global_counts_by_bits": {
+      "seed_0": {"3": 83, "4": 111, "5": 6},
+      "seed_1": {"3": 85, "4": 108, "5": 7},
+      "seed_2": {"3": 83, "4": 110, "5": 7}
+    },
+    "pair_refinement": "pareto_global_refined had the same allocation fingerprint as pareto_global and applied zero exchanges",
+    "high_precision_islands": "forcing W6 on the top 5% or W8 on the top 1% reduced aggregate fidelity at the same byte target",
+    "stable_sensitive_region": "layer 31 MLP up/gate/down projections plus early down and linear-attention projections ranked among the most sensitive, but fixed-budget compensation elsewhere outweighed hard protection"
+  },
+  "unsloth_anchor": {
+    "complete_artifact_bytes": 3584533344,
+    "mean_teacher_kl": 0.01188826747238636,
+    "p95_teacher_kl": 0.03248514607548714,
+    "top1_agreement": 0.9408838878016961,
+    "nll_delta": 0.010750668449191148,
+    "pareto_global_seed0_artifact_bytes": 3587632807,
+    "byte_delta_fraction": 0.0008646768498299373,
+    "within_registered_one_percent_gate": true,
+    "pareto_global_relative_kl_delta": 1.6184629791671514,
+    "pareto_global_top1_delta": -0.033077843009349905
+  },
+  "decision": {
+    "allocator_v3": "promote pareto_global as the exact-size bits-only allocator baseline",
+    "high_precision_islands": "do not promote forced W6/W8 floors",
+    "provider_competitiveness": "not achieved",
+    "next": "test a bounded format-aware W3/W4/W5 palette with calibrated scalar codebooks and group-64 scaling against pareto_global and exact same-palette random allocation"
+  },
+  "limitations": [
+    "The primary and diverse development suites contain 24 and 25 prompts respectively.",
+    "The RotQuant and Unsloth prompts match but the comparison remains cross-engine.",
+    "The registered 300-prompt engine-neutral suite remains mandatory for public claims."
+  ]
+}

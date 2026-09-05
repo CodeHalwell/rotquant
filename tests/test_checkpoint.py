@@ -16,6 +16,7 @@ from rotquant.checkpoint import (
     checkpoint_manifest,
     load_packed_model,
     save_packed_checkpoint,
+    verify_checkpoint,
 )
 from rotquant.linear import QuantLinear
 from rotquant.patch import PatchConfig, patch_model
@@ -137,6 +138,76 @@ def test_extended_checkpoint_profiles_round_trip_exactly(tmp_path, profile):
     torch.testing.assert_close(actual, expected, rtol=0, atol=0)
 
 
+@pytest.mark.parametrize("failure", ["packed_write", "publication"])
+def test_failed_overwrite_preserves_last_generation(tmp_path, monkeypatch, failure):
+    model = _tiny_packed_llama("fwht")
+    output = tmp_path / "artifact"
+    previous = save_packed_checkpoint(model, output, model_loader="causal_lm")
+    snapshots = {path.name: path.read_bytes() for path in output.iterdir()}
+    with torch.no_grad():
+        model.model.embed_tokens.weight.add_(0.5)
+    if failure == "packed_write":
+        safe_open, load, _save_file, save_model = checkpoint_module._require_safetensors()
+
+        def fail(*args, **kwargs):
+            raise RuntimeError("injected packed write failure")
+
+        monkeypatch.setattr(checkpoint_module, "_require_safetensors",
+                            lambda: (safe_open, load, fail, save_model))
+    else:
+        replace = checkpoint_module.os.replace
+
+        def fail(source, destination):
+            if ".staging-" in str(source):
+                raise RuntimeError("injected publication failure")
+            return replace(source, destination)
+
+        monkeypatch.setattr(checkpoint_module.os, "replace", fail)
+    with pytest.raises(RuntimeError, match="injected"):
+        save_packed_checkpoint(model, output, overwrite=True)
+    assert {path.name: path.read_bytes() for path in output.iterdir()} == snapshots
+    verify_checkpoint(output, expected_manifest_sha256=previous["manifest_sha256"])
+    assert not list(tmp_path.glob(".*.staging-*"))
+
+
+def test_checkpoint_integrity_and_generation_identity(tmp_path):
+    from scripts.run_qwen35_next_stage import _complete_artifact
+
+    model = _tiny_packed_llama("fwht")
+    output = tmp_path / "artifact"
+    first = save_packed_checkpoint(model, output)
+    second = save_packed_checkpoint(model, output, overwrite=True)
+    assert _complete_artifact(output, second)
+    assert not _complete_artifact(output, first)
+    with pytest.raises(ValueError, match="recorded trial"):
+        verify_checkpoint(output, expected_manifest_sha256=first["manifest_sha256"])
+    with (output / MODEL_STATE_NAME).open("ab") as handle:
+        handle.write(b"corrupt")
+    with pytest.raises(ValueError, match="integrity mismatch"):
+        verify_checkpoint(output)
+    with pytest.raises(ValueError, match="integrity mismatch"):
+        load_packed_model(output)
+    assert not _complete_artifact(output, second)
+    fake = tmp_path / "three-names-only"
+    fake.mkdir()
+    for name in (MANIFEST_NAME, MODEL_STATE_NAME, PACKED_STATE_NAME):
+        (fake / name).write_text("{}")
+    assert not _complete_artifact(fake)
+
+
+def test_checkpoint_recovers_directory_rename_interruption(tmp_path):
+    model = _tiny_packed_llama("fwht")
+    output = tmp_path / "artifact"
+    result = save_packed_checkpoint(model, output)
+    backup = checkpoint_module._previous_checkpoint(output)
+    output.rename(backup)
+    verify_checkpoint(output, expected_manifest_sha256=result["manifest_sha256"])
+    restored = load_packed_model(output)
+    assert restored is not None
+    with pytest.raises(FileExistsError, match="recovery copy"):
+        save_packed_checkpoint(model, output, overwrite=True)
+
+
 @pytest.mark.parametrize("rotation", ["fwht", "butterfly"])
 def test_packed_checkpoint_round_trip_reproduces_logits(tmp_path, rotation):
     torch.manual_seed(13)
@@ -217,6 +288,19 @@ def test_checkpoint_refuses_nonempty_directory_without_overwrite(tmp_path):
     with pytest.raises(FileExistsError, match="not empty"):
         save_packed_checkpoint(model, export_dir)
     assert (export_dir / "keep.txt").read_text() == "user data"
+    with pytest.raises(ValueError, match="overwrite requires"):
+        save_packed_checkpoint(model, export_dir, overwrite=True)
+    assert (export_dir / "keep.txt").read_text() == "user data"
+
+
+def test_checkpoint_overwrite_preserves_unrelated_files(tmp_path):
+    model = _tiny_packed_llama()
+    output = tmp_path / "artifact"
+    save_packed_checkpoint(model, output)
+    (output / "user-notes.md").write_text("keep me")
+    with pytest.raises(ValueError, match="unrecorded user files"):
+        save_packed_checkpoint(model, output, overwrite=True)
+    assert (output / "user-notes.md").read_text() == "keep me"
 
 
 def test_manifest_is_plain_json_and_records_loader(tmp_path):

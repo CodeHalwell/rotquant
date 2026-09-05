@@ -55,6 +55,12 @@ serving stage: checkpoint reliability gates, a sharded Transformers artifact,
 specialized W1--W8 kernels, vLLM integration, architecture tiers, and packed-KV
 acceptance criteria.
 
+The [current performance plan](docs/performance_plan_2026-09-05.md) records the
+September review fixes and prioritizes a matched-size, format-aware 4B experiment
+before recovery training, 27B scaling or additional engine integrations. The v4
+notebook now runs a synthetic CUDA correctness preflight before calibration;
+promotion requires per-seed quality guards and an identity-matched real export.
+
 The [competitive evaluation contract](docs/competitive_eval.md) defines what it
 takes to compare RotQuant with Dynamic GGUF providers: exact deployed-size
 matching, disjoint calibration and 300-prompt manifests, KL distribution tails,
@@ -109,12 +115,17 @@ measured sensitive layers, and persisted partial candidate tables for Colab
 resumption. Its completed run reduced KL by 25.1% versus random allocation but
 duplicated a finalist and missed the exported-artifact byte gate.
 
+Allocator v3 completed the exact-size correction. Its global recipe reduced
+three-seed KL by 72.8% versus broad random allocation and exported within 0.087%
+of the Unsloth byte target, but remained 2.62x worse than the prompt-matched
+Unsloth KL anchor. Pair refinement was a no-op and forced W6/W8 islands hurt.
+
 The active successor is the
-[allocator-v3 Colab](notebooks/qwen35_4b_allocator_v3_colab.ipynb). It targets
-complete serialized bytes, uses allocation fingerprints to eliminate duplicate
-recipes, adds direct paired random-control evidence and exact-byte exchange
-refinement, and tests binding W6/W8 high-precision islands. See the
-[allocator-v3 design](docs/dynamic_allocator_v3.md).
+[format-aware allocator-v4 Colab](notebooks/qwen35_4b_allocator_v4_colab.ipynb).
+It lets each projection choose a complete quantizer format—not only a bit
+width—and tests calibrated W3/W4 codebooks plus W3 group-64 scaling against the
+promoted bits-only Pareto recipe and an exact same-palette random control. See
+the [allocator-v4 design](docs/dynamic_allocator_v4.md).
 
 ## Install
 

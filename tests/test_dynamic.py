@@ -81,6 +81,61 @@ def test_dynamic_config_validation_and_rule_selection():
     assert model.layers[1].qweight.packed.bits == 3
 
 
+def test_format_palette_keeps_same_bit_candidates_distinct_and_reusable():
+    formats = [
+        {"name": "gaussian_w3_g16", "bits": 3, "codebook": "gaussian"},
+        {"name": "uniform_w3_g16", "bits": 3, "codebook": "uniform"},
+        {"name": "gaussian_w4_g16", "bits": 4, "codebook": "gaussian"},
+    ]
+    config = DynamicQuantConfig(
+        candidate_bits=(),
+        candidate_formats=tuple(formats),
+        allocation_formats=("gaussian_w3_g16", "gaussian_w4_g16"),
+    )
+    assert config.candidate_bits == (3, 4)
+    with pytest.raises(ValueError, match="duplicate candidate format name"):
+        DynamicQuantConfig(candidate_formats=(formats[0], formats[0]))
+    with pytest.raises(ValueError, match="unknown names"):
+        DynamicQuantConfig(
+            candidate_formats=tuple(formats),
+            allocation_formats=("missing",),
+        )
+
+    torch.manual_seed(21)
+    model = TinyLM().eval()
+    patch_cfg = _patch_cfg(
+        candidate_formats=formats,
+        allocation_formats=["gaussian_w3_g16", "gaussian_w4_g16"],
+        target_bpw=4.0,
+        global_kl_weight=0.0,
+    )
+    import rotquant.dynamic as dynamic_module
+    dynamic_module._CANDIDATE_SCORE_CACHE.clear()
+    _recipe, first = select_dynamic_quantization(
+        model, patch_cfg, score_cache_key="format-aware-palette"
+    )
+    assert len(first["candidate_table"]) == 6
+    assert {
+        row["format_id"] for row in first["candidate_table"]
+    } == {item["name"] for item in formats}
+    assert all(
+        row["format_id"] != "uniform_w3_g16" or not row["eligible"]
+        for row in first["candidate_table"]
+    )
+    assert set(first["counts_by_format"]) <= {
+        "gaussian_w3_g16", "gaussian_w4_g16"
+    }
+
+    second_cfg = replace(
+        patch_cfg,
+        dynamic={**patch_cfg.dynamic, "allocation_formats": None},
+    )
+    _recipe, second = select_dynamic_quantization(
+        model, second_cfg, score_cache_key="format-aware-palette"
+    )
+    assert second["candidate_score_cache_hit"] is True
+
+
 def test_dynamic_config_requires_real_global_measurements():
     with pytest.raises(ValueError, match="global_kl_batches"):
         DynamicQuantConfig(global_kl_weight=1.0, global_kl_batches=0)
@@ -461,6 +516,62 @@ def _synthetic_candidate(name: str, bits: int, size: int,
         global_kl=kl,
         score=0.0,
     )
+
+
+def test_pareto_does_not_discard_the_only_feasible_size():
+    candidates = {"layer": [
+        replace(_synthetic_candidate("layer", bits, size, 0.0, 0.0), score=cost)
+        for bits, size, cost in [(5, 100000, 1.0), (4, 99500, 0.5), (3, 99400, 0.4)]
+    ]}
+    selected, stats = _pareto_selection(
+        candidates, size_attr="complete_bytes", fixed_bytes=0,
+        target_bytes=99500, tolerance_bytes=50, granularity_bytes=1000,
+    )
+    assert selected["layer"].complete_bytes == 99500
+    assert stats["search_within_tolerance"] is True
+
+
+def test_exact_repair_matches_small_brute_force():
+    import itertools
+    import random
+
+    from rotquant.dynamic import _repair_exact_byte_selection
+
+    rng = random.Random(51)
+    for _ in range(12):
+        candidates = {str(layer): [
+            replace(_synthetic_candidate(str(layer), bits, rng.randint(10, 100), 0, 0),
+                    score=rng.random())
+            for bits in (3, 4, 5)
+        ] for layer in range(4)}
+        combinations = list(itertools.product(*candidates.values()))
+        target = sum(c.complete_bytes for c in rng.choice(combinations)) + 7
+        feasible = [recipe for recipe in combinations
+                    if abs(sum(c.complete_bytes for c in recipe) + 7 - target) <= 1]
+        optimum = min(sum(c.score for c in recipe) for recipe in feasible)
+        selected, stats = _repair_exact_byte_selection(
+            candidates, size_attr="complete_bytes", fixed_bytes=7,
+            lower=target - 1, upper=target + 1,
+        )
+        assert stats["attempted"] is True
+        assert selected is not None
+        assert sum(c.score for c in selected.values()) == pytest.approx(optimum)
+
+
+@pytest.mark.parametrize("setting", [
+    {"share_rotations": True}, {"activation_bits": 8},
+    {"train_rotation": {"steps": 1}}, {"train_rotation": {}},
+])
+def test_dynamic_rejects_unfaithful_deployment_even_with_cached_scores(setting):
+    from rotquant.dynamic import _CANDIDATE_SCORE_CACHE
+
+    _CANDIDATE_SCORE_CACHE["unsupported-test"] = {}
+    try:
+        cfg = PatchConfig(quant=QuantConfig(), dynamic={"candidate_bits": [3, 4]}, **setting)
+        with pytest.raises(ValueError, match="faithful dynamic scoring does not yet support"):
+            select_dynamic_quantization(TinyLM(), cfg, score_cache_key="unsupported-test")
+    finally:
+        _CANDIDATE_SCORE_CACHE.pop("unsupported-test", None)
 
 
 def test_pareto_solver_and_measured_protection_choose_global_recipe():

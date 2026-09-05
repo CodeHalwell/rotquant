@@ -13,6 +13,7 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
+from rotquant.eval.promotion import finite_number
 from rotquant.utils import write_result
 
 PROTOCOL = "qwen35-rotquant-vs-unsloth-q4-v1"
@@ -20,8 +21,7 @@ PROTOCOL = "qwen35-rotquant-vs-unsloth-q4-v1"
 
 def _mean(rows: list[dict[str, Any]], key: str) -> float:
     values = [row.get(key) for row in rows]
-    if not all(isinstance(value, (int, float)) and not isinstance(value, bool)
-               for value in values):
+    if not values or not all(finite_number(value) for value in values):
         raise ValueError(f"candidate rows are missing numeric {key}")
     return float(statistics.fmean(float(value) for value in values))
 
@@ -33,6 +33,8 @@ def compare(summary: dict[str, Any], unsloth: dict[str, Any],
         raise ValueError("byte_tolerance must be in [0, 0.25]")
     unsloth_metrics = unsloth.get("metrics") or {}
     baseline_bytes = int(unsloth["candidate"]["complete_artifact_bytes"])
+    if baseline_bytes <= 0:
+        raise ValueError("Unsloth artifact bytes must be positive")
     baseline_hashes = list(unsloth_metrics.get("input_hashes") or [])
     if not baseline_hashes:
         raise ValueError("Unsloth result contains no input hashes")
@@ -45,20 +47,26 @@ def compare(summary: dict[str, Any], unsloth: dict[str, Any],
         ]
         if not rows:
             raise ValueError(f"summary contains no {stage} rows for {arm}")
+        if len({row["seed"] for row in rows}) != len(rows):
+            raise ValueError(f"duplicate {arm}/seed rows")
         for row in rows:
             if list(row.get("logit_fidelity_input_hashes") or []) != baseline_hashes:
                 raise ValueError(f"{arm}/seed-{row.get('seed')} input hashes differ")
-        artifact_sizes = [
-            int(row["packed_artifact_bytes"]) for row in rows
-            if isinstance(row.get("packed_artifact_bytes"), (int, float))
+        measurements = [
+            {"seed": int(row["seed"]), "bytes": int(row["packed_artifact_bytes"]),
+             "identity": row.get("packed_artifact_identity"),
+             "manifest_sha256": row.get("packed_manifest_sha256")}
+            for row in rows
+            if finite_number(row.get("packed_artifact_bytes"))
+            and row["packed_artifact_bytes"] > 0
         ]
+        artifact_sizes = [item["bytes"] for item in measurements]
+        estimated_bytes = round(_mean(rows, "complete_persistent_model_bytes"))
         candidate_bytes = (
-            artifact_sizes[0]
+            max(artifact_sizes)
             if artifact_sizes
-            else round(_mean(rows, "complete_persistent_model_bytes"))
+            else estimated_bytes
         )
-        if any(size != candidate_bytes for size in artifact_sizes):
-            raise ValueError(f"{arm} exported artifact sizes differ across seeds")
         byte_ratio = candidate_bytes / baseline_bytes
         candidate_metrics = {
             "mean_teacher_kl": _mean(rows, "mean_teacher_kl"),
@@ -73,7 +81,17 @@ def compare(summary: dict[str, Any], unsloth: dict[str, Any],
             "baseline_bytes": baseline_bytes,
             "byte_ratio": byte_ratio,
             "byte_delta_fraction": byte_ratio - 1.0,
-            "within_byte_gate": abs(byte_ratio - 1.0) <= byte_tolerance,
+            "byte_basis": "measured_artifact" if measurements else "persistent_tensor_estimate",
+            "exported_seeds": sorted(item["seed"] for item in measurements),
+            "artifact_measurements": measurements,
+            "within_byte_gate": bool(measurements) and all(
+                abs(size / baseline_bytes - 1.0) <= byte_tolerance
+                for size in artifact_sizes
+            ),
+            "estimated_persistent_bytes": estimated_bytes,
+            "within_estimated_byte_gate": abs(
+                estimated_bytes / baseline_bytes - 1.0
+            ) <= byte_tolerance,
             "candidate_metrics": candidate_metrics,
             "unsloth_metrics": {
                 key: float(unsloth_metrics[key]) for key in (

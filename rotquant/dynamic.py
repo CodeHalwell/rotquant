@@ -23,7 +23,7 @@ import os
 import random
 import statistics
 from collections.abc import Mapping, Sequence
-from dataclasses import asdict, dataclass, replace
+from dataclasses import asdict, dataclass, fields, replace
 from itertools import pairwise
 from pathlib import Path
 from typing import Any
@@ -53,6 +53,10 @@ class DynamicQuantConfig:
     """
 
     candidate_bits: tuple[int, ...] = (3, 4)
+    # Optional named, explicit QuantConfig overrides. When present these are
+    # the candidate palette and ``candidate_bits`` is inferred from it. This
+    # lets the solver compare different quantizers at the same nominal width.
+    candidate_formats: tuple[dict[str, Any], ...] = ()
     target_bpw: float = 3.625
     # A complete-model byte target takes precedence over ``target_bpw``.  It
     # includes every persistent source tensor that remains outside the selected
@@ -104,6 +108,9 @@ class DynamicQuantConfig:
     # screen can be reused by conservative adjacent-bit policies.
     allocation_min_bits: int | None = None
     allocation_max_bits: int | None = None
+    # Restrict allocation to a named subset of a scored format palette. This
+    # remains allocation-only so matched ablations reuse one candidate table.
+    allocation_formats: tuple[str, ...] | None = None
     # Automatically keep the most sensitive fraction of projections at or
     # above ``protect_min_bits``. Sensitivity is measured from the already
     # collected final-quantizer candidate table, not from model-name folklore.
@@ -120,8 +127,53 @@ class DynamicQuantConfig:
 
     def __post_init__(self) -> None:
         bits = tuple(sorted({int(value) for value in self.candidate_bits}))
-        if not bits or any(value < 1 or value > 16 for value in bits):
+        raw_formats = tuple(self.candidate_formats or ())
+        if (not bits and not raw_formats) or any(
+            value < 1 or value > 16 for value in bits
+        ):
             raise ValueError("candidate_bits must contain integers in [1, 16]")
+        formats: list[dict[str, Any]] = []
+        if raw_formats:
+            quant_fields = {field.name for field in fields(QuantConfig)}
+            names: set[str] = set()
+            definitions: set[str] = set()
+            for raw in raw_formats:
+                if not isinstance(raw, Mapping):
+                    raise TypeError("candidate_formats entries must be mappings")
+                item = dict(raw)
+                name = item.get("name")
+                if not isinstance(name, str) or not name.strip():
+                    raise ValueError(
+                        "every candidate format requires a non-empty name"
+                    )
+                if name in names:
+                    raise ValueError(f"duplicate candidate format name: {name}")
+                unknown = set(item) - quant_fields - {"name"}
+                if unknown:
+                    raise ValueError(
+                        f"candidate format {name!r} has unknown QuantConfig "
+                        f"fields: {sorted(unknown)}"
+                    )
+                value = item.get("bits")
+                if isinstance(value, bool) or not isinstance(value, int) \
+                        or not 1 <= value <= 16:
+                    raise ValueError(
+                        f"candidate format {name!r} requires integer bits in "
+                        "[1, 16]"
+                    )
+                definition = json.dumps(
+                    {key: value for key, value in item.items() if key != "name"},
+                    sort_keys=True, separators=(",", ":"), default=str,
+                )
+                if definition in definitions:
+                    raise ValueError(
+                        f"candidate format {name!r} duplicates another format"
+                    )
+                names.add(name)
+                definitions.add(definition)
+                formats.append(item)
+            bits = tuple(sorted({int(item["bits"]) for item in formats}))
+        object.__setattr__(self, "candidate_formats", tuple(formats))
         object.__setattr__(self, "candidate_bits", bits)
         if self.target_bpw <= 0:
             raise ValueError("target_bpw must be > 0")
@@ -236,6 +288,27 @@ class DynamicQuantConfig:
             raise ValueError(
                 "allocation_min_bits must not exceed allocation_max_bits"
             )
+        if self.allocation_formats is not None:
+            allocation_formats = tuple(dict.fromkeys(map(
+                str, self.allocation_formats
+            )))
+            if not allocation_formats or any(
+                not name for name in allocation_formats
+            ):
+                raise ValueError("allocation_formats must contain names")
+            known = {str(item["name"]) for item in formats}
+            if not known:
+                raise ValueError(
+                    "allocation_formats requires candidate_formats"
+                )
+            unknown = set(allocation_formats) - known
+            if unknown:
+                raise ValueError(
+                    f"allocation_formats contains unknown names: {sorted(unknown)}"
+                )
+            object.__setattr__(
+                self, "allocation_formats", allocation_formats
+            )
         if not 0.0 <= self.protect_top_fraction <= 1.0:
             raise ValueError("protect_top_fraction must be in [0, 1]")
         if self.protect_min_bits is not None and (
@@ -292,6 +365,7 @@ class CandidateScore:
     score: float
     normalized_local: float = 0.0
     normalized_global_kl: float = 0.0
+    format_id: str = ""
 
 
 # A stage runner evaluates matched arms in one Python process. Candidate
@@ -336,6 +410,7 @@ def _load_candidate_score_cache(
                     local_relative_error=float(row["local_relative_error"]),
                     global_kl=float(row["global_kl"]),
                     score=0.0,
+                    format_id=str(row.get("format_id") or f"w{row['bits']}"),
                 )
                 for row in rows
             ]
@@ -358,6 +433,7 @@ def _write_candidate_score_cache(
         "scores": {
             name: [
                 {
+                    "format_id": item.format_id,
                     "bits": item.bits,
                     "config": asdict(item.config),
                     "packed_bytes": item.packed_bytes,
@@ -412,6 +488,46 @@ def _allowed_bits(name: str, config: DynamicQuantConfig) -> tuple[int, ...]:
     if not allowed:
         raise ValueError(f"dynamic rules leave no candidate precision for {name}")
     return allowed
+
+
+def _candidate_specs(
+    name: str,
+    config: DynamicQuantConfig,
+    base_quant: QuantConfig,
+) -> tuple[tuple[str, QuantConfig], ...]:
+    """Resolve the deployable candidate palette for one projection."""
+
+    allowed_bits = set(_allowed_bits(name, config))
+    if not config.candidate_formats:
+        return tuple(
+            (f"w{bits}", replace(base_quant, bits=bits))
+            for bits in config.candidate_bits
+            if bits in allowed_bits
+        )
+    specs = []
+    for item in config.candidate_formats:
+        overrides = {key: value for key, value in item.items() if key != "name"}
+        if int(overrides["bits"]) not in allowed_bits:
+            continue
+        try:
+            quant = replace(base_quant, **overrides)
+        except (TypeError, ValueError) as exc:
+            raise ValueError(
+                f"invalid candidate format {item['name']!r} for {name}: {exc}"
+            ) from exc
+        specs.append((str(item["name"]), quant))
+    if not specs:
+        raise ValueError(f"dynamic rules leave no candidate format for {name}")
+    return tuple(specs)
+
+
+def _candidate_identity(format_id: str, quant: QuantConfig) -> str:
+    payload = {"format_id": format_id, "quant": asdict(quant)}
+    return json.dumps(payload, sort_keys=True, separators=(",", ":"), default=str)
+
+
+def _score_identity(item: CandidateScore) -> str:
+    return _candidate_identity(item.format_id or f"w{item.bits}", item.config)
 
 
 def _tree_to(value, device, dtype):
@@ -610,15 +726,23 @@ def _score_candidates(model: nn.Module, targets, adapter, patch_cfg,
     scores: dict[str, list[CandidateScore]] = {}
     scored_since_checkpoint = 0
     for index, (name, source_module, source) in enumerate(targets):
-        allowed_bits = _allowed_bits(name, config)
+        specs = _candidate_specs(name, config, patch_cfg.quant)
+        expected_identities = tuple(
+            _candidate_identity(format_id, quant)
+            for format_id, quant in specs
+        )
         cached = list((existing_scores or {}).get(name, ()))
         if (
-            len(cached) == len(allowed_bits)
-            and tuple(sorted(item.bits for item in cached)) == allowed_bits
+            len(cached) == len(specs)
+            and {_score_identity(item) for item in cached}
+            == set(expected_identities)
         ):
-            scores[name] = sorted(
-                (replace(item) for item in cached), key=lambda item: item.bits
-            )
+            by_identity = {_score_identity(item): item for item in cached}
+            scores[name] = sorted([
+                replace(by_identity[identity]) for identity in expected_identities
+            ], key=lambda item: (
+                item.complete_bytes, item.bits, item.format_id
+            ))
             logger.info(
                 "dynamic resume %d/%d %s from candidate-score checkpoint",
                 index + 1, len(targets), name,
@@ -638,8 +762,7 @@ def _score_candidates(model: nn.Module, targets, adapter, patch_cfg,
         context = _candidate_context(
             source, patch_cfg, patch_cfg.seed + index, source_hessian
         )
-        for bits in allowed_bits:
-            quant = replace(patch_cfg.quant, bits=bits)
+        for format_id, quant in specs:
             scoring_quant = replace(
                 quant,
                 error_comp=(
@@ -653,6 +776,10 @@ def _score_candidates(model: nn.Module, targets, adapter, patch_cfg,
                     else config.scoring_scale
                 ),
             )
+            if scoring_quant.error_comp == "gptq" and source_hessian is None:
+                raise ValueError(
+                    f"faithful GPTQ candidate scoring requires a Hessian for {name}"
+                )
             candidate = _candidate_linear(
                 source, scoring_quant, context, activation_means.get(name))
             local, reference_energy, local_relative = _local_error(
@@ -677,7 +804,7 @@ def _score_candidates(model: nn.Module, targets, adapter, patch_cfg,
             codebook_bytes = _candidate_codebook_bytes(candidate)
             packed_bytes = candidate.packed_state_bytes()
             layer_scores.append(CandidateScore(
-                bits=bits,
+                bits=quant.bits,
                 config=quant,
                 packed_bytes=packed_bytes,
                 registered_bytes=registered_bytes,
@@ -688,13 +815,17 @@ def _score_candidates(model: nn.Module, targets, adapter, patch_cfg,
                 local_relative_error=local_relative,
                 global_kl=global_kl,
                 score=0.0,
+                format_id=format_id,
             ))
             del candidate
-        scores[name] = sorted(layer_scores, key=lambda item: item.bits)
+        scores[name] = sorted(
+            layer_scores,
+            key=lambda item: (item.complete_bytes, item.bits, item.format_id),
+        )
         logger.info(
             "dynamic scored %d/%d %s: %s", index + 1, len(targets), name,
             ", ".join(
-                f"{item.bits}b local={item.local_error:.3g} "
+                f"{item.format_id}/{item.bits}b local={item.local_error:.3g} "
                 f"rel={item.local_relative_error:.3g} "
                 f"kl={item.global_kl:.3g}" for item in scores[name]))
         scored_since_checkpoint += 1
@@ -831,15 +962,26 @@ def _score_diagnostics(
     global_deltas: list[float] = []
     local_violations = global_violations = comparisons = 0
     for items in scores.values():
-        ordered = sorted(items, key=lambda item: item.bits)
-        for lower, higher in pairwise(ordered):
-            lower_local = float(getattr(lower, local_attr))
-            higher_local = float(getattr(higher, local_attr))
-            local_deltas.append(lower_local - higher_local)
-            global_deltas.append(float(lower.global_kl - higher.global_kl))
-            local_violations += int(higher_local > lower_local + 1e-12)
-            global_violations += int(higher.global_kl > lower.global_kl + 1e-12)
-            comparisons += 1
+        # Bit monotonicity is only meaningful within one format family. A
+        # calibrated/group-64 point is not adjacent to Gaussian/group-128.
+        families: dict[str, list[CandidateScore]] = {}
+        for item in items:
+            quant = asdict(item.config)
+            quant.pop("bits", None)
+            family = json.dumps(
+                quant, sort_keys=True, separators=(",", ":"), default=str
+            )
+            families.setdefault(family, []).append(item)
+        for family_items in families.values():
+            ordered = sorted(family_items, key=lambda item: item.bits)
+            for lower, higher in pairwise(ordered):
+                lower_local = float(getattr(lower, local_attr))
+                higher_local = float(getattr(higher, local_attr))
+                local_deltas.append(lower_local - higher_local)
+                global_deltas.append(float(lower.global_kl - higher.global_kl))
+                local_violations += int(higher_local > lower_local + 1e-12)
+                global_violations += int(higher.global_kl > lower.global_kl + 1e-12)
+                comparisons += 1
     correlation = None
     if config.global_kl_batches and local_deltas:
         correlation = _pearson(
@@ -880,6 +1022,9 @@ def _allocation_candidates(
             ) and (
                 config.allocation_max_bits is None
                 or item.bits <= config.allocation_max_bits
+            ) and (
+                config.allocation_formats is None
+                or item.format_id in config.allocation_formats
             )
         ]
         if not allowed:
@@ -939,7 +1084,12 @@ def _pareto_selection(
 
     names = list(candidates)
     highest = {
-        name: max(candidates[name], key=lambda item: item.bits)
+        name: max(
+            candidates[name],
+            key=lambda item: (
+                int(getattr(item, size_attr)), item.bits, item.format_id
+            ),
+        )
         for name in names
     }
     high_total = fixed_bytes + sum(
@@ -1002,19 +1152,17 @@ def _pareto_selection(
                     ))
         next_states = {}
         for unit, bucket_states in proposed.items():
-            # Descending savings makes the best score seen so far the exact
-            # two-objective Pareto dominance test within this byte bucket.
-            frontier = []
-            best_score = math.inf
-            for state in sorted(bucket_states, key=lambda value: (-value[1], value[0])):
-                if state[0] < best_score:
-                    frontier.append(state)
-                    best_score = state[0]
+            # Different savings do not dominate in a TWO-sided byte interval:
+            # extra savings can undershoot the smallest permitted artifact.
+            by_exact_savings = {}
+            for state in sorted(bucket_states, key=lambda value: value[0]):
+                by_exact_savings.setdefault(state[1], state)
+            frontier = list(by_exact_savings.values())
             if len(frontier) > states_per_bucket:
                 by_score = sorted(frontier, key=lambda value: value[0])
-                by_savings = sorted(frontier, key=lambda value: -value[1])
+                by_savings = sorted(frontier, key=lambda value: value[1])
                 retained = []
-                for state in (*by_score[:2], *by_savings[:2]):
+                for state in (*by_score[:2], by_savings[0], by_savings[-1]):
                     if state not in retained:
                         retained.append(state)
                 frontier = retained[:states_per_bucket]
@@ -1028,6 +1176,27 @@ def _pareto_selection(
         state for bucket in states.values() for state in bucket
         if lower <= high_total - state[1] <= upper
     ]
+    repair = {"attempted": False}
+    if not feasible:
+        repaired, repair = _repair_exact_byte_selection(
+            candidates, size_attr=size_attr, fixed_bytes=fixed_bytes,
+            lower=lower, upper=upper,
+        )
+        if repaired is not None:
+            repaired_total = fixed_bytes + sum(
+                int(getattr(item, size_attr)) for item in repaired.values()
+            )
+            return repaired, {
+                "solver": "bucketed_multiple_choice_with_exact_byte_repair",
+                "granularity_bytes": granularity_bytes,
+                "states_per_bucket": states_per_bucket,
+                "peak_states": peak_states,
+                "additive_score": sum(item.score for item in repaired.values()),
+                "search_high_bytes": high_total,
+                "search_achieved_bytes": repaired_total,
+                "search_within_tolerance": True,
+                "repair": repair,
+            }
     if feasible:
         chosen = min(
             feasible,
@@ -1063,7 +1232,63 @@ def _pareto_selection(
         "search_high_bytes": high_total,
         "search_achieved_bytes": achieved,
         "search_within_tolerance": lower <= achieved <= upper,
+        "repair": repair,
     }
+
+
+def _repair_exact_byte_selection(candidates, *, size_attr, fixed_bytes,
+                                 lower, upper):
+    """Bounded MILP repair with exact integer verification of the returned recipe.
+
+    A timeout is unresolved feasibility, never proof that no recipe exists.
+    This optimizes the additive measured proxy, not whole-model quality.
+    """
+    import numpy as np
+    from scipy.optimize import Bounds, LinearConstraint, milp
+    from scipy.sparse import csc_matrix
+
+    names = list(candidates)
+    flat = [(name, item) for name in names for item in candidates[name]]
+    rows, cols, values = [], [], []
+    indices = {name: index for index, name in enumerate(names)}
+    offsets = {name: min(int(getattr(c, size_attr)) for c in candidates[name])
+               for name in names}
+    differences = [int(getattr(item, size_attr)) - offsets[name]
+                   for name, item in flat]
+    unit = math.gcd(*differences) or 1
+    base = fixed_bytes + sum(offsets.values())
+    for column, ((name, _item), difference) in enumerate(zip(flat, differences)):
+        rows.extend([indices[name], len(names)])
+        cols.extend([column, column])
+        values.extend([1.0, difference // unit])
+    matrix = csc_matrix((values, (rows, cols)), shape=(len(names) + 1, len(flat)))
+    costs = np.array([item.score for _, item in flat], dtype=float)
+    if not np.isfinite(costs).all():
+        raise ValueError("candidate scores must be finite")
+    low_units, high_units = math.ceil((lower - base) / unit), math.floor((upper - base) / unit)
+    if low_units > high_units:
+        return None, {"attempted": True, "proven_infeasible": True,
+                      "message": "byte interval contains no storage-aligned size"}
+    result = milp(
+        costs / max(float(np.abs(costs).max()), 1e-12),
+        integrality=np.ones(len(flat)), bounds=Bounds(0, 1),
+        constraints=LinearConstraint(
+            matrix, [*np.ones(len(names)), low_units],
+            [*np.ones(len(names)), high_units],
+        ),
+        options={"time_limit": 30.0, "mip_rel_gap": 0.0, "node_limit": 10000},
+    )
+    stats = {"attempted": True, "status": int(result.status),
+             "message": str(result.message), "time_limit_seconds": 30,
+             "node_limit": 10000, "proven_infeasible": result.status == 2}
+    if result.x is None or not np.isfinite(result.x).all():
+        return None, stats
+    chosen = [(name, item) for (name, item), value in zip(flat, result.x) if value > 0.5]
+    selected = dict(chosen)
+    actual = fixed_bytes + sum(int(getattr(c, size_attr)) for c in selected.values())
+    if len(chosen) != len(names) or set(selected) != set(names) or not lower <= actual <= upper:
+        return None, stats
+    return selected, stats
 
 
 def _refine_selection(
@@ -1106,7 +1331,7 @@ def _refine_selection(
         for name, items in candidates.items():
             chosen = current[name]
             for item in items:
-                if item.bits == chosen.bits:
+                if _score_identity(item) == _score_identity(chosen):
                     continue
                 moves.append((
                     name,
@@ -1139,9 +1364,12 @@ def _refine_selection(
                 else "/".join(sorted((first[0], second[0])))
             )
             bits = (
-                str(first[1].bits)
+                first[1].format_id or str(first[1].bits)
                 if second is None
-                else "/".join(map(str, sorted((first[1].bits, second[1].bits))))
+                else "/".join(sorted((
+                    first[1].format_id or str(first[1].bits),
+                    second[1].format_id or str(second[1].bits),
+                )))
             )
             key = (
                 delta_score,
@@ -1177,6 +1405,8 @@ def _refine_selection(
                 "name": name,
                 "from_bits": previous.bits,
                 "to_bits": item.bits,
+                "from_format": previous.format_id,
+                "to_format": item.format_id,
             })
         history.append({
             "pass": pass_index + 1,
@@ -1200,6 +1430,29 @@ def _refine_selection(
     }
 
 
+def validate_dynamic_deployment(patch_cfg) -> None:
+    """Reject transformations the isolated weight-only scorer cannot reproduce.
+
+    Shared sites change rotation seeds and deduplicated byte accounting;
+    learned rotations depend on the eventual recipe, and A8 changes both
+    local and end-to-end errors. These need separate fixed-recipe ablations.
+    """
+    unsupported = []
+    if patch_cfg.share_rotations:
+        unsupported.append("share_rotations")
+    if patch_cfg.train_rotation is not None:
+        unsupported.append("train_rotation")
+    if patch_cfg.activation_bits is not None:
+        unsupported.append("activation_bits")
+    if unsupported:
+        raise ValueError(
+            "faithful dynamic scoring does not yet support "
+            + ", ".join(unsupported)
+            + "; disable these settings for allocation, or evaluate them as "
+            "separate fixed-recipe ablations"
+        )
+
+
 def select_dynamic_quantization(
     model: nn.Module,
     patch_cfg,
@@ -1212,6 +1465,7 @@ def select_dynamic_quantization(
 ) -> tuple[dict[str, QuantConfig], dict[str, Any]]:
     """Return a per-projection quantizer recipe and serializable diagnostics."""
 
+    validate_dynamic_deployment(patch_cfg)
     config = DynamicQuantConfig(**(patch_cfg.dynamic or {}))
     if config.global_kl_batches and not teacher_calls:
         raise ValueError(
@@ -1248,8 +1502,13 @@ def select_dynamic_quantization(
         raise ValueError("dynamic candidate score cache target mismatch")
     complete_cache = raw_scores is not None and all(
         name in raw_scores
-        and tuple(sorted(item.bits for item in raw_scores[name]))
-        == _allowed_bits(name, config)
+        and {_score_identity(item) for item in raw_scores[name]}
+        == {
+            _candidate_identity(format_id, quant)
+            for format_id, quant in _candidate_specs(
+                name, config, patch_cfg.quant
+            )
+        }
         for name in expected_names
     )
     if not complete_cache:
@@ -1378,7 +1637,7 @@ def select_dynamic_quantization(
             selected = {
                 name: next(
                     item for item in candidates[name]
-                    if item.bits == random_item.bits
+                    if _score_identity(item) == _score_identity(random_item)
                 )
                 for name, random_item in selected.items()
             }
@@ -1444,11 +1703,14 @@ def select_dynamic_quantization(
         name: item.config for name, item in selected.items()
     }
     count_by_bits: dict[str, int] = {}
+    count_by_format: dict[str, int] = {}
     details = []
     for name, item in selected.items():
         count_by_bits[str(item.bits)] = count_by_bits.get(str(item.bits), 0) + 1
+        count_by_format[item.format_id] = count_by_format.get(item.format_id, 0) + 1
         details.append({
             "name": name,
+            "format_id": item.format_id,
             "bits": item.bits,
             "packed_bytes": item.packed_bytes,
             "registered_bytes": item.registered_bytes,
@@ -1462,8 +1724,8 @@ def select_dynamic_quantization(
             "normalized_global_kl": item.normalized_global_kl,
             "score": item.score,
         })
-    eligible_bits = {
-        name: {item.bits for item in items}
+    eligible_candidates = {
+        name: {_score_identity(item) for item in items}
         for name, items in candidates.items()
     }
     allocation_payload = [
@@ -1531,10 +1793,12 @@ def select_dynamic_quantization(
         "allocation_fingerprint": allocation_fingerprint,
         "weights": total_weights,
         "counts_by_bits": count_by_bits,
+        "counts_by_format": count_by_format,
         "details": details,
         "candidate_table": [
             {
                 "name": name,
+                "format_id": item.format_id,
                 "bits": item.bits,
                 "packed_bytes": item.packed_bytes,
                 "registered_bytes": item.registered_bytes,
@@ -1547,8 +1811,10 @@ def select_dynamic_quantization(
                 "normalized_local": item.normalized_local,
                 "normalized_global_kl": item.normalized_global_kl,
                 "score": item.score,
-                "eligible": item.bits in eligible_bits[name],
-                "selected": selected[name].bits == item.bits,
+                "eligible": _score_identity(item) in eligible_candidates[name],
+                "selected": (
+                    _score_identity(selected[name]) == _score_identity(item)
+                ),
             }
             for name, items in scores.items()
             for item in items
@@ -1559,7 +1825,7 @@ def select_dynamic_quantization(
         "complete=%d complete_target=%s artifact_target=%s (%s)",
         config.target_bpw, stats["achieved_bpw"], achieved_complete_bytes,
         config.target_complete_bytes, config.target_artifact_bytes,
-        count_by_bits)
+        count_by_format or count_by_bits)
     if config.require_target_match and not stats["within_target_tolerance"]:
         raise ValueError(
             "dynamic allocation missed byte target: "

@@ -31,6 +31,7 @@ from .rotate import (
     LearnedRotation,
     Rotation,
     build_rotation,
+    install_activation_cache_scope,
 )
 from .utils import get_logger
 
@@ -281,6 +282,8 @@ def patch_model(model: nn.Module, cfg: PatchConfig,
             )
             if share_key is not None:
                 act_rot.enable_activation_cache(True)
+                site_parent, _ = get_parent(model, name)
+                install_activation_cache_scope(site_parent)
                 shared_rotations[share_key] = (weight_rot, act_rot)
         should_train_rotation = (
             isinstance(weight_rot, (LearnedRotation, ButterflyRotation))

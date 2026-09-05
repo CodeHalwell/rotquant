@@ -561,35 +561,43 @@ Different projections have different sensitivity. RotQuant's “dynamic” mode
 is a static, model-specific mixed-precision recipe, not a precision decision
 made dynamically for each inference request.
 
-For projection `l` and candidate bit width `b`, it measures a local normalized
-weight or output error and can additionally perturb one projection at a time to
-measure teacher-logit KL:
+For projection `l` and deployable candidate format `f` (bit width, codebook,
+group size, scale representation, and error-correction settings), it measures a
+local normalized output error and can additionally perturb one projection at a
+time to measure teacher-logit KL:
 
 $$
-C_l(b) = \lambda_{local}E_l(b)+\lambda_{KL}D_l(b).
+C_l(f) = \lambda_{local}E_l(f)+\lambda_{KL}D_l(f).
 $$
 
 The conceptual allocation problem is a multiple-choice knapsack:
 
 $$
-\min_{b_1,\ldots,b_L}\sum_l C_l(b_l)
+\min_{f_1,\ldots,f_L}\sum_l C_l(f_l)
 \quad\text{subject to}\quad
-\sum_l S_l(b_l)\le B,
+\sum_l S_l(f_l)\le B,
 $$
 
-where `S_l(b)` is the candidate's actual packed byte count. The present
-allocator starts from the highest allowed precision and repeatedly takes the
-downgrade with the smallest score penalty per byte saved:
+where `S_l(f)` counts the candidate's codes, scales, codebook, bias, and
+rotation state. Complete-model and artifact targets also include tensors that
+remain outside the selected projections plus measured serialization overhead.
 
-$$
-\frac{C_l(b_{lower})-C_l(b_{current})}
-{S_l(b_{current})-S_l(b_{lower})}.
-$$
+The default solver is a bounded multiple-choice dynamic program over byte
+buckets. Under a two-sided byte interval, greater savings do not automatically
+dominate: they can make the artifact too small. Only equal-byte states can be
+discarded safely on score alone. The solver retains bounded representative
+states and invokes a 30-second/10,000-node integer repair if bucketing misses
+the interval. Returned recipes are checked in exact integer bytes; timeout is
+unresolved feasibility, not proof that no feasible allocation exists. It may apply
+exact-byte single/pair exchanges afterwards. `candidate_formats` supplies a
+named palette; `allocation_formats` restricts that table for matched ablations
+without rescoring. Rules can still set minimum, maximum, or fixed widths for
+named projections. A seeded `random_pareto` control uses the same candidates
+and byte solver after replacing sensitivity with random scores.
 
-Rules can set minimum, maximum, or fixed widths for named projections. A seeded
-random downgrade order supplies a matched-format, matched-budget negative
-control. Since the greedy procedure is not an exact global knapsack solver,
-held-out comparison against uniform and random allocation is mandatory.
+The additive objective cannot capture interactions among errors in several
+simultaneously quantized layers. Whole-model held-out KL, top-1 agreement,
+perplexity, and free-running trajectories therefore remain mandatory.
 
 ## 10. KV-cache quantization
 
@@ -829,9 +837,9 @@ competitive claim:
 - On the current Qwen3.5-4B development protocol, the carried-forward simple
   weight profile is Gaussian or calibrated W4 rather than a TurboQuant-style
   row-scale variant.
-- A teacher-guided mixed-rate recipe beat its exact-format random allocator in
-  the recorded algorithm-lab run, but still needs the hardened rerun and full
-  competitive gates.
+- On Qwen3.5-4B, allocator v3's teacher-guided W3/W4/W5 recipe reduced mean KL
+  by 72.8% versus broad random allocation at the same byte target. It still had
+  2.62x the prompt-matched Unsloth anchor's KL; forced W6/W8 islands hurt.
 - Dimension-2 vector W3 beat a matched scalar control locally on the primary
   family, but absolute quality and cross-family transfer were poor. It remains
   research-only.
@@ -858,7 +866,7 @@ comparison live in the [competitive evaluation contract](competitive_eval.md).
 | The asymmetric QJL residual estimator is unbiased | Exact in expectation over Gaussian sketches; implementation tested numerically |
 | GPTQ optimizes an activation-weighted local error | Prior method and implemented approximation |
 | Learned block rotations improve every architecture | Not proved; must pass held-out selection per model |
-| Dynamic mixed precision beats uniform quantization | Not guaranteed; current greedy allocator needs controls |
+| Dynamic mixed precision beats uniform quantization | Not guaranteed; Pareto allocator, exact random control, and held-out gates implemented |
 | Finite E8P beats scalar codes at equal rate | Packed comparator implemented; empirical advantage not yet established across models |
 | W4A8 improves prefill throughput | Quality semantics implemented; no fused-kernel speed claim yet |
 | fp16 sink/recent KV tiers improve long-context quality | Storage semantics implemented; 8k–32k result pending |

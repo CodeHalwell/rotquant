@@ -8,6 +8,12 @@ Google Drive.
 
 ## Reporting rules
 
+The [2026-09-05 follow-up](performance_plan_2026-09-05.md) fixes the nine project
+review findings and registers the next performance decisions. This is engineering
+and validity work, not another Qwen quality result. The six-format synthetic CPU
+preflight passes; fresh locked-environment testing reports 592 passed and 17
+AVX2-only skips on macOS. CUDA and the full Colab experiment remain to be run.
+
 - Compare methods only when model, tokenizer, data split, sequence length, and
   sample count match.
 - Report packed component bytes separately from complete-model bytes.
@@ -1025,6 +1031,41 @@ random comparisons, adds exact-byte pair-exchange refinement, and tests
 actually binding W6/W8 islands. Its design and generated notebook are
 `docs/dynamic_allocator_v3.md` and
 `notebooks/qwen35_4b_allocator_v3_colab.ipynb`.
+
+### 2026-09-04 — allocator v3 validated; format-aware v4 prepared
+
+The completed revision `c9efd2d5677420d231d88ed80292f6fe0656a052`
+bundle is recorded as
+`research/results/qwen35_4b_allocator_v3_c9efd2d56774.json`. All 15 requested
+confirmation rows and 21 paired comparisons completed across seeds 0/1/2 with
+common input hashes, no halted evaluations, and a clean fail-closed validator.
+
+The unprotected global Pareto recipe reduced mean teacher KL from 0.11434 for
+the exact broad random control to 0.03113, a 72.8% reduction. It improved
+top-1 agreement by 7.75 percentage points, WikiText-2 PPL by 9.36%, C4 PPL by
+8.65%, diverse KL by 73.4%, and 32-token agreement by 21.92 points at the same
+registered bytes. Its seed-0 export was 3,587,632,807 bytes, only 0.087% above
+the pinned 3,584,533,344-byte Unsloth bundle.
+
+Uniform W4 remained materially better at 5.13% more registered bytes. The
+global recipe's mean KL was 85.3% higher than uniform W4 and 161.8% higher than
+the prompt-matched Unsloth anchor; top-1 was 3.31 points below Unsloth. It is
+therefore promoted only as the exact-size bits-only allocator baseline.
+
+The winning recipe used 83--85 W3, 108--111 W4, and 6--7 W5 projections. Pair
+refinement produced the identical allocation with zero accepted exchanges.
+Forcing the top 5% of sensitive layers to W6 or the top 1% to W8 made aggregate
+quality worse at fixed size. High-precision layers are not free: their value
+must exceed the damage caused by compensating downgrades elsewhere.
+
+Allocator v4 now expands the decision variable from bit width to a complete
+named quantizer format. Its bounded palette tests calibrated scalar codebooks
+at W3/W4 and Gaussian group-64 scaling at W3, while retaining the v3 W3/W4/W5
+range, real uint8 scale storage, MSE-search, and act-order GPTQ. Allocation-only
+palette ablations reuse one checkpointed table. The generated
+`notebooks/qwen35_4b_allocator_v4_colab.ipynb` admits at most two distinct
+finalists and requires three-seed paired wins over both v3 bits-only Pareto and
+same-palette random allocation before promotion.
 
 ## Entry template
 
