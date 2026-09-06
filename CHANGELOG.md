@@ -9,6 +9,16 @@ software.
 
 ## [Unreleased]
 
+### Results review (2026-09-06)
+
+- `scripts/inspect_gguf_types.py` summarises a GGUF artifact's tensor types,
+  per-layer recipe and nominal byte shares from its header alone (local file
+  or HTTP range fetch), so provider artifacts can be decomposed before they are
+  used as matched-size controls. `docs/results_review_2026-09-06.md` records
+  the finding it was written for: the Unsloth comparison keeps RotQuant's tied
+  vocabulary at fp16 while the provider stores it as Q6_K, forcing the RotQuant
+  backbone 1.7 bits/weight below the provider's at the same total bytes.
+
 ### Project review fixes (2026-09-05)
 
 - Shared rotations support inference tensors and no longer retain activation
