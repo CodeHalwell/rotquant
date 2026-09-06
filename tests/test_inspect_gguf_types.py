@@ -102,6 +102,33 @@ def test_truncated_header_fails_closed():
         module.parse_header(data[: len(data) // 2])
 
 
+def test_block_rates_match_ggml_layouts():
+    module = _load()
+    rates = module.BITS_PER_WEIGHT
+    # Block bytes over block size from ggml-common.h; every recognised
+    # quantised type must be priced so nothing is silently counted as free.
+    assert rates["IQ2_S"] == pytest.approx(82 * 8 / 256)   # 2.5625, not 2.5
+    assert rates["Q4_K"] == pytest.approx(4.5)
+    assert rates["Q6_K"] == pytest.approx(6.5625)
+    assert rates["Q8_0"] == pytest.approx(8.5)
+    assert rates["Q8_1"] == pytest.approx(9.0)
+    assert rates["Q8_K"] == pytest.approx(9.125)
+    assert rates["MXFP4"] == pytest.approx(4.25)
+    assert rates["TQ1_0"] == pytest.approx(54 * 8 / 256)
+    assert rates["TQ2_0"] == pytest.approx(66 * 8 / 256)
+    assert set(module.GGML_TYPES.values()) <= set(rates)
+
+
+def test_unpriced_type_fails_instead_of_counting_zero():
+    module = _load()
+    header = b"GGUF" + struct.pack("<I", 3) + struct.pack("<Q", 1) + struct.pack("<Q", 0)
+    data = header + _tensor("blk.0.ffn_up.weight", (64, 64), 999)
+    _, tensors, _ = module.parse_header(data)
+    assert tensors[0].type_name == "type999"
+    with pytest.raises(ValueError, match="no known storage rate"):
+        module.summarise(tensors)
+
+
 def test_skipped_values_are_not_decoded(monkeypatch):
     module = _load()
     data = _synthetic_gguf()

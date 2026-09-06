@@ -13,8 +13,9 @@ Example (the pinned Unsloth Qwen3.5-4B comparator artifact):
       --head-bytes 33554432 --per-layer
 
 Byte shares use the nominal bits-per-weight of each ggml type (block scales
-included). They are exact for the K-quant, legacy and float types listed in
-``BITS_PER_WEIGHT`` and are reported as zero for unknown types.
+included), taken from the block layouts in ggml's ``ggml-common.h``. A tensor
+whose type has no entry in ``BITS_PER_WEIGHT`` makes the summary fail rather
+than being counted as zero bytes.
 """
 
 from __future__ import annotations
@@ -47,14 +48,22 @@ GGML_TYPES = {
     35: "TQ2_0", 39: "MXFP4",
 }
 
-# Nominal storage rate per weight including block scales/mins.
+# Nominal storage rate per weight including block scales/mins: block bytes
+# times eight over block size, from the block structs in ggml-common.h.
 BITS_PER_WEIGHT = {
     "F32": 32.0, "F16": 16.0, "BF16": 16.0, "F64": 64.0,
-    "Q4_0": 4.5, "Q4_1": 5.0, "Q5_0": 5.5, "Q5_1": 6.0, "Q8_0": 8.5,
-    "Q2_K": 2.625, "Q3_K": 3.4375, "Q4_K": 4.5, "Q5_K": 5.5, "Q6_K": 6.5625,
-    "IQ4_XS": 4.25, "IQ4_NL": 4.5, "IQ3_S": 3.4375, "IQ3_XXS": 3.0625,
-    "IQ2_S": 2.5, "IQ2_XS": 2.3125, "IQ2_XXS": 2.0625, "IQ1_S": 1.5625,
-    "IQ1_M": 1.75, "I8": 8.0, "I16": 16.0, "I32": 32.0, "I64": 64.0,
+    "I8": 8.0, "I16": 16.0, "I32": 32.0, "I64": 64.0,
+    # 32-weight blocks
+    "Q4_0": 18 * 8 / 32, "Q4_1": 20 * 8 / 32, "Q5_0": 22 * 8 / 32,
+    "Q5_1": 24 * 8 / 32, "Q8_0": 34 * 8 / 32, "Q8_1": 36 * 8 / 32,
+    "IQ4_NL": 18 * 8 / 32, "MXFP4": 17 * 8 / 32,
+    # 256-weight super-blocks
+    "Q2_K": 84 * 8 / 256, "Q3_K": 110 * 8 / 256, "Q4_K": 144 * 8 / 256,
+    "Q5_K": 176 * 8 / 256, "Q6_K": 210 * 8 / 256, "Q8_K": 292 * 8 / 256,
+    "IQ1_S": 50 * 8 / 256, "IQ1_M": 56 * 8 / 256,
+    "IQ2_XXS": 66 * 8 / 256, "IQ2_XS": 74 * 8 / 256, "IQ2_S": 82 * 8 / 256,
+    "IQ3_XXS": 98 * 8 / 256, "IQ3_S": 110 * 8 / 256, "IQ4_XS": 136 * 8 / 256,
+    "TQ1_0": 54 * 8 / 256, "TQ2_0": 66 * 8 / 256,
 }
 
 
@@ -67,7 +76,13 @@ class TensorInfo:
 
     @property
     def nominal_bytes(self) -> float:
-        return self.numel * BITS_PER_WEIGHT.get(self.type_name, 0.0) / 8.0
+        try:
+            bits = BITS_PER_WEIGHT[self.type_name]
+        except KeyError:
+            raise ValueError(
+                f"tensor {self.name!r} has ggml type {self.type_name} with no known "
+                "storage rate; add it to BITS_PER_WEIGHT before summarising") from None
+        return self.numel * bits / 8.0
 
 
 class _Reader:

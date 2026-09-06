@@ -259,6 +259,13 @@ chosen rate:
    dequantised values back into the parameter; add `8.0635 × 635,699,200 / 8`
    bytes to `registered_model_bytes` in place of the fp16 count. Repeat at
    W6 with `rotation=fwht` (hidden 2560 is 20 × 128) and MSE scale search.
+   With a rotation the dequantised rows are in the rotated basis, so apply
+   the inverse rotation (`Rotation.inverse_activation`, as
+   `native_tied_tensor`'s consumer does) before writing them back:
+   `embed_tokens.weight ← Q(W R) Rᵀ`. A plain embedding lookup has no
+   activation-rotation counterpart, and the tied `lm_head` computes
+   `x · (Q(W R) Rᵀ)ᵀ = (x Rᵀ) · Q(W R)ᵀ`, which is exactly what a rotated
+   `QuantLinear` would compute, so one un-rotated tensor serves both uses.
 2. Re-run the existing seed-0 screen with `quant.bits: 5` uniform, then the
    allocator with `candidate_bits: [4, 5, 6, 8]` and the corrected
    `registered` budget. Keep uniform scale8 W4 and the Unsloth anchor as the
