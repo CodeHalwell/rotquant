@@ -10,9 +10,10 @@ fp16 (1,271,398,400 bytes, 34% of the W4 artifact). Unsloth's GGUF stores the
 same tensor as Q6_K (521,472,000 bytes). Because the allocator treats the
 fp16 embedding as a fixed cost, matching Unsloth's 3,584,533,344-byte bundle
 forces RotQuant's transformer backbone down to about 3.6 bits per weight,
-while the Unsloth "Q4" backbone actually sits at 5.31 bits per weight. Every
-backbone weight in the v3 comparison was quantised with 1.7 fewer bits than
-its competitor. No allocator, codebook, or group size can recover that.
+while the Unsloth "Q4" backbone actually sits at 5.31 bits per weight. On
+average, every backbone weight in the v3 comparison was quantised with 1.7
+fewer bits than its competitor. No allocator, codebook, or group size can
+recover that.
 
 Everything below is derived from committed run records, the pinned model
 config, and the header of the pinned Unsloth GGUF. Nothing was re-run on a
@@ -31,7 +32,8 @@ Unsloth GGUF's attention, FFN and `ssm_out` tensors sum to the same
 |---|---:|---:|---:|
 | Tied embedding, 635,699,200 params | **Q6_K, 521,472,000 B (6.56 bpw)** | fp16, 1,271,398,400 B (16 bpw) | fp16, 1,271,398,400 B (16 bpw) |
 | Backbone, 3,565,158,400 params | **2,367,959,040 B (5.31 bpw)** | 1,810,866,880 B (4.06 bpw) | 1,618,188,789 B (**3.63 bpw**) |
-| Vision tower + norms + SSM small tensors | 672,423,616 + ~11.7 MB | 677,590,336 B | 677,590,336 B |
+| Vision tower | 672,423,616 B (`mmproj-F16.gguf`) | 667,028,480 B (fp16) | 667,028,480 B (fp16) |
+| `in_proj_a/b`, norms, conv, decay vectors, signs, codebooks | 11,710,464 B | 10,574,656 B | 10,574,656 B |
 | Header / tokenizer / config overhead | 10,968,206 B | ~20.44 MB when exported | 20,442,482 B |
 | Complete artifact | 3,584,533,344 B | 3,759,868,416 B registered (+~20 MB exported) | 3,587,632,807 B |
 | Mean teacher KL (24-prompt C4) | 0.01189 | 0.01680 | 0.03113 |
@@ -43,11 +45,13 @@ Sources: `research/results/raw/qwen35_4b_w4a8_e8_8ad3b8e6c809/…_s0.json`
 11 MB of `Qwen3.5-4B-UD-Q4_K_XL.gguf` at revision `e87f1764…` (parsed with
 `scripts/inspect_gguf_types.py`).
 
-The 1,948,988,736 "registered" bytes that RotQuant never quantises are the
-fp16 embedding (1,271,398,400) plus the vision tower, norms and the
-linear-attention `A`/`B`/conv tensors (677,590,336). The vision tower is
-fp16 on both sides (`mmproj-F16.gguf`), so it is a wash. The embedding is
-the whole difference.
+The 1,948,988,736 "registered" bytes that RotQuant never quantises close to
+the byte against the pinned config: fp16 embedding 1,271,398,400 (65.2%),
+fp16 vision tower 667,028,480 (34.2%), `in_proj_a/b` 7,864,320, norms, conv
+and decay vectors 1,923,392, Hadamard sign buffers 774,144. The vision tower
+is fp16 on both sides, the small tensors are within 1.2 MB of each other,
+and the container overheads net to about 4 MB in Unsloth's favour. The
+embedding is the whole difference.
 
 ## 2. What "Q4_K_XL" actually contains
 
@@ -66,8 +70,9 @@ exist in that layer type):
 | `token_embd` | Q6_K | | | | |
 
 Two things follow. First, the name is marketing: the average backbone rate is
-5.31 bpw, and only 30 of the 200 backbone matrices are at a genuine 4-bit
-rate. Second, Unsloth's sensitivity choices agree with what allocator v3
+5.31 bpw; 84 of the 200 backbone matrices (49% of the weights) are at a
+nominal 4-bit rate (Q4_K 4.5 bpw, IQ4_XS 4.25 bpw), 69 are Q5_K, 23 are
+Q6_K and 24 are Q8_0. Second, Unsloth's sensitivity choices agree with what allocator v3
 measured: the linear-attention output projection is kept at Q8_0 in all 24
 layers, `ffn_down` is Q6_K in most layers, and the last layer's MLP is
 upgraded. The v3 "stable sensitive region" (layer-31 MLP, early `down`,
@@ -110,9 +115,10 @@ is not in doubt.
 
 ## 4. Consequences for the allocator programme
 
-1. **Allocators v1–v3 were solving the wrong problem.** `target_bpw: 3.5` and
-   `target_artifact_bytes: 3584533344` with an fp16 embedding are the same
-   constraint, and it is a sub-W4 constraint. The Algorithm Lab had already
+1. **Allocators v1–v3 were solving the wrong problem.**
+   `target_artifact_bytes: 3584533344` with an fp16 embedding *is* a
+   3.6-bpw constraint on the backbone (the `target_bpw: 3.5` next to it is
+   inert; section 5), and that is a sub-W4 constraint. The Algorithm Lab had already
    found that a 3.625-bpw teacher-guided recipe fails free-running
    diagnostics (worst 32-token agreement 7.81%). The v3 result — a 72.8%
    improvement over random allocation that still loses to both uniform W4
@@ -135,12 +141,21 @@ is not in doubt.
 
 ## 5. What the pipeline is missing
 
-- `PatchConfig` excludes `lm_head`/`embed_out` by default
-  (`rotquant/patch.py:64`) and every Qwen config restricts `include` to
-  `model.language_model.layers.`, so the Transformers artifact can never
-  compress the vocabulary. Even if `lm_head` were included, `QuantLinear`
-  replaces only the `nn.Linear`; the tied `embed_tokens` parameter would keep
-  its own fp16 copy, so the artifact would not shrink.
+- Adapter discovery yields only `nn.Linear` modules
+  (`rotquant/adapters.py:70-76`), so `embed_tokens` is never a candidate
+  under any config; `PatchConfig` additionally excludes `lm_head`/`embed_out`
+  by default (`rotquant/patch.py:64`) and every Qwen config restricts
+  `include` to `model.language_model.layers.`. Even if `lm_head` were
+  included, `QuantLinear` replaces only the `nn.Linear`; the tied
+  `embed_tokens` parameter would keep its own fp16 copy, so the artifact
+  would not shrink.
+- The allocator then books every non-target tensor as a fixed cost
+  (`rotquant/dynamic.py:1563-1586`): `target_bytes = 3,584,533,344 −
+  20,750,000`, `fixed_search_bytes = 1,948,214,592`, leaving 1,615,568,752
+  bytes for codes, scales, signs and codebooks, i.e. 3.62 bpw. With
+  `target_artifact_bytes` set, `target_bpw: 3.5` is inert (`dynamic.py:61-62`,
+  `:1576`, `:1595`); the number in the config is documentation, not a
+  constraint.
 - The GGUF exporter does have a tied-vocabulary path
   (`native_tied_tensor`, `rotquant/gguf.py:47`), but it is fixed at 4-bit,
   `error_comp="none"`, RMS scales, and it is only used by the llama.cpp
@@ -154,9 +169,84 @@ is not in doubt.
 
 ## 6. Code-level audit
 
-See section 6 below the verification record; two independent read-throughs
-of the quantiser core and the evaluation/accounting code were made for this
-review. Findings are listed there with file and line references.
+Two independent read-throughs were made for this review: the quantiser core
+(`quantize.py`, `codebooks.py`, `rotate.py`, `calibrate.py`, `linear.py`,
+`patch.py`, `pack.py`) and the evaluation/accounting path. Neither found a
+defect that would inflate the KL of the deployed fp16 + FWHT + Gaussian +
+MSE-search + act-order GPTQ recipe. The gap in section 1 is not a bug in the
+maths.
+
+### 6.1 Quantiser core: verified correct on the deployed path
+
+| Item | Status | Evidence |
+|---|---|---|
+| 16-level Gaussian Lloyd-Max codebook | fine | `codebooks.py:87-118`, `:265-306`; measured unit-Gaussian MSE 0.0095011 against an exact fixed-point solve of 0.0095010; midpoint thresholds via `bucketize`. |
+| MSE scale search and stored scales | fine | `quantize.py:692-721` (41-point grid, 0.5–1.5 × RMS); codes are assigned against the *decoded* stored scale (`:805-809`, `:830`); GPTQ refits every group from the error-fed weight and re-snaps to the stored grid (`:949-1015`). Bit-identical assign/dequant is covered by `tests/test_scale_storage_consistency.py`. |
+| GPTQ Hessian basis | fine | `patch.py:418-421` → `_internal.py:46-60` forms R H Rᵀ with the same `Rotation` object (same seed, sign buffer and block) used for the weight (`linear.py:432`) and the activation (`linear.py:227`); checked numerically against a dense rotation to 1.5e-7. |
+| GPTQ update | fine | `quantize.py:1039-1056` damping 1% of mean diag with retry; upper Cholesky of H⁻¹; in-block rank-1 and cross-block error propagation match reference GPTQ; act-order keeps static original groups (`:948`, `:1024-1037`). `tests/test_gptq_identity.py` pins H = I → RTN and blocked == column-wise. |
+| Rotation | fine | Block-128 FWHT normalised by 1/√128 on the weight's input dim and identically on the activation; invariance verified to 3e-15 in float64; groups coincide with rotation blocks for every Qwen3.5-4B width. |
+| Forward path | fine | `linear.py:226-229`, `:276-299`: one rotation, fp32 dequant, cast to the activation dtype, no inverse rotation, no double rotation. |
+
+Synthetic check (512×512, outlier covariance with condition number 8e7,
+g128, W4): the deployed recipe reaches output NMSE 0.00062 (Gaussian
+weights) and 0.00053 (heavy-tailed weights) against 0.00441/0.02291 for
+unrotated Gaussian-codebook GPTQ and 0.00558/0.02892 for correctly scaled
+uniform GPTQ. Rotation plus GPTQ is doing what it is supposed to.
+
+Latent issues found on the way (none active in the runs behind the numbers
+above):
+
+1. **bf16 loading re-rounds fp16 scale metadata** (`linear.py:114-143`,
+   `checkpoint.py:723`). `load_packed_model(..., dtype=bf16)` casts `scales`,
+   `scale_offsets` and `scale_steps` through the `_apply` closure, so codes
+   assigned against fp16 scales are dequantised against bf16-rounded ones:
+   up to 0.39% relative on 16-bit scales, 2.79% → 2.97% on 8-bit decode. The
+   fp16 in-process runs never hit this; a bf16 deployment of a bf16-native
+   Qwen would. Keep metadata in fp16/fp32 regardless of the model dtype.
+2. **Pure-torch FWHT can overflow fp16** (`rotate.py:150-161`): seven
+   unnormalised butterfly stages run in the input dtype before the final
+   1/√d, so two entries of 4e4 in one block produce `inf`, while the
+   normalised result would fit. Only reachable without
+   `fast_hadamard_transform`, and it would surface as NaN, not as mildly
+   worse KL.
+3. **8-bit scale encoding is linear, not log-domain** (`quantize.py:400-458`):
+   blocks of 256 consecutive scales share an fp16 offset and step, so the
+   smallest scale in a block carries a relative error of about
+   (max/min − 1)/510. Ratio 14 → ≤2.6%; ratio 100 → ~16% (measured). The
+   uniform scale8 W4 arm was not measurably worse than fp16 scales, so this
+   is not biting today, but the per-block max/min ratio on the real
+   `down`/`ssm_out` layers should be checked before scale8 is used on the
+   most sensitive projections at W6/W8.
+4. **The in-library `uniform` control cannot reach an absmax scale**
+   (`codebooks.py:229-233`, `quantize.py:123`, `:706`): the grid spans
+   [−1, 1] and the search caps the scale at 1.5 × RMS, i.e. clipping at
+   ≤1.5σ. On Gaussian weights that gives NMSE 0.047 versus 0.0099 with a
+   [1.5, 4] × RMS search or 0.0138 for plain absmax RTN. Any statement of the
+   form "Gaussian codebook beats uniform" (README hypothesis E2) that used
+   this arm overstates the codebook's advantage about five-fold; the honest
+   gap to a properly scaled int4 grid is 20–40% in MSE. Fix the search range
+   for non-Gaussian codebooks before E2 is reported.
+5. Minor: `linear.py:432` rotates the weight in the source dtype before the
+   fp32 cast (0.07% RMS error in fp16, 0.5% in bf16; energy ≤3e-5, well
+   below the 4-bit error, but the cast belongs first). `calib_seq_len: 512`
+   with `n_calib: 128` gives 65k calibration tokens, so the Hessian of a
+   9,216-wide `down` projection is estimated from ~7 samples per dimension
+   against ~28 in the standard 128 × 2048 GPTQ setting; Unsloth's imatrix
+   used 80 × 512-token chunks, so this is not a competitive disadvantage,
+   but it is a source of seed variance.
+
+### 6.2 Evaluation and byte accounting
+
+| Item | Status | Evidence |
+|---|---|---|
+| Unsloth comparator never inspects the GGUF | accounting flaw | `scripts/run_unsloth_qwen35_4b_kl.py:56-70`, `:520` record name, bytes and SHA-256 and sum two file sizes; the header's tensor types (Q6_K embedding, 5.31-bpw backbone) are not read, so the comparison note calls a 5.3-bpw artifact a "Q4" one. |
+| RotQuant byte identities | fine | `_persistent_registered_tensors` de-duplicates the tied tensor by `id` (`run_experiment.py:276-296`); `complete = registered + packed + codebook` with the fp16 cache excluded (`:745-759`); packed codes/scales/8-bit metadata counted once (`linear.py:443-467`, `quantize.py:301-347`). MTP head absent on both sides (RotQuant registered params = GGUF text + mmproj + 160). |
+| Container asymmetries | fine | RotQuant counts the vision tower 5.4 MB smaller than `mmproj-F16` and reserves 9.8 MB more container overhead than the GGUF header; net ≈ 4 MB (0.12%) in Unsloth's favour. |
+| KL / top-1 / NLL definitions | fine | Both sides: KL(teacher ‖ student) at T = 1 over the full vocabulary, targets `ids[1:]`, 511 positions per 512-token prompt, logits upcast to fp32 (`rotquant/eval/logit_fidelity.py:88-135`; `run_unsloth_qwen35_4b_kl.py:214`, `:264-269`, `:332`, `:379`). Prompt hashes are enforced equal (`compare_qwen35_dynamic_to_unsloth.py:52-54`); 2,044 = 4 × 511 and 12,264 = 24 × 511 confirm alignment. |
+| Asymmetries in the KL | fine, favour Unsloth's number being *pessimistic* | Unsloth's KL includes its Q6_K embedding and Q6_K output-head error; RotQuant's student shares the fp16 embedding and `lm_head` with its teacher. llama.cpp's CUDA K-quant path also quantises activations to Q8_1. Each KL is within its own engine, so the different teachers (fp16 Transformers vs BF16 llama.cpp) are a different reference, not a bias. |
+| fp16 fallback path | fine | `_fp_cache = dequantize().to(fp16)` from fp32 centroids × decoded scales (`linear.py:85-95`, `quantize.py:276-299`) and the same activation rotation the export saves; extra error ≈ 1e-5 of the 4-bit MSE. Caveat: the mixed 2–8-bit, uint8-scale recipes have only the Python `reference` backend; the llama.cpp native format is 4-bit/fp16-scale only (`rotquant/gguf.py:29-33`). |
+| Perplexity windows | fine, not literature-comparable | Non-overlapping 2048-token windows from position 0, `max_samples: 32` → the first 65,536 tokens of each corpus, hashed and identical for source and student (`rotquant/eval/perplexity.py:61-219`). Unsloth's comparator produces no PPL. |
+| `quantizable_parameters` | minor | Double-counts the tied embedding through `lm_head` (`adapters.py:122-124`); diagnostic only, not used in any budget. |
 
 ## 7. Recommended next experiment (cheap, decisive)
 
