@@ -72,6 +72,8 @@ def test_parse_and_summarise_synthetic_header():
     metadata, tensors, header_bytes = module.parse_header(data)
     assert metadata["general.architecture"] == "qwen35"
     assert metadata["general.file_type"] == 15
+    # Tokenizer arrays are stepped over, not decoded, and never reported.
+    assert metadata["tokenizer.ggml.tokens"] == module.SKIPPED_VALUE
     assert header_bytes == len(data) - 16
     assert [t.type_name for t in tensors] == ["Q6_K", "F32", "Q5_K", "Q6_K", "Q8_0", "F32", "Q4_K"]
 
@@ -98,6 +100,39 @@ def test_truncated_header_fails_closed():
     data = _synthetic_gguf()
     with pytest.raises(EOFError):
         module.parse_header(data[: len(data) // 2])
+
+
+def test_skipped_values_are_not_decoded(monkeypatch):
+    module = _load()
+    data = _synthetic_gguf()
+    decoded: list[str] = []
+    original = module._Reader.string
+
+    def spy(self):
+        value = original(self)
+        decoded.append(value)
+        return value
+
+    monkeypatch.setattr(module._Reader, "string", spy)
+    metadata, _, _ = module.parse_header(data)
+    assert metadata["general.architecture"] == "qwen35"
+    # Keys and kept string values are decoded; no tokenizer token string is.
+    tokens = {f"tok{i}" for i in range(50)}
+    assert tokens.isdisjoint(decoded)
+    assert "tokenizer.ggml.tokens" in decoded
+    assert "qwen35" in decoded
+
+
+def test_head_bytes_must_be_positive(tmp_path):
+    module = _load()
+    with pytest.raises(ValueError, match="positive"):
+        module.fetch_head("https://example.invalid/model.gguf", 0)
+    path = tmp_path / "tiny.gguf"
+    path.write_bytes(_synthetic_gguf())
+    with pytest.raises(SystemExit):
+        module.main([str(path), "--head-bytes", "0"])
+    with pytest.raises(SystemExit):
+        module.main(["--url", "https://example.invalid/model.gguf", "--head-bytes", "-5"])
 
 
 def test_cli_prints_summary(tmp_path, capsys):

@@ -83,18 +83,36 @@ class _Reader:
         self.pos += size
         return value
 
-    def string(self) -> str:
+    def _string_span(self) -> tuple[int, int]:
         length = self.scalar("Q")
         if self.pos + length > len(self.data):
             raise EOFError("GGUF header is truncated; fetch more bytes")
-        raw = self.data[self.pos:self.pos + length]
+        start = self.pos
         self.pos += length
-        return raw.decode("utf-8", "replace")
+        return start, length
+
+    def string(self) -> str:
+        start, length = self._string_span()
+        return self.data[start:start + length].decode("utf-8", "replace")
+
+    def skip_string(self) -> None:
+        """Advance past a string without decoding or retaining it."""
+        self._string_span()
 
     def value(self, value_type: int, *, keep: bool = True):
+        """Read one KV value; with ``keep=False`` only advance the cursor.
+
+        Scalars are always decoded (they are a handful of bytes). Strings and
+        the elements of non-scalar arrays are skipped without allocation when
+        ``keep`` is false, which is what makes the multi-megabyte tokenizer
+        vocabulary arrays cheap to step over.
+        """
         if value_type in _SCALAR_FORMATS:
             return self.scalar(_SCALAR_FORMATS[value_type])
         if value_type == _STRING:
+            if not keep:
+                self.skip_string()
+                return None
             return self.string()
         if value_type == _ARRAY:
             element_type = self.scalar("I")
@@ -104,14 +122,22 @@ class _Reader:
                 if self.pos + size * count > len(self.data):
                     raise EOFError("GGUF header is truncated; fetch more bytes")
                 self.pos += size * count
-                return f"<array of {count} scalars>"
+                return f"<array of {count} scalars>" if keep else None
             preview = []
             for index in range(count):
-                item = self.value(element_type, keep=index < 3)
-                if index < 3:
+                item = self.value(element_type, keep=keep and index < 3)
+                if keep and index < 3:
                     preview.append(item)
-            return f"<array of {count}: {preview}...>"
+            return f"<array of {count}: {preview}...>" if keep else None
         raise ValueError(f"unknown GGUF value type {value_type}")
+
+
+SKIPPED_VALUE = "<skipped>"
+
+
+def _keep_metadata(key: str) -> bool:
+    """Tokenizer vocabularies/merges dominate the header and are never reported."""
+    return not key.startswith("tokenizer.")
 
 
 def parse_header(data: bytes) -> tuple[dict[str, object], list[TensorInfo], int]:
@@ -128,8 +154,9 @@ def parse_header(data: bytes) -> tuple[dict[str, object], list[TensorInfo], int]
     metadata: dict[str, object] = {"gguf.version": version}
     for _ in range(n_kv):
         key = reader.string()
-        value = reader.value(reader.scalar("I"))
-        metadata[key] = value
+        keep = _keep_metadata(key)
+        value = reader.value(reader.scalar("I"), keep=keep)
+        metadata[key] = value if keep else SKIPPED_VALUE
     tensors: list[TensorInfo] = []
     for _ in range(n_tensors):
         name = reader.string()
@@ -204,6 +231,8 @@ def per_layer_table(tensors: list[TensorInfo]) -> tuple[list[str], dict[int, dic
 
 
 def fetch_head(url: str, head_bytes: int) -> bytes:
+    if head_bytes <= 0:
+        raise ValueError(f"head_bytes must be a positive byte count, got {head_bytes}")
     request = urllib.request.Request(url, headers={"Range": f"bytes=0-{head_bytes - 1}"})
     with urllib.request.urlopen(request, timeout=300) as response:
         return response.read(head_bytes)
@@ -219,6 +248,8 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--per-layer", action="store_true", help="print the per-layer type table")
     parser.add_argument("--json", action="store_true", help="emit the summary as JSON")
     args = parser.parse_args(argv)
+    if args.head_bytes <= 0:
+        parser.error("--head-bytes must be a positive integer")
 
     if args.url:
         data = fetch_head(args.url, args.head_bytes)
@@ -231,7 +262,7 @@ def main(argv: list[str] | None = None) -> int:
     if args.json:
         payload = {
             "header_bytes": header_bytes,
-            "metadata": {k: v for k, v in metadata.items() if not k.startswith("tokenizer.")},
+            "metadata": {k: v for k, v in metadata.items() if _keep_metadata(k)},
             **summary,
         }
         json.dump(payload, sys.stdout, indent=2, default=str)
