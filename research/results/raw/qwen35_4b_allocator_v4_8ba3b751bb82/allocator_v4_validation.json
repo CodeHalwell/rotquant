@@ -1,0 +1,7 @@
+{
+  "commit": "8ba3b751bb82d4e96d0294567312ac69b5bf1612",
+  "checked_at": "2026-09-06T05:27:47Z",
+  "status": "ready_for_internal_decision",
+  "issues": [],
+  "boundary": "Internal 24-prompt and 25-prompt development suites only. Public claims require the registered 300-prompt engine-neutral run."
+}

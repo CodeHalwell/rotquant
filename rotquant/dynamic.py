@@ -372,7 +372,7 @@ class CandidateScore:
 # reconstruction scores are source-model facts, so random and greedy allocation
 # may share them when the runner supplies the same content-addressed context.
 _CANDIDATE_SCORE_CACHE: dict[str, dict[str, list[CandidateScore]]] = {}
-_CANDIDATE_CACHE_SCHEMA = 1
+_CANDIDATE_CACHE_SCHEMA = 2  # FP32 pre-quantization rotations / corrected uniform scales
 
 
 def _candidate_cache_path(key: str) -> Path | None:
@@ -1465,6 +1465,13 @@ def select_dynamic_quantization(
 ) -> tuple[dict[str, QuantConfig], dict[str, Any]]:
     """Return a per-projection quantizer recipe and serializable diagnostics."""
 
+    from .vocabulary import PackedVocabulary
+
+    if any(isinstance(module, PackedVocabulary) for module in model.modules()):
+        raise ValueError(
+            "dynamic allocation with a packed vocabulary requires the next "
+            "vocabulary-conditioned budget/scoring protocol; not supported yet"
+        )
     validate_dynamic_deployment(patch_cfg)
     config = DynamicQuantConfig(**(patch_cfg.dynamic or {}))
     if config.global_kl_batches and not teacher_calls:

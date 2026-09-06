@@ -82,7 +82,7 @@ def test_butterfly_storage_dtype_is_optional_but_validated() -> None:
 @pytest.mark.parametrize(
     ("mutation", "message"),
     [
-        (lambda value: value.update(format_version=3), "unsupported version"),
+        (lambda value: value.update(format_version=4), "unsupported version"),
         (
             lambda value: value["packing"].update(bit_order="msb_first"),
             "packing contract",

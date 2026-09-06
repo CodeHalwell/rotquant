@@ -171,3 +171,22 @@ def test_cli_prints_summary(tmp_path, capsys):
     assert "token_embd  Q6_K" in out
     assert "bits/weight" in out
     assert "attn_qkv" in out and "Q8_0" in out
+
+
+def test_cli_persists_header_hash_and_tensor_evidence(tmp_path, capsys):
+    import hashlib
+    import json
+
+    module = _load()
+    source = tmp_path / "tiny.gguf"
+    source.write_bytes(_synthetic_gguf())
+    output = tmp_path / "evidence.json"
+    assert module.main([str(source), "--json", "--output", str(output)]) == 0
+    payload = json.loads(output.read_text())
+    assert json.loads(capsys.readouterr().out) == payload
+    assert payload["header_sha256"] == hashlib.sha256(
+        source.read_bytes()[:payload["header_bytes"]]).hexdigest()
+    assert len(payload["tensor_table"]) == 7
+    assert payload["tensor_table"][0]["type"] == "Q6_K"
+    with pytest.raises(SystemExit):
+        module.main([str(source), "--output", str(output)])

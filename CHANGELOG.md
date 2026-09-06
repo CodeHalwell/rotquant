@@ -9,6 +9,29 @@ software.
 
 ## [Unreleased]
 
+### Vocabulary-budget experiment (2026-09-06)
+
+- Nine-arm Qwen3.5-4B vocabulary/backbone screen, generated Colab notebook,
+  immutable source/runtime/data identities, checksummed results, direct-to-Drive
+  logs, phase status, and layer/chunk-level calibration resume. It reuses two
+  quantized backbones per seed and never calibrates on a vocabulary student.
+- Bounded Gaussian W6/W8 tied-vocabulary quantization with FP16 scales,
+  exception-safe dense quality reconstruction, and experimental shared packed
+  lookup/projection wrappers. Optional checkpoint v3 saves one vocabulary
+  payload and restores its aliases; ordinary artifacts still write v2.
+- FP32 source-weight rotations and pure-torch low-precision FWHT intermediates;
+  fast normalized FWHT scales inside the kernel. Packed scale/offset/step
+  metadata retains its values and dtype across execution-dtype conversion.
+- Corrected uniform-codebook MSE bounds, a uniform absmax reference, opt-in
+  scale-storage diagnostics, and candidate-cache invalidation for the numerical
+  changes. Historical quality results are not relabelled as repaired results.
+- Component-byte ledgers, pinned GGUF header/tensor audit output, exploratory
+  paired contrasts and fail-closed screen selection. Dense/projected results
+  cannot pass artifact promotion. Packed-vocabulary dynamic allocation is
+  explicitly rejected until its conditioned scoring/budget protocol exists.
+- Thirty original allocator-v4 JSON records/manifests archived unchanged with
+  SHA-256 provenance. Tensor/tokenizer binaries are deliberately omitted.
+
 ### Results review (2026-09-06)
 
 - `scripts/inspect_gguf_types.py` summarises a GGUF artifact's tensor types,

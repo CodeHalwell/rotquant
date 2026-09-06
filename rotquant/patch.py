@@ -442,6 +442,8 @@ def patch_model(model: nn.Module, cfg: PatchConfig,
         )
         if stats_out is not None:
             stats_out["patched_modules"] = i + 1
+            if qlin.qweight.scale_diagnostics is not None:
+                stats_out.setdefault("scale_storage_diagnostics", {})[name] = qlin.qweight.scale_diagnostics
         if i == 0 or (i + 1) % 8 == 0:
             logger.info("patched %d/%d layers (last: %s)", i + 1, len(targets), name)
 

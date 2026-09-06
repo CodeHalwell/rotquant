@@ -9,6 +9,8 @@ Cholesky failure, which is the instability the spec warns about.
 from __future__ import annotations
 
 import hashlib
+import json
+import os
 from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -16,7 +18,7 @@ from pathlib import Path
 import torch
 from torch import nn
 
-from .utils import get_logger
+from .utils import get_logger, write_result
 
 logger = get_logger(__name__)
 
@@ -74,7 +76,9 @@ class DiskHessianStore(Mapping[str, torch.Tensor]):
     def put(self, name: str, tensor: torch.Tensor) -> None:
         digest = hashlib.sha256(name.encode()).hexdigest()[:20]
         path = self.root / f"{digest}.pt"
-        torch.save(tensor.detach().to(device="cpu", dtype=torch.float32), path)
+        temporary = path.with_suffix(".pt.tmp")
+        torch.save(tensor.detach().to(device="cpu", dtype=torch.float32), temporary)
+        os.replace(temporary, path)
         self._paths[name] = path
 
     def __getitem__(self, name: str) -> torch.Tensor:
@@ -199,6 +203,7 @@ def collect_hessians_streamed(
     layers_per_pass: int = 1,
     offload_device: str | None = "cpu",
     offload_dir: str | Path | None = None,
+    resume_key: str | None = None,
 ) -> CalibrationResult:
     """Replay calibration with only ``layers_per_pass`` Hessians resident.
 
@@ -219,9 +224,40 @@ def collect_hessians_streamed(
     collected: dict[str, torch.Tensor] = {}
     counts: dict[str, int] = {}
     means: dict[str, torch.Tensor] = {}
+    resume_record = {"identity": resume_key, "layers": {}}
+    resume_path = Path(offload_dir) / "calibration.json" if resume_key and offload_dir else None
+    if resume_key and resume_path is None:
+        raise ValueError("resumable Hessians require offload_dir")
+    if resume_path and resume_path.exists():
+        from .vocabulary import file_digest
+        resume_record = json.loads(resume_path.read_text())
+        if resume_record.get("identity") != resume_key:
+            raise ValueError("Hessian cache identity mismatch")
+        widths = {name: module.in_features for name, module in targets}
+        for name, saved in resume_record["layers"].items():
+            filename = hashlib.sha256(name.encode()).hexdigest()[:20] + ".pt"
+            path = disk_store.root / filename
+            if (name not in widths or not path.is_file()
+                    or file_digest(path) != saved["sha256"]
+                    or saved["width"] != widths[name]
+                    or not isinstance(saved.get("n_samples"), int)
+                    or isinstance(saved.get("n_samples"), bool)
+                    or saved["n_samples"] < 1
+                    or len(saved.get("mean", [])) != widths[name]):
+                raise ValueError(f"invalid resumed Hessian: {name}")
+            mean = torch.tensor(saved["mean"], dtype=torch.float32)
+            if not torch.isfinite(mean).all():
+                raise ValueError(f"invalid resumed Hessian mean: {name}")
+            disk_store._paths[name] = path
+            counts[name] = int(saved["n_samples"])
+            means[name] = mean
+        logger.info("Resumed %d/%d verified source Hessians", len(counts), len(targets))
     model.eval()
     for start in range(0, len(targets), layers_per_pass):
-        group = targets[start:start + layers_per_pass]
+        group = [(name, module) for name, module in targets[start:start + layers_per_pass]
+                 if name not in counts]
+        if not group:
+            continue
         accums: dict[str, HessianAccumulator] = {}
         handles = []
 
@@ -259,6 +295,14 @@ def collect_hessians_streamed(
                 collected[name] = hessian
             counts[name] = accumulator.n_samples
             means[name] = accumulator.mean.detach().to("cpu")
+            if resume_path:
+                from .vocabulary import file_digest
+                resume_record["layers"][name] = {
+                    "sha256": file_digest(disk_store._paths[name]),
+                    "width": accumulator.in_features, "n_samples": counts[name],
+                    "mean": means[name].tolist(),
+                }
+                write_result(str(resume_path), resume_record)
         logger.info(
             "Streamed Hessians for %d/%d linear layers",
             min(start + layers_per_pass, len(targets)),

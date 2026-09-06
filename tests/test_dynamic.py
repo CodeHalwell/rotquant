@@ -413,7 +413,7 @@ def test_candidate_score_cache_survives_process_memory_reset(tmp_path, monkeypat
         model, patch_cfg, score_cache_key="persistent-source-context"
     )
     assert first["candidate_score_cache_source"] == "computed"
-    assert len(list(tmp_path.glob("candidate-scores-v1-*.json"))) == 1
+    assert len(list(tmp_path.glob("candidate-scores-v2-*.json"))) == 1
 
     dynamic_module._CANDIDATE_SCORE_CACHE.clear()
     _, second = select_dynamic_quantization(
@@ -439,7 +439,7 @@ def test_candidate_score_cache_resumes_an_incomplete_layer_screen(
     select_dynamic_quantization(
         model, patch_cfg, score_cache_key="partial-source-context"
     )
-    cache_path = next(tmp_path.glob("candidate-scores-v1-*.json"))
+    cache_path = next(tmp_path.glob("candidate-scores-v2-*.json"))
     payload = json.loads(cache_path.read_text(encoding="utf-8"))
     payload["scores"].pop("layers.1")
     cache_path.write_text(json.dumps(payload), encoding="utf-8")

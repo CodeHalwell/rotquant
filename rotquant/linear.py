@@ -124,20 +124,26 @@ class QuantLinear(nn.Module):
         super()._apply(fn, recurse)
         qw = self.qweight
         qw.packed.data = fn(qw.packed.data)
+        def stored(tensor):
+            # Infer the requested device without rounding the stored values.
+            # Casting to BF16 and then back to FP16 would already lose bits.
+            probe = fn(torch.empty(0, device=tensor.device, dtype=tensor.dtype))
+            return tensor.to(device=probe.device)
+
         if qw.scales is not None:
-            qw.scales = fn(qw.scales)
+            qw.scales = stored(qw.scales)
             if qw.scale_offsets is not None:
-                qw.scale_offsets = fn(qw.scale_offsets)
-                qw.scale_steps = fn(qw.scale_steps)
+                qw.scale_offsets = stored(qw.scale_offsets)
+                qw.scale_steps = stored(qw.scale_steps)
         if qw.residual_packed is not None:
             qw.residual_packed.data = fn(qw.residual_packed.data)
-            qw.residual_scales = fn(qw.residual_scales)
+            qw.residual_scales = stored(qw.residual_scales)
             if qw.residual_scale_offsets is not None:
-                qw.residual_scale_offsets = fn(qw.residual_scale_offsets)
-                qw.residual_scale_steps = fn(qw.residual_scale_steps)
+                qw.residual_scale_offsets = stored(qw.residual_scale_offsets)
+                qw.residual_scale_steps = stored(qw.residual_scale_steps)
         if qw.sketch is not None:
             qw.sketch.data = fn(qw.sketch.data)
-            qw.sketch_row_norms = fn(qw.sketch_row_norms)
+            qw.sketch_row_norms = stored(qw.sketch_row_norms)
         if self._fp_cache is not None:
             self._fp_cache = fn(self._fp_cache)
         return self
@@ -429,7 +435,7 @@ class QuantLinear(nn.Module):
         """
         weight_rotation = weight_rotation or Identity(linear.in_features)
         act_rotation = act_rotation or weight_rotation
-        w = weight_rotation.rotate_weight(linear.weight.data)
+        w = weight_rotation.rotate_weight(linear.weight.detach().float())
         qw = Quantizer(config).quantize_weight(
             w, H=H, scales_override=scales_override)
         bias = linear.bias.data if linear.bias is not None else None

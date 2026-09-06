@@ -1,0 +1,40 @@
+{
+  "protocol": "allocator-v4-runtime-preflight-v1",
+  "device": "cuda",
+  "torch": "2.11.0+cu128",
+  "passed": true,
+  "formats": [
+    {
+      "format": "gaussian_w3_g128",
+      "packed_and_forward_match": true,
+      "seconds": 1.5957046790000504
+    },
+    {
+      "format": "calibrated_w3_g128",
+      "packed_and_forward_match": true,
+      "seconds": 0.21361850900007084
+    },
+    {
+      "format": "gaussian_w3_g64",
+      "packed_and_forward_match": true,
+      "seconds": 0.22866153099994335
+    },
+    {
+      "format": "gaussian_w4_g128",
+      "packed_and_forward_match": true,
+      "seconds": 0.9356809679999287
+    },
+    {
+      "format": "calibrated_w4_g128",
+      "packed_and_forward_match": true,
+      "seconds": 0.23921581100000822
+    },
+    {
+      "format": "gaussian_w5_g128",
+      "packed_and_forward_match": true,
+      "seconds": 1.8223787329999368
+    }
+  ],
+  "shared_inference_and_generation": true,
+  "boundary": "Synthetic smoke only; does not measure Qwen quality or speed."
+}

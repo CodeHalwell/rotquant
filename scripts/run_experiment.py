@@ -676,6 +676,10 @@ def _hessian_cache_key(cfg: dict[str, Any], pcfg: PatchConfig,
         "damp_frac": 0.0,
         "data_digest": manifest.get("digest"),
         "token_hashes": manifest.get("token_hashes"),
+        "implementation": "source-hessians-v2",
+        "stage_code_revision": cfg.get("stage_code_revision"),
+        "stage_source_fingerprint": cfg.get("stage_source_fingerprint"),
+        "stage_runtime_fingerprint": cfg.get("stage_runtime_fingerprint"),
     }
     return hashlib.sha256(
         json.dumps(payload, sort_keys=True, default=str).encode()
@@ -750,8 +754,16 @@ def footprint_metrics(model: torch.nn.Module, cfg_model: dict[str, Any]) -> dict
     )
     metrics["registered_model_bytes"] = registered_bytes
     metrics["codebook_bytes"] = codebook_bytes
+    from rotquant.vocabulary import PackedVocabulary
+    vocabulary_bytes = sum(
+        module.packed_bytes() - module.rotation.signs.numel() * module.rotation.signs.element_size()
+        for module in model.modules() if isinstance(module, PackedVocabulary)
+    )
+    if vocabulary_bytes:
+        # Shared owner is visited once; its registered signs are already counted.
+        metrics["packed_vocabulary_unregistered_bytes"] = vocabulary_bytes
     metrics["complete_persistent_model_bytes"] = (
-        registered_bytes + packed_bytes + codebook_bytes
+        registered_bytes + packed_bytes + codebook_bytes + vocabulary_bytes
     )
     metrics["fallback_cache_bytes"] = fallback_cache_bytes
     metrics["quality_runtime_model_bytes"] = (
@@ -870,9 +882,13 @@ def _prepare_calibration(cfg: dict[str, Any], model, tokenizer, device: str,
         else:
             with Timer() as t:
                 if hessian_mode == "streamed":
-                    art.hessian_tempdir = tempfile.TemporaryDirectory(
-                        prefix="rotquant-hessians-"
-                    )
+                    persistent_hessians = cfg.get("hessian_cache_dir")
+                    if persistent_hessians:
+                        offload_path = str(Path(persistent_hessians) / hessian_cache_key)
+                    else:
+                        art.hessian_tempdir = tempfile.TemporaryDirectory(
+                            prefix="rotquant-hessians-")
+                        offload_path = art.hessian_tempdir.name
                     calib = collect_hessians_streamed(
                         model,
                         calib_loader,
@@ -881,7 +897,8 @@ def _prepare_calibration(cfg: dict[str, Any], model, tokenizer, device: str,
                         exclude=pcfg.exclude,
                         damp_frac=0.0,
                         layers_per_pass=int(cfg.get("hessian_layers_per_pass", 1)),
-                        offload_dir=art.hessian_tempdir.name,
+                        offload_dir=offload_path,
+                        **({"resume_key": hessian_cache_key} if persistent_hessians else {}),
                     )
                 elif hessian_mode == "joint":
                     calib = collect_hessians(

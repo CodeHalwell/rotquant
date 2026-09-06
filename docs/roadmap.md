@@ -8,13 +8,23 @@ postponed cleanup.
 
 ## Stage 2: canonical GPU serving
 
-Immediate execution order after the September review: finish the reliability
+September 6 priority update: the
+[vocabulary-budget plan](vocabulary_budget_plan_2026-09-06.md) now comes first.
+V4 did not improve primary KL over bits-only allocation, and the subsequent
+artifact review identified the retained 1.27 GB tied vocabulary matrix as a
+major allocation constraint. First isolate vocabulary compression and W5
+backbone quality, then verify a real shared packed artifact and reconsider
+W4/W5/W6/W8 allocation under the recovered budget. Interaction-aware search and
+recovery remain conditional later branches. This is a planned experiment, not
+evidence that the Unsloth gap has already been closed.
+
+The preceding September 5 execution order was to finish the reliability
 regressions, run the bounded 4B format-aware allocator experiment, freeze a
 quality-improving recipe, then implement one measured packed GPU operator.
 The [2026-09-05 performance plan](performance_plan_2026-09-05.md) defines the
-promotion gates and the interaction/recovery branches if v4 does not improve
-the result. Wider model sweeps and multiple serving-engine forks are not the
-next experiment.
+promotion gates and the interaction/recovery branches. The vocabulary-budget
+test now precedes those conditional branches. Wider model sweeps and multiple
+serving-engine forks are not the next experiment.
 
 ### 2.0 Reliability gate
 
@@ -173,11 +183,21 @@ specialized around them:
   bytes and passed the export gate, while exact pair refinement was a no-op and
   forced W6/W8 islands reduced fidelity; retain its W3/W4/W5 global recipe as
   the bits-only allocator baseline, not as provider competitive;
-- [ ] execute the [format-aware allocator-v4 Colab](../notebooks/qwen35_4b_allocator_v4_colab.ipynb):
-  choose among named Gaussian/calibrated and group-64/group-128 W3/W4/W5
-  formats, reuse one resumable candidate table for causal palette ablations,
-  and require three-seed paired wins over both bits-only Pareto and an exact
-  same-palette random control before promotion;
+- [x] execute the [format-aware allocator-v4 Colab](../notebooks/qwen35_4b_allocator_v4_colab.ipynb):
+  the supplied `qwen35_allocator_v4_8ba3b751bb82` run completed, but neither
+  finalist passed promotion. Full-format three-seed KL was 0.03134 versus
+  bits-only 0.03113; trajectory token agreement improved from 36.83% to 45.79%
+  on the small development suite, not enough to establish an overall winner;
+- [x] archive the supplied v4 compact evidence with an
+  [original-file hash index](../research/results/raw/qwen35_4b_allocator_v4_8ba3b751bb82/evidence_index.json);
+- [x] implement the first vocabulary-budget screen, numerical prerequisites,
+  experimental shared packed vocabulary and generated
+  [Colab notebook](../notebooks/qwen35_4b_vocabulary_budget_colab.ipynb), with
+  local CPU correctness/resume checks; full CUDA/Qwen execution remains pending;
+- [ ] execute the
+  [vocabulary-budget plan](vocabulary_budget_plan_2026-09-06.md): isolate tied
+  vocabulary error, test W5 backbones, verify real shared packed exports, and
+  revisit W4/W5/W6/W8 allocation only under the corrected whole-model budget;
 - [ ] build a pinned, calibration-disjoint 300-prompt/32-token free-running
   divergence suite spanning agentic, code, maths, multilingual, and long-document
   prompts; compare the source, RotQuant, same-size GGUF, and Unsloth baselines;

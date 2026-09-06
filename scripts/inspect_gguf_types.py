@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import argparse
 import collections
+import hashlib
 import json
 import re
 import struct
@@ -262,9 +263,12 @@ def main(argv: list[str] | None = None) -> int:
                         help="bytes to read; must cover the header (default 32 MiB)")
     parser.add_argument("--per-layer", action="store_true", help="print the per-layer type table")
     parser.add_argument("--json", action="store_true", help="emit the summary as JSON")
+    parser.add_argument("--output", type=Path, help="also persist JSON evidence (requires --json)")
     args = parser.parse_args(argv)
     if args.head_bytes <= 0:
         parser.error("--head-bytes must be a positive integer")
+    if args.output is not None and not args.json:
+        parser.error("--output requires --json")
 
     if args.url:
         data = fetch_head(args.url, args.head_bytes)
@@ -277,9 +281,16 @@ def main(argv: list[str] | None = None) -> int:
     if args.json:
         payload = {
             "header_bytes": header_bytes,
+            "header_sha256": hashlib.sha256(data[:header_bytes]).hexdigest(),
+            "source": args.url or str(args.path),
             "metadata": {k: v for k, v in metadata.items() if _keep_metadata(k)},
+            "tensor_table": [{"name": t.name, "dimensions": t.dims, "type": t.type_name,
+                              "parameters": t.numel, "bytes": t.nominal_bytes} for t in tensors],
             **summary,
         }
+        if args.output is not None:
+            from rotquant.utils import write_result
+            write_result(str(args.output), payload)
         json.dump(payload, sys.stdout, indent=2, default=str)
         sys.stdout.write("\n")
         return 0

@@ -1,0 +1,10 @@
+{
+  "commit": "8ba3b751bb82d4e96d0294567312ac69b5bf1612",
+  "gpu": "NVIDIA A100-SXM4-40GB",
+  "gpu_memory_bytes": 42405855232,
+  "python": "3.13.15 (main, Aug  6 2026, 11:06:23) [GCC 11.4.0]",
+  "torch": "2.11.0+cu128",
+  "cuda": "12.8",
+  "fast_hadamard": true,
+  "created_at": "2026-09-05T21:53:28Z"
+}

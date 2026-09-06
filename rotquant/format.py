@@ -15,7 +15,7 @@ from typing import Any, NoReturn
 
 FORMAT_NAME = "rotquant-packed"
 FORMAT_VERSION = 2
-SUPPORTED_FORMAT_VERSIONS = (1, 2)
+SUPPORTED_FORMAT_VERSIONS = (1, 2, 3)  # v3 adds a shared packed vocabulary
 
 PACKED_WORD_BITS = 32
 PACKED_WORD_DTYPE = "int32"
@@ -302,6 +302,63 @@ def validate_checkpoint_manifest(manifest: Any) -> None:
     ]
     if len(names) != len(set(names)):
         _fail("quantized_modules", "module names must be unique")
+    vocabulary = root.get("tied_vocabulary")
+    if vocabulary is not None:
+        if version != 3:
+            _fail("tied_vocabulary", "requires format v3")
+        vocabulary = _mapping(vocabulary, "tied_vocabulary")
+        aliases = [vocabulary.get(key) for key in ("embedding", "head")]
+        if (any(not isinstance(name, str) or not name for name in aliases)
+                or aliases[0] == aliases[1] or any(name in names for name in aliases)):
+            _fail("tied_vocabulary", "requires two distinct non-backbone aliases")
+        config = _mapping(vocabulary.get("config"), "tied_vocabulary.config")
+        if (isinstance(config.get("bits"), bool) or not isinstance(config.get("bits"), int)
+                or config.get("bits") not in (6, 8)):
+            _fail("tied_vocabulary.config.bits", "must be 6 or 8")
+        for field in ("group_size", "block", "chunk_rows", "seed"):
+            value = config.get(field)
+            if (isinstance(value, bool) or not isinstance(value, int)
+                    or value < (0 if field == "seed" else 1)):
+                _fail(f"tied_vocabulary.config.{field}", "invalid integer")
+        shape = vocabulary.get("shape")
+        if (not isinstance(shape, list) or len(shape) != 2
+                or any(isinstance(n, bool) or not isinstance(n, int) or n < 1 for n in shape)):
+            _fail("tied_vocabulary.shape", "must be a positive [vocab,hidden] pair")
+        if (config["block"] & (config["block"] - 1)
+                or shape[1] % config["block"] or shape[1] % config["group_size"]
+                or shape[1] * config["bits"] % 32):
+            _fail("tied_vocabulary.config", "unsupported rotation/group/row alignment")
+        if vocabulary.get("execution_dtype") not in {"float16", "bfloat16", "float32"}:
+            _fail("tied_vocabulary.execution_dtype", "unsupported execution dtype")
+        source_digest = vocabulary.get("source_digest")
+        if (not isinstance(source_digest, str) or len(source_digest) != 64
+                or any(char not in "0123456789abcdef" for char in source_digest)):
+            _fail("tied_vocabulary.source_digest", "must be a SHA-256 hex digest")
+        chunks = vocabulary.get("chunks")
+        if not isinstance(chunks, list) or not chunks:
+            _fail("tied_vocabulary.chunks", "must be nonempty")
+        rows = 0
+        centroid_key = None
+        for index, chunk in enumerate(chunks):
+            chunk = _mapping(chunk, f"tied_vocabulary.chunks[{index}]")
+            _validate_module({"name": f"vocabulary_chunk_{index}",
+                              "in_features": shape[1], "out_features": chunk.get("out_features"),
+                              "has_bias": False, "rotation": {"kind": "fwht", "dim": shape[1],
+                               "block": config.get("block")}, "qweight": chunk}, index, version)
+            if (chunk["packed"]["bits"] != config["bits"]
+                    or chunk.get("scale_bits_main", 16) != 16
+                    or chunk.get("group_size") != config.get("group_size")
+                    or not isinstance(chunk.get("scales"), str)
+                    or chunk["codebook"].get("kind", "scalar") != "scalar"
+                    or chunk.get("residual_packed") is not None or chunk.get("sketch") is not None):
+                _fail("tied_vocabulary.chunks", "unsupported vocabulary format")
+            key = chunk["codebook"]["centroids"]
+            if centroid_key is not None and key != centroid_key:
+                _fail("tied_vocabulary.chunks", "must share one codebook")
+            centroid_key = key
+            rows += chunk["out_features"]
+        if rows != shape[0]:
+            _fail("tied_vocabulary.chunks", "row counts do not cover the vocabulary")
 
 
 __all__ = [

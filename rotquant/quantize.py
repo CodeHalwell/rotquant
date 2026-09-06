@@ -109,7 +109,7 @@ def _generate_sketch_matrix(in_features: int, k: int, seed: int, device) -> torc
 class QuantConfig:
     bits: int = 3
     codebook: str = "gaussian"          # gaussian | uniform | nf
-    scale: str = "rms"                  # rms | mse_search | turboquant
+    scale: str = "rms"                  # rms | mse_search | absmax | turboquant
     group_size: int = 128
     error_comp: str = "none"            # none | gptq | residual | qjl | turboquant
     residual_bits: int = 1              # bits for residual / qjl pass
@@ -119,11 +119,12 @@ class QuantConfig:
     gptq_actorder: bool = True          # process columns by descending Hessian diagonal
     gptq_recompute_scales: bool = True  # refit each stored group from updated weights
     mse_search_grid: int = 41           # candidate scales for mse_search
-    mse_search_lo: float = 0.5
-    mse_search_hi: float = 1.5
+    mse_search_lo: float | None = None
+    mse_search_hi: float | None = None
     seed: int = 0
     scale_bits: float = 16.0
     scale_quant_group_size: int = 256  # second-level block for 8-bit scales
+    collect_scale_diagnostics: bool = False
     sketch_k: int = 64                  # QJL projection dimension (error_comp="turboquant")
     codebook_dim: int | None = None      # spherical marginal dimension; defaults to group_size
     bias_correction: str = "none"       # none | length | mean | length_mean
@@ -134,6 +135,15 @@ class QuantConfig:
     calibrated_iters: int = 100          # scalar Lloyd refinement iterations
 
     def __post_init__(self) -> None:
+        if not isinstance(self.collect_scale_diagnostics, bool):
+            raise TypeError("collect_scale_diagnostics must be boolean")
+        # Uniform centroids span [-1,1], whereas Gaussian centroids already
+        # span several standard deviations. A common RMS range clips uniform
+        # int4 at <=1.5 sigma and is not a valid codebook control.
+        if self.mse_search_lo is None:
+            self.mse_search_lo = 1.5 if self.codebook.lower() == "uniform" else 0.5
+        if self.mse_search_hi is None:
+            self.mse_search_hi = 4.0 if self.codebook.lower() == "uniform" else 1.5
         if not isinstance(self.bits, int) or not 1 <= self.bits <= 16:
             raise ValueError("bits must be an integer in [1, 16]")
         if not isinstance(self.residual_bits, int) or not 1 <= self.residual_bits <= 16:
@@ -155,8 +165,10 @@ class QuantConfig:
             or self.codebook_dim < 3
         ):
             raise ValueError("codebook_dim must be an integer >= 3")
-        if self.scale not in {"rms", "mse_search", "turboquant"}:
+        if self.scale not in {"rms", "mse_search", "absmax", "turboquant"}:
             raise ValueError(f"unknown scale strategy: {self.scale}")
+        if self.scale == "absmax" and self.codebook.lower() != "uniform":
+            raise ValueError("absmax scale requires the uniform codebook")
         if self.error_comp not in {"none", "gptq", "residual", "qjl", "turboquant"}:
             raise ValueError(f"unknown error compensation strategy: {self.error_comp}")
         if self.error_comp == "qjl" and self.residual_bits != 1:
@@ -254,6 +266,7 @@ class QuantizedWeight:
     scale_quant_group_size: int = 256
     residual_scale_offsets: torch.Tensor | None = None
     residual_scale_steps: torch.Tensor | None = None
+    scale_diagnostics: dict | None = None  # research telemetry, not runtime state
 
     def main_scales(self) -> torch.Tensor | None:
         return _decode_storage_scales(
@@ -685,6 +698,11 @@ class Quantizer:
         rms = _group_scales_rms(w, self.cfg.group_size)
         if self.cfg.scale == "rms":
             return rms
+        if self.cfg.scale == "absmax":
+            groups = torch.nn.functional.pad(
+                w, (0, rms.shape[1] * self.cfg.group_size - w.shape[1])
+            ).reshape(w.shape[0], rms.shape[1], self.cfg.group_size)
+            return groups.abs().amax(dim=-1).clamp_min(torch.finfo(torch.float32).tiny)
         if self.cfg.scale == "mse_search":
             return self._mse_search_scales(w, rms)
         raise ValueError(f"unknown scale strategy: {self.cfg.scale}")
@@ -807,6 +825,23 @@ class Quantizer:
             self.cfg.scale_bits,
             self.cfg.scale_quant_group_size,
         )
+        scale_diagnostics = None
+        if self.cfg.collect_scale_diagnostics and selected_scales is not None:
+            flat = selected_scales.detach().float().flatten()
+            relative = (scales.detach().float().flatten() - flat).abs() / flat.clamp_min(1e-30)
+            block = self.cfg.scale_quant_group_size
+            padding = (-flat.numel()) % block
+            minimum = torch.nn.functional.pad(flat, (0, padding), value=float("inf")).reshape(-1, block).amin(1)
+            maximum = torch.nn.functional.pad(flat, (0, padding), value=0).reshape(-1, block).amax(1)
+            ratios = maximum / minimum.clamp_min(1e-30)
+            scale_diagnostics = {
+                "basis": "initial scale encoding before GPTQ feedback",
+                "scale_bits": self.cfg.scale_bits, "count": flat.numel(),
+                "block_max_min_ratio_max": float(ratios.max()),
+                "block_max_min_ratio_p95": float(torch.quantile(ratios, 0.95)),
+                "relative_rounding_error_max": float(relative.max()),
+                "relative_rounding_error_p95": float(torch.quantile(relative, 0.95)),
+            }
 
         vector = isinstance(self.codebook, VectorCodebook)
         if vector:
@@ -872,6 +907,7 @@ class Quantizer:
             scale_steps=scale_steps,
             scale_quant_group_size=self.cfg.scale_quant_group_size,
             scale_bits_main=self.cfg.scale_bits,
+            scale_diagnostics=scale_diagnostics,
         )
 
         if self.cfg.error_comp in ("residual", "qjl"):
@@ -991,6 +1027,9 @@ class Quantizer:
                     selected = (
                         group_rms
                         if self.cfg.scale == "rms"
+                        else group_weight.abs().amax(dim=1, keepdim=True).clamp_min(
+                            torch.finfo(torch.float32).tiny)
+                        if self.cfg.scale == "absmax"
                         else self._mse_search_scales(group_weight, group_rms)
                     )
                     if grid_codes is not None:

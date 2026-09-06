@@ -503,6 +503,26 @@ def _write_packed_checkpoint(
     if not modules:
         raise ValueError("model contains no QuantLinear modules to export")
 
+    from .vocabulary import PackedEmbedding, PackedOutputHead
+    vocabulary_spec = None
+    embeddings = [(name, module) for name, module in model.named_modules()
+                  if isinstance(module, PackedEmbedding)]
+    heads = [(name, module) for name, module in model.named_modules()
+             if isinstance(module, PackedOutputHead)]
+    if embeddings or heads:
+        from dataclasses import asdict
+        if len(embeddings) != 1 or len(heads) != 1 or embeddings[0][1].owner is not heads[0][1].owner:
+            raise ValueError("checkpoint requires one shared packed vocabulary owner")
+        owner = embeddings[0][1].owner
+        vocabulary_spec = {
+            "embedding": embeddings[0][0], "head": heads[0][0],
+            "config": asdict(owner.config), "shape": [owner.vocab_size, owner.hidden_size],
+            "source_digest": owner.source_digest, "execution_dtype": _dtype_name(owner.execution_dtype),
+            "chunks": [_quantized_weight_spec(len(modules) + i, chunk, packed_tensors, codebook_keys)
+                       for i, chunk in enumerate(owner.chunks)],
+        }
+    artifact_version = 3 if vocabulary_spec is not None else FORMAT_VERSION
+
     config = getattr(model, "config", None)
     if config is None or not hasattr(config, "save_pretrained"):
         raise TypeError(
@@ -520,17 +540,17 @@ def _write_packed_checkpoint(
     save_model(
         model,
         str(output / MODEL_STATE_NAME),
-        metadata={"format": "pt", "rotquant_format": str(FORMAT_VERSION)},
+        metadata={"format": "pt", "rotquant_format": str(artifact_version)},
     )
     save_file(
         packed_tensors,
         str(output / PACKED_STATE_NAME),
-        metadata={"format": "pt", "rotquant_format": str(FORMAT_VERSION)},
+        metadata={"format": "pt", "rotquant_format": str(artifact_version)},
     )
 
     manifest: dict[str, Any] = {
         "format": FORMAT_NAME,
-        "format_version": FORMAT_VERSION,
+        "format_version": artifact_version,
         "packing": CURRENT_PACKING.to_manifest(),
         "base_model": base_model,
         "base_model_revision": base_model_revision,
@@ -540,6 +560,8 @@ def _write_packed_checkpoint(
         "packed_state": PACKED_STATE_NAME,
         "quantized_modules": modules,
     }
+    if vocabulary_spec is not None:
+        manifest["tied_vocabulary"] = vocabulary_spec
     adapter_name = getattr(model, "_rotquant_adapter_name", None)
     adapter = resolve_model_adapter(model, adapter_name)
     manifest["architecture"] = {
@@ -566,7 +588,7 @@ def _write_packed_checkpoint(
     return {
         "path": str(output),
         "format": FORMAT_NAME,
-        "format_version": FORMAT_VERSION,
+        "format_version": artifact_version,
         "quantized_modules": len(modules),
         "artifact_bytes": artifact_bytes,
         "manifest_sha256": _sha256(output / MANIFEST_NAME),
@@ -659,6 +681,18 @@ def load_packed_model(
     with safe_open(packed_path, framework="pt", device="cpu") as packed_handle:
         rotations: dict[str, Rotation] = {}
         codebooks: dict[tuple[str, str], ScalarCodebook | VectorCodebook] = {}
+        vocabulary = manifest.get("tied_vocabulary")
+        if vocabulary is not None:
+            from .vocabulary import PackedVocabulary, VocabularyConfig, install_packed_vocabulary
+            owner = PackedVocabulary(
+                [_read_quantized_weight(packed_handle, chunk, codebooks)
+                 for chunk in vocabulary["chunks"]],
+                VocabularyConfig(**vocabulary["config"]), vocabulary["shape"],
+                _resolve_dtype(vocabulary["execution_dtype"]), vocabulary["source_digest"],
+            )
+            aliases = install_packed_vocabulary(model, owner)
+            if any(aliases[key] != vocabulary[key] for key in aliases):
+                raise ValueError("packed vocabulary aliases differ from the model accessors")
         for module_spec in manifest["quantized_modules"]:
             name = module_spec["name"]
             parent, attr = get_parent(model, name)

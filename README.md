@@ -120,12 +120,20 @@ three-seed KL by 72.8% versus broad random allocation and exported within 0.087%
 of the Unsloth byte target, but remained 2.62x worse than the prompt-matched
 Unsloth KL anchor. Pair refinement was a no-op and forced W6/W8 islands hurt.
 
-The active successor is the
-[format-aware allocator-v4 Colab](notebooks/qwen35_4b_allocator_v4_colab.ipynb).
-It lets each projection choose a complete quantizer format—not only a bit
-width—and tests calibrated W3/W4 codebooks plus W3 group-64 scaling against the
-promoted bits-only Pareto recipe and an exact same-palette random control. See
-the [allocator-v4 design](docs/dynamic_allocator_v4.md).
+The format-aware allocator-v4 experiment is complete: neither finalist passed
+promotion. Its [results review](docs/results_review_2026-09-06.md) identified a
+large fixed-cost difference: RotQuant retained the tied vocabulary in FP16,
+while the provider compressed it. This is a hypothesis to test, not an
+explanation already proven to close the quality gap.
+
+The next run is the
+[vocabulary-budget Colab](notebooks/qwen35_4b_vocabulary_budget_colab.ipynb).
+It crosses FP16/W4/W5 backbones with FP16/W8/W6 vocabulary in nine seed-0 arms,
+with unchanged source teachers, persistent calibration/chunk caches and live
+logs. Start with the [runbook](docs/vocabulary_budget_run.md). The first screen
+uses dense vocabulary reconstruction: its projected bytes are **not** a measured
+compressed artifact, and it cannot promote a provider winner. The code and
+notebook have local CPU checks; the full CUDA/Qwen run remains to be executed.
 
 ## Install
 

@@ -141,14 +141,17 @@ def fwht(x: torch.Tensor, normalize: bool = True) -> torch.Tensor:
             torch.bfloat16,
         }
         if kernel_available and kernel_dtype:
-            # The kernel applies the unnormalised H; scale to match our convention.
-            out = _fht_cuda(x.contiguous())
-            return out / math.sqrt(d) if normalize else out
+            # Apply normalization inside the kernel, before its FP16 output
+            # cast. Scaling an already-overflowed unnormalized output is too late.
+            return _fht_cuda(x.contiguous(), scale=1 / math.sqrt(d) if normalize else 1.0)
         if not kernel_available:
             _warn_slow_cuda_fwht()
 
     orig_shape = x.shape
-    h = x.reshape(-1, d).clone()
+    # Normalization comes after the butterflies. Half-precision intermediate
+    # sums can overflow even when the normalized result is representable.
+    work = x.float() if x.dtype in (torch.float16, torch.bfloat16) else x
+    h = work.reshape(-1, d).clone()
     step = 1
     while step < d:
         h = h.view(-1, d // (2 * step), 2, step)
@@ -158,7 +161,7 @@ def fwht(x: torch.Tensor, normalize: bool = True) -> torch.Tensor:
         step *= 2
     if normalize:
         h = h / math.sqrt(d)
-    return h.view(orig_shape)
+    return h.view(orig_shape).to(x.dtype)
 
 
 class Rotation(nn.Module):

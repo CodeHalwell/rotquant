@@ -1,0 +1,245 @@
+{
+  "protocol": "qwen35-allocator-v4-confirmation-decision-v1",
+  "code_revision": "8ba3b751bb82d4e96d0294567312ac69b5bf1612",
+  "seeds": [
+    0,
+    1,
+    2
+  ],
+  "bits_baseline_arm": "bits_only_pareto",
+  "random_control_arm": "format_random_exact",
+  "protocol_errors": [],
+  "decisions": [
+    {
+      "arm": "format_pareto_all",
+      "format_allocator_promoted": false,
+      "provider_competitive": false,
+      "missing_rows": [],
+      "missing_paired_comparisons": [],
+      "gates": {
+        "protocol_integrity": true,
+        "valid_candidate_and_control_rows": true,
+        "no_quality_regressions_all_seeds": false,
+        "target_bytes_all_seeds": true,
+        "not_halted_all_seeds": true,
+        "kl_better_than_bits_all_seeds": false,
+        "paired_bits_kl_ci_below_zero_all_seeds": false,
+        "kl_better_than_random_all_seeds": true,
+        "paired_random_kl_ci_below_zero_all_seeds": true,
+        "secondary_win_over_bits_all_seeds": true,
+        "within_exported_byte_gate": true
+      },
+      "secondary_wins_over_bits": {
+        "top1_agreement": true,
+        "ppl_wikitext2": false,
+        "ppl_c4": false,
+        "diverse_mean_teacher_kl": false,
+        "diverse_top1_agreement": false,
+        "diverse_trajectory_token_agreement": true
+      },
+      "quality_guards_by_seed": {
+        "0": {
+          "primary_kl": true,
+          "primary_top1": true,
+          "wikitext2": true,
+          "c4": true,
+          "diverse_kl": true,
+          "diverse_top1": true,
+          "trajectory": true
+        },
+        "1": {
+          "primary_kl": true,
+          "primary_top1": true,
+          "wikitext2": true,
+          "c4": true,
+          "diverse_kl": false,
+          "diverse_top1": false,
+          "trajectory": true
+        },
+        "2": {
+          "primary_kl": false,
+          "primary_top1": true,
+          "wikitext2": true,
+          "c4": true,
+          "diverse_kl": true,
+          "diverse_top1": true,
+          "trajectory": true
+        }
+      },
+      "exported_seeds": [
+        0
+      ],
+      "provider_comparison": {
+        "arm": "format_pareto_all",
+        "seeds": [
+          0,
+          1,
+          2
+        ],
+        "candidate_bytes": 3587582781,
+        "baseline_bytes": 3584533344,
+        "byte_ratio": 1.0008507207793462,
+        "byte_delta_fraction": 0.0008507207793462257,
+        "byte_basis": "measured_artifact",
+        "exported_seeds": [
+          0
+        ],
+        "artifact_measurements": [
+          {
+            "seed": 0,
+            "bytes": 3587582781,
+            "identity": {
+              "code_revision": "8ba3b751bb82d4e96d0294567312ac69b5bf1612",
+              "seed": 0,
+              "stage": "allocator-v4",
+              "arm": "format_pareto_all",
+              "trial_fingerprint": "ca4da7168263932c5e633e762c4d68d2c8f40738dc25bb598769daf7a1b84e07",
+              "allocation_fingerprint": "ea07b4fbc52445026508e1d70904e3a2855b215b4ab962fa1dbc200e4c2155c2"
+            },
+            "manifest_sha256": "9e886cff1c2d0651db6f0d5f988f569c54dae64bc75fa32a66bf351610ec5bdb"
+          }
+        ],
+        "within_byte_gate": true,
+        "estimated_persistent_bytes": 3567232928,
+        "within_estimated_byte_gate": true,
+        "candidate_metrics": {
+          "mean_teacher_kl": 0.03134063240703642,
+          "p95_teacher_kl": 0.09660278757413228,
+          "top1_agreement": 0.9082409219395521,
+          "nll_delta": 0.021507999746144712
+        },
+        "unsloth_metrics": {
+          "mean_teacher_kl": 0.01188826747238636,
+          "p95_teacher_kl": 0.03248514607548714,
+          "top1_agreement": 0.9408838878016961,
+          "nll_delta": 0.010750668449191148
+        },
+        "candidate_minus_unsloth": {
+          "mean_teacher_kl": 0.01945236493465006,
+          "p95_teacher_kl": 0.06411764149864514,
+          "top1_agreement": -0.03264296586214399,
+          "nll_delta": 0.010757331296953564
+        },
+        "relative_kl_delta": 1.6362657535955774,
+        "relative_p95_kl_delta": 1.9737525991002847
+      }
+    },
+    {
+      "arm": "format_pareto_g128",
+      "format_allocator_promoted": false,
+      "provider_competitive": false,
+      "missing_rows": [],
+      "missing_paired_comparisons": [],
+      "gates": {
+        "protocol_integrity": true,
+        "valid_candidate_and_control_rows": true,
+        "no_quality_regressions_all_seeds": false,
+        "target_bytes_all_seeds": true,
+        "not_halted_all_seeds": true,
+        "kl_better_than_bits_all_seeds": false,
+        "paired_bits_kl_ci_below_zero_all_seeds": false,
+        "kl_better_than_random_all_seeds": true,
+        "paired_random_kl_ci_below_zero_all_seeds": true,
+        "secondary_win_over_bits_all_seeds": true,
+        "within_exported_byte_gate": true
+      },
+      "secondary_wins_over_bits": {
+        "top1_agreement": false,
+        "ppl_wikitext2": false,
+        "ppl_c4": false,
+        "diverse_mean_teacher_kl": false,
+        "diverse_top1_agreement": false,
+        "diverse_trajectory_token_agreement": true
+      },
+      "quality_guards_by_seed": {
+        "0": {
+          "primary_kl": true,
+          "primary_top1": true,
+          "wikitext2": true,
+          "c4": true,
+          "diverse_kl": true,
+          "diverse_top1": true,
+          "trajectory": true
+        },
+        "1": {
+          "primary_kl": true,
+          "primary_top1": true,
+          "wikitext2": true,
+          "c4": true,
+          "diverse_kl": false,
+          "diverse_top1": true,
+          "trajectory": true
+        },
+        "2": {
+          "primary_kl": false,
+          "primary_top1": true,
+          "wikitext2": true,
+          "c4": true,
+          "diverse_kl": true,
+          "diverse_top1": true,
+          "trajectory": true
+        }
+      },
+      "exported_seeds": [
+        0
+      ],
+      "provider_comparison": {
+        "arm": "format_pareto_g128",
+        "seeds": [
+          0,
+          1,
+          2
+        ],
+        "candidate_bytes": 3587648118,
+        "baseline_bytes": 3584533344,
+        "byte_ratio": 1.0008689482566018,
+        "byte_delta_fraction": 0.0008689482566017759,
+        "byte_basis": "measured_artifact",
+        "exported_seeds": [
+          0
+        ],
+        "artifact_measurements": [
+          {
+            "seed": 0,
+            "bytes": 3587648118,
+            "identity": {
+              "code_revision": "8ba3b751bb82d4e96d0294567312ac69b5bf1612",
+              "seed": 0,
+              "stage": "allocator-v4",
+              "arm": "format_pareto_g128",
+              "trial_fingerprint": "3782bdbaa1fb826e515fdf605043f1676f2c18a1b94d80fd36aae37f0cefca04",
+              "allocation_fingerprint": "49c51fc1b0836aac93b8e02c871f8b7dc74e1ddfa99f63503a5bb2d93c27b552"
+            },
+            "manifest_sha256": "532c394887fde7db9efdd4fd109c2481562b53a26f6fdf72404619fc20e21171"
+          }
+        ],
+        "within_byte_gate": true,
+        "estimated_persistent_bytes": 3567190283,
+        "within_estimated_byte_gate": true,
+        "candidate_metrics": {
+          "mean_teacher_kl": 0.03145068216437904,
+          "p95_teacher_kl": 0.09851949165264766,
+          "top1_agreement": 0.9084311806914546,
+          "nll_delta": 0.020779127969926377
+        },
+        "unsloth_metrics": {
+          "mean_teacher_kl": 0.01188826747238636,
+          "p95_teacher_kl": 0.03248514607548714,
+          "top1_agreement": 0.9408838878016961,
+          "nll_delta": 0.010750668449191148
+        },
+        "candidate_minus_unsloth": {
+          "mean_teacher_kl": 0.01956241469199268,
+          "p95_teacher_kl": 0.06603434557716052,
+          "top1_agreement": -0.03245270711024151,
+          "nll_delta": 0.01002845952073523
+        },
+        "relative_kl_delta": 1.645522759092656,
+        "relative_p95_kl_delta": 2.0327550759265067
+      }
+    }
+  ],
+  "format_allocator_winners": [],
+  "provider_competitive_winners": [],
+  "boundary": "Internal development decision only. Public claims still require the registered engine-neutral 300-prompt evaluation."
+}

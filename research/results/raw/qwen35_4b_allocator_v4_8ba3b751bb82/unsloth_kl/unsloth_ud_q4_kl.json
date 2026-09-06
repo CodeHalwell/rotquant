@@ -1,0 +1,92 @@
+{
+  "protocol": "qwen35-4b-unsloth-gguf-kl-v1",
+  "scope": "same-engine BF16-GGUF to UD-Q4_K_XL text-backbone KL; F16 projector counted in deployed candidate bytes but not executed",
+  "engine": "llama.cpp via llama-cpp-python",
+  "llama_cpp_python_revision": "3691546f1c9e0c1bf93323dff02230bd959cf562",
+  "llama_cpp_engine_revision": "4df29be4f4c3673f428170fda944a5b19f743bb8",
+  "gguf_repo": "unsloth/Qwen3.5-4B-GGUF",
+  "gguf_revision": "e87f176479d0855a907a41277aca2f8ee7a09523",
+  "source": {
+    "name": "Qwen3.5-4B-BF16.gguf",
+    "bytes": 8424393632,
+    "sha256": "9e6e2841a75f503ccb330831832fd7861266e187e0dbf149a954219ccb8c197a"
+  },
+  "candidate": {
+    "files": [
+      {
+        "name": "Qwen3.5-4B-UD-Q4_K_XL.gguf",
+        "bytes": 2912109728,
+        "sha256": "b252c5610a42ca82d20fe2a12813e9d069eed89292907e26c783eeb0bc961bc7"
+      },
+      {
+        "name": "mmproj-F16.gguf",
+        "bytes": 672423616,
+        "sha256": "cd88edcf8d031894960bb0c9c5b9b7e1fea6ebee02b9f7ce925a00d12891f864"
+      }
+    ],
+    "executed_file": "Qwen3.5-4B-UD-Q4_K_XL.gguf",
+    "counted_projector": "mmproj-F16.gguf",
+    "complete_artifact_bytes": 3584533344
+  },
+  "prompt_manifest_fingerprint": "578b80e1d3ccd56d0539b4f91d9d26037e092d3099fe586245d4b8e49b7d161f",
+  "collection_fingerprint": "37b6c70391dea032b70d360bf0eae195f6c0e45bb28bc938336400b416d16233",
+  "completed_rotquant_w4a8_input_hashes_match": false,
+  "metrics": {
+    "prompts": 24,
+    "tokens": 12264,
+    "mean_teacher_kl": 0.01188826747238636,
+    "median_teacher_kl": 0.007810758426785469,
+    "p95_teacher_kl": 0.03248514607548714,
+    "max_teacher_kl": 1.4736536741256714,
+    "top1_agreement": 0.9408838878016961,
+    "source_nll": 2.6148054587182163,
+    "candidate_nll": 2.6255561271674077,
+    "nll_delta": 0.010750668449191148,
+    "input_hashes": [
+      "cf0fb236893f847ff99cb0f571d38604fcb9446ee9df3b5d780a6fa7bb8e6996",
+      "f798e40153c544c8469d6c036999956e3178fdefc533a10b882348409f643f85",
+      "76dfffdaf3002f54dc29343d066c32626f61fb6aa530e337155d6f46c812dc1b",
+      "a68977746b8c8a843f193c2b41b4401a92ea7bda637cd894196d4d6b5dd3d0ef",
+      "1b48701f13ad7d5b7e7c8637ca939d70652dee3ce68759e97c27200bf7183760",
+      "49bca89c74a9f9e7a3e16e4f92dec60c5b6b28e77549e6ff096f0150a52574e7",
+      "96d9e1daa541aaf6745227b1fd74b1d7b2b0542b686a0d872da2f893f2877bc2",
+      "4cdcf840dca3afe83c32ec66c3db5eb69b56f45d4edaa8a5b356dd5524750f98",
+      "39a86d0d685abf0fee40a3dc905697b95bb68a8a982ff3248e4b3194c9d35081",
+      "ec699adcf8368e5c06b3c9a91ce3bf957c1afd2f021e1016991a54bf9ccd75de",
+      "c769c074d8ed68ada88bfd9d68662a3aef582f2159793f0bb92b5337557e145b",
+      "6bf691d63c2829291ce06fcffe99a81d72112167a9dc374fd93a981731c8a797",
+      "252bd4f13f4361295fe9280c5d1d6c2939364324b64064e734f2b27a55d20e9d",
+      "3581fb66ac53f98ea16cf76aa13fcf191d581d572fa123c7a3e65db214d9066c",
+      "b11d1a9bceda113405837a3f9a6d6c405f63f87e44b1bf22058a53d8771b6869",
+      "43035b53b37f95cd207438bdcf3acc210ecd89d090aee192e8bd680ed53fedb9",
+      "a3175e45b58bc901088c2b28263706b3b1b2ccd65440a3446e654e29536f004c",
+      "7cb64785862045ab96e8cf030366cce08fab20fcf5921e8f8a1322d626310df2",
+      "37ba53d684b8b0b27c48ee51949f51863c9c1ee9bcfdfc334a1b25c0b25b8118",
+      "72a48969e93f23d0f201b61bec786807f305f4b6c6f0dc800ece7eff841cbb0a",
+      "b317999578e68ed02b824c56cabad4f76b9596aff0c73167323693a50fe84970",
+      "8c9ef22ffb3c792a054a0a86a98261c67e007d69086616f1a58b97061f8cf057",
+      "d41626fbb1d51983e51e5358f02ea1c8c6b31d7352eb4216eea1022dc8f914b0",
+      "6d69028aa4508fef7be920852a55e7059400997ada5bb1c380dad6d7cd73e591"
+    ],
+    "paired_token_bootstrap": {
+      "draws": 4000,
+      "seed": 1701,
+      "confidence": 0.95,
+      "intervals": {
+        "mean_teacher_kl": [
+          0.01145706565967012,
+          0.012388283856970684
+        ],
+        "top1_agreement": [
+          0.9365622961513372,
+          0.9447977821265493
+        ],
+        "nll_delta": [
+          0.007623986238137013,
+          0.013891584173893485
+        ]
+      }
+    }
+  },
+  "comparison_warning": "Compare with RotQuant only when input_hashes match. This nearest released Unsloth Q4 artifact is not within the registered 1% matched-byte gate of the current RotQuant W4 artifact."
+}

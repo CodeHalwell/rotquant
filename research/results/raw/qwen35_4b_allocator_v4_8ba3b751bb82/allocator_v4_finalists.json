@@ -1,0 +1,164 @@
+{
+  "protocol": "qwen35-allocator-v4-finalist-selection-v1",
+  "code_revision": "8ba3b751bb82d4e96d0294567312ac69b5bf1612",
+  "screen_seed": 0,
+  "quality_ceiling_arm": "uniform_scale8_w4",
+  "bits_baseline_arm": "bits_only_pareto",
+  "random_control_arm": "format_random_exact",
+  "finalists": [
+    "format_pareto_all",
+    "format_pareto_g128"
+  ],
+  "confirmation_arms": [
+    "uniform_scale8_w4",
+    "bits_only_pareto",
+    "format_random_exact",
+    "format_pareto_all",
+    "format_pareto_g128"
+  ],
+  "decisions": [
+    {
+      "arm": "format_pareto_all",
+      "selected": true,
+      "missing": false,
+      "missing_metrics": [],
+      "eligible": true,
+      "score": 1.7520208692969312,
+      "guards": {
+        "target_bytes": true,
+        "faithful_scoring": true,
+        "not_halted": true,
+        "primary_kl": true,
+        "primary_top1": true,
+        "wikitext2": true,
+        "c4": true,
+        "diverse_kl": true,
+        "diverse_top1": true,
+        "trajectory": true
+      },
+      "signals": {
+        "primary_kl": true,
+        "primary_top1": false,
+        "wikitext2": true,
+        "c4": false,
+        "diverse_kl": false,
+        "diverse_top1": true,
+        "trajectory": true
+      },
+      "metrics": {
+        "mean_teacher_kl": 0.031148045419169188,
+        "top1_agreement": 0.9074527071102414,
+        "ppl_wikitext2": 9.97645092010498,
+        "ppl_c4": 14.496099472045898,
+        "diverse_mean_teacher_kl": 0.0806662990655159,
+        "diverse_top1_agreement": 0.8564247565190072,
+        "diverse_trajectory_token_agreement": 0.46,
+        "complete_persistent_model_bytes": 3567126912.0
+      },
+      "allocation_fingerprint": "ea07b4fbc52445026508e1d70904e3a2855b215b4ab962fa1dbc200e4c2155c2",
+      "counts_by_format": {
+        "gaussian_w4_g128": 50,
+        "calibrated_w3_g128": 28,
+        "calibrated_w4_g128": 60,
+        "gaussian_w3_g64": 27,
+        "gaussian_w3_g128": 29,
+        "gaussian_w5_g128": 6
+      }
+    },
+    {
+      "arm": "format_pareto_gaussian",
+      "selected": false,
+      "missing": false,
+      "missing_metrics": [],
+      "eligible": true,
+      "score": 1.824996476914644,
+      "guards": {
+        "target_bytes": true,
+        "faithful_scoring": true,
+        "not_halted": true,
+        "primary_kl": true,
+        "primary_top1": true,
+        "wikitext2": true,
+        "c4": true,
+        "diverse_kl": true,
+        "diverse_top1": true,
+        "trajectory": true
+      },
+      "signals": {
+        "primary_kl": true,
+        "primary_top1": false,
+        "wikitext2": true,
+        "c4": false,
+        "diverse_kl": false,
+        "diverse_top1": false,
+        "trajectory": true
+      },
+      "metrics": {
+        "mean_teacher_kl": 0.03112201996278856,
+        "top1_agreement": 0.9076157860404436,
+        "ppl_wikitext2": 9.888891220092773,
+        "ppl_c4": 14.494924545288086,
+        "diverse_mean_teacher_kl": 0.08175836836359165,
+        "diverse_top1_agreement": 0.8485705309456487,
+        "diverse_trajectory_token_agreement": 0.39875,
+        "complete_persistent_model_bytes": 3567355072.0
+      },
+      "allocation_fingerprint": "b81fc32a8354b59ba6ce9087b2a792d901ee13336dc5edd043db9a8f286f8471",
+      "counts_by_format": {
+        "gaussian_w4_g128": 107,
+        "gaussian_w3_g64": 46,
+        "gaussian_w5_g128": 7,
+        "gaussian_w3_g128": 40
+      }
+    },
+    {
+      "arm": "format_pareto_g128",
+      "selected": true,
+      "missing": false,
+      "missing_metrics": [],
+      "eligible": true,
+      "score": 1.7773098258857056,
+      "guards": {
+        "target_bytes": true,
+        "faithful_scoring": true,
+        "not_halted": true,
+        "primary_kl": true,
+        "primary_top1": true,
+        "wikitext2": true,
+        "c4": true,
+        "diverse_kl": true,
+        "diverse_top1": true,
+        "trajectory": true
+      },
+      "signals": {
+        "primary_kl": false,
+        "primary_top1": false,
+        "wikitext2": true,
+        "c4": false,
+        "diverse_kl": true,
+        "diverse_top1": true,
+        "trajectory": true
+      },
+      "metrics": {
+        "mean_teacher_kl": 0.03167789478513515,
+        "top1_agreement": 0.9073711676451403,
+        "ppl_wikitext2": 9.998326301574707,
+        "ppl_c4": 14.530674934387207,
+        "diverse_mean_teacher_kl": 0.07815027746283855,
+        "diverse_top1_agreement": 0.8535972353125981,
+        "diverse_trajectory_token_agreement": 0.4275,
+        "complete_persistent_model_bytes": 3567190240.0
+      },
+      "allocation_fingerprint": "49c51fc1b0836aac93b8e02c871f8b7dc74e1ddfa99f63503a5bb2d93c27b552",
+      "counts_by_format": {
+        "gaussian_w4_g128": 51,
+        "calibrated_w3_g128": 44,
+        "calibrated_w4_g128": 61,
+        "gaussian_w3_g128": 39,
+        "gaussian_w5_g128": 5
+      }
+    }
+  ],
+  "deduplicated_recipes": {},
+  "interpretation": "Seed-0 format screen only. A finalist must improve held-out KL over the exact-size bits-only allocator, then reproduce against both bits-only and same-palette random controls at seeds 0/1/2."
+}
