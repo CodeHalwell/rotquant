@@ -1,5 +1,12 @@
 # Vocabulary-aware quantization plan — 2026-09-06
 
+**2026-09-07 follow-up:** the first screen has now completed; its original
+planning/registration text below is retained. Both W5 candidates passed the
+development quality guards. See [results](vocabulary_results_2026-09-07.md) and
+the new [packed-validation runbook](packed_vocabulary_validation_run.md).
+Full-Qwen export/reload is now implemented as the next runnable notebook,
+but its pretrained CUDA acceptance and independent confirmation are unexecuted.
+
 Status: first-screen implementation and generated Colab notebook are ready for
 GPU execution; no new full-Qwen quality result is claimed. See the
 [runbook](vocabulary_budget_run.md). Numerical prerequisites, chunked quality

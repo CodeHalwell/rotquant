@@ -1,0 +1,8 @@
+# Artifact conformance only. Existing development inputs are reused deliberately.
+screen_config: configs/qwen35_4b_vocabulary_budget_cuda.yaml
+packed_validation:
+  projection_mode: dense_equivalent
+  probe_prompts: 4
+  probe_prompt_tokens: 64
+  probe_logit_positions: 4
+  probe_new_tokens: 8

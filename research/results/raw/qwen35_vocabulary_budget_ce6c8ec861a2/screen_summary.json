@@ -1,0 +1,345 @@
+{
+  "protocol": "qwen35-vocabulary-budget-assessment-v1",
+  "seeds": [
+    0
+  ],
+  "complete": true,
+  "missing": [],
+  "issues": [],
+  "rows": [
+    {
+      "arm": "b16_v16",
+      "seed": 0,
+      "mean_teacher_kl": -6.68602545220938e-11,
+      "p95_teacher_kl": 7.82310962677002e-08,
+      "top1_agreement": 1.0,
+      "ppl_wikitext2": 9.586468696594238,
+      "ppl_c4": 14.020814895629883,
+      "diverse_mean_teacher_kl": 7.233272010466969e-10,
+      "diverse_top1_agreement": 1.0,
+      "diverse_trajectory_token_agreement": 1.0,
+      "projected_artifact_bytes": 9099281072,
+      "measured_artifact_bytes": null,
+      "evaluation_halted": false
+    },
+    {
+      "arm": "b16_v6",
+      "seed": 0,
+      "mean_teacher_kl": 0.0008314471893542277,
+      "p95_teacher_kl": 0.001998872496187687,
+      "top1_agreement": 0.9796151337247228,
+      "ppl_wikitext2": 9.591850280761719,
+      "ppl_c4": 14.027495384216309,
+      "diverse_mean_teacher_kl": 0.0008651829279896001,
+      "diverse_top1_agreement": 0.9789506754633993,
+      "diverse_trajectory_token_agreement": 0.89375,
+      "projected_artifact_bytes": 8314592688,
+      "measured_artifact_bytes": null,
+      "evaluation_halted": false
+    },
+    {
+      "arm": "b16_v8",
+      "seed": 0,
+      "mean_teacher_kl": 6.666978130412312e-05,
+      "p95_teacher_kl": 0.00016003308701328933,
+      "top1_agreement": 0.9941291585127201,
+      "ppl_wikitext2": 9.586018562316895,
+      "ppl_c4": 14.019872665405273,
+      "diverse_mean_teacher_kl": 7.305484972578192e-05,
+      "diverse_top1_agreement": 0.9949732956330506,
+      "diverse_trajectory_token_agreement": 0.94,
+      "projected_artifact_bytes": 8473518256,
+      "measured_artifact_bytes": null,
+      "evaluation_halted": false
+    },
+    {
+      "arm": "b4_v16",
+      "seed": 0,
+      "mean_teacher_kl": 0.016497447571564718,
+      "p95_teacher_kl": 0.05059877038002014,
+      "top1_agreement": 0.9335453359425963,
+      "ppl_wikitext2": 9.801630020141602,
+      "ppl_c4": 14.260586738586426,
+      "diverse_mean_teacher_kl": 0.042097404173174785,
+      "diverse_top1_agreement": 0.885956644674835,
+      "diverse_trajectory_token_agreement": 0.33625,
+      "projected_artifact_bytes": 3780618416,
+      "measured_artifact_bytes": null,
+      "evaluation_halted": false
+    },
+    {
+      "arm": "b4_v6",
+      "seed": 0,
+      "mean_teacher_kl": 0.017300823507787975,
+      "p95_teacher_kl": 0.051379404962062836,
+      "top1_agreement": 0.9300391389432485,
+      "ppl_wikitext2": 9.803088188171387,
+      "ppl_c4": 14.267170906066895,
+      "diverse_mean_teacher_kl": 0.043005049472105344,
+      "diverse_top1_agreement": 0.8853283066289663,
+      "diverse_trajectory_token_agreement": 0.34125,
+      "projected_artifact_bytes": 2995930032,
+      "measured_artifact_bytes": null,
+      "evaluation_halted": false
+    },
+    {
+      "arm": "b4_v8",
+      "seed": 0,
+      "mean_teacher_kl": 0.016551692541798033,
+      "p95_teacher_kl": 0.050755422562360764,
+      "top1_agreement": 0.9334637964774951,
+      "ppl_wikitext2": 9.80229377746582,
+      "ppl_c4": 14.26043701171875,
+      "diverse_mean_teacher_kl": 0.042117298005176274,
+      "diverse_top1_agreement": 0.8862708136977694,
+      "diverse_trajectory_token_agreement": 0.33625,
+      "projected_artifact_bytes": 3154855600,
+      "measured_artifact_bytes": null,
+      "evaluation_halted": false
+    },
+    {
+      "arm": "b5_v16",
+      "seed": 0,
+      "mean_teacher_kl": 0.003969109722274001,
+      "p95_teacher_kl": 0.012511179782450199,
+      "top1_agreement": 0.966324200913242,
+      "ppl_wikitext2": 9.505013465881348,
+      "ppl_c4": 14.072653770446777,
+      "diverse_mean_teacher_kl": 0.009716759415643605,
+      "diverse_top1_agreement": 0.9465912661011624,
+      "diverse_trajectory_token_agreement": 0.80625,
+      "projected_artifact_bytes": 4226276016,
+      "measured_artifact_bytes": null,
+      "evaluation_halted": false
+    },
+    {
+      "arm": "b5_v6",
+      "seed": 0,
+      "mean_teacher_kl": 0.004740943141957163,
+      "p95_teacher_kl": 0.01374626625329256,
+      "top1_agreement": 0.9605348988910632,
+      "ppl_wikitext2": 9.50792407989502,
+      "ppl_c4": 14.07933521270752,
+      "diverse_mean_teacher_kl": 0.010716434801070525,
+      "diverse_top1_agreement": 0.9418787307571473,
+      "diverse_trajectory_token_agreement": 0.81625,
+      "projected_artifact_bytes": 3441587632,
+      "measured_artifact_bytes": null,
+      "evaluation_halted": false
+    },
+    {
+      "arm": "b5_v8",
+      "seed": 0,
+      "mean_teacher_kl": 0.0040373126286660935,
+      "p95_teacher_kl": 0.012604553252458572,
+      "top1_agreement": 0.9659980430528375,
+      "ppl_wikitext2": 9.504988670349121,
+      "ppl_c4": 14.071861267089844,
+      "diverse_mean_teacher_kl": 0.009801909744159029,
+      "diverse_top1_agreement": 0.946277097078228,
+      "diverse_trajectory_token_agreement": 0.795,
+      "projected_artifact_bytes": 3600513200,
+      "measured_artifact_bytes": null,
+      "evaluation_halted": false
+    }
+  ],
+  "quality_guards": {
+    "primary_kl": [
+      "mean_teacher_kl",
+      "ratio",
+      1.02
+    ],
+    "primary_top1": [
+      "top1_agreement",
+      "delta",
+      -0.01
+    ],
+    "wikitext2": [
+      "ppl_wikitext2",
+      "ratio",
+      1.02
+    ],
+    "c4": [
+      "ppl_c4",
+      "ratio",
+      1.02
+    ],
+    "diverse_kl": [
+      "diverse_mean_teacher_kl",
+      "ratio",
+      1.02
+    ],
+    "diverse_top1": [
+      "diverse_top1_agreement",
+      "delta",
+      -0.01
+    ],
+    "trajectory": [
+      "diverse_trajectory_token_agreement",
+      "delta",
+      -0.02
+    ]
+  },
+  "decisions": [
+    {
+      "seed": 0,
+      "arm": "b5_v8",
+      "quality_candidate": true,
+      "guards": {
+        "primary_kl": true,
+        "primary_top1": true,
+        "wikitext2": true,
+        "c4": true,
+        "diverse_kl": true,
+        "diverse_top1": true,
+        "trajectory": true
+      },
+      "primary_kl_improved": true,
+      "artifact_promoted": false
+    },
+    {
+      "seed": 0,
+      "arm": "b5_v6",
+      "quality_candidate": true,
+      "guards": {
+        "primary_kl": true,
+        "primary_top1": true,
+        "wikitext2": true,
+        "c4": true,
+        "diverse_kl": true,
+        "diverse_top1": true,
+        "trajectory": true
+      },
+      "primary_kl_improved": true,
+      "artifact_promoted": false
+    }
+  ],
+  "contrasts": [
+    {
+      "seed": 0,
+      "vocabulary_bits": 8,
+      "contrast": "vocabulary_only",
+      "metric": "mean_teacher_kl",
+      "terms": {
+        "b16_v8": 1,
+        "b16_v16": -1
+      },
+      "paired_prompts": 24,
+      "delta": 6.666984816437763e-05,
+      "ci95": [
+        6.446238781240833e-05,
+        6.888492702422721e-05
+      ],
+      "draws": 4000,
+      "unit": "paired prompt",
+      "exploratory_screen": true
+    },
+    {
+      "seed": 0,
+      "vocabulary_bits": 8,
+      "contrast": "combined_vs_w4",
+      "metric": "mean_teacher_kl",
+      "terms": {
+        "b5_v8": 1,
+        "b4_v16": -1
+      },
+      "paired_prompts": 24,
+      "delta": -0.012460134942898623,
+      "ci95": [
+        -0.014479770509323224,
+        -0.010766530911142307
+      ],
+      "draws": 4000,
+      "unit": "paired prompt",
+      "exploratory_screen": true
+    },
+    {
+      "seed": 0,
+      "vocabulary_bits": 8,
+      "contrast": "interaction",
+      "metric": "mean_teacher_kl",
+      "terms": {
+        "b5_v8": 1,
+        "b5_v16": -1,
+        "b4_v8": -1,
+        "b4_v16": 1
+      },
+      "paired_prompts": 24,
+      "delta": 1.3957936158774695e-05,
+      "ci95": [
+        -1.2558877263982778e-05,
+        4.2621074250455506e-05
+      ],
+      "draws": 4000,
+      "unit": "paired prompt",
+      "exploratory_screen": true
+    },
+    {
+      "seed": 0,
+      "vocabulary_bits": 6,
+      "contrast": "vocabulary_only",
+      "metric": "mean_teacher_kl",
+      "terms": {
+        "b16_v6": 1,
+        "b16_v16": -1
+      },
+      "paired_prompts": 24,
+      "delta": 0.0008314472562144823,
+      "ci95": [
+        0.0007981939006266037,
+        0.0008665302550806631
+      ],
+      "draws": 4000,
+      "unit": "paired prompt",
+      "exploratory_screen": true
+    },
+    {
+      "seed": 0,
+      "vocabulary_bits": 6,
+      "contrast": "combined_vs_w4",
+      "metric": "mean_teacher_kl",
+      "terms": {
+        "b5_v6": 1,
+        "b4_v16": -1
+      },
+      "paired_prompts": 24,
+      "delta": -0.011756504429607554,
+      "ci95": [
+        -0.013791150693032607,
+        -0.010058010595778351
+      ],
+      "draws": 4000,
+      "unit": "paired prompt",
+      "exploratory_screen": true
+    },
+    {
+      "seed": 0,
+      "vocabulary_bits": 6,
+      "contrast": "interaction",
+      "metric": "mean_teacher_kl",
+      "terms": {
+        "b5_v6": 1,
+        "b5_v16": -1,
+        "b4_v6": -1,
+        "b4_v16": 1
+      },
+      "paired_prompts": 24,
+      "delta": -3.154251654009715e-05,
+      "ci95": [
+        -0.0001118971102926288,
+        4.6416286522472724e-05
+      ],
+      "draws": 4000,
+      "unit": "paired prompt",
+      "exploratory_screen": true
+    }
+  ],
+  "finalists": [
+    "b5_v8",
+    "b5_v6"
+  ],
+  "provider_competitive": false,
+  "artifact_promoted": false,
+  "next_step": "Implement/verify packed export, then independent confirmation.",
+  "interpretation": "Development screen only. Dense vocabulary and projected bytes cannot promote an artifact."
+}

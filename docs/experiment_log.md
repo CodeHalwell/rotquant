@@ -6,6 +6,28 @@ learned, negative results, and the decision that followed. Results produced in
 external notebooks are recorded here even when their raw artifacts live on
 Google Drive.
 
+## 2026-09-07: vocabulary-budget screen and artifact milestone
+
+The [nine-arm screen](vocabulary_results_2026-09-07.md), implementation
+`ce6c8ec861a2`, completed on A100 40 GB at seed 0. W5/W6 and W5/W8 reduce
+primary teacher KL to 0.004741 and 0.004037 versus W4/FP16 vocabulary 0.016497;
+both pass the registered development quality screen. Their projected total
+sizes are 3.442 and 3.601 GB. All nine original result records and source/runtime
+metadata are archived with SHA-256 provenance.
+
+Learning: compressing the 1.27 GB tied vocabulary can fund W5 backbone precision
+with much less additional distortion than the W4-to-W5 improvement. This supports
+the byte-budget hypothesis but is not an allocator or provider win. The comparison
+with the historical Unsloth KL 0.0118883 is prompt-matched but cross-engine and
+uses different FP16/BF16 reference formats. No new Unsloth inference was run.
+
+Decision: W5/W6 is the first export candidate; retain W5/W8 as comparator. The
+[new notebook](packed_vocabulary_validation_run.md) tests actual checkpoint bytes,
+shared packed ownership, prototype parity and fresh-process full quality. It is
+implemented and CPU-tested, including tiny multimodal Qwen reloads. Full-Qwen
+CUDA acceptance remains unexecuted; fresh validation/seed confirmation and a
+provider rerun follow that gate. Do not start a new allocator or LoRA sweep yet.
+
 ## Reporting rules
 
 The [2026-09-05 follow-up](performance_plan_2026-09-05.md) fixes the nine project

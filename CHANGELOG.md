@@ -9,6 +9,20 @@ software.
 
 ## [Unreleased]
 
+### Packed vocabulary validation (2026-09-07)
+
+- Focused W5/W6 and W5/W8 export/reload runner, generated Colab notebook,
+  persistent direct-to-Drive logs, per-stage identities/checksums, source-cache
+  resume, actual file-byte ledgers and fail-closed numerical/quality/size gates.
+- Explicit tiled `dense_equivalent` vocabulary projection preserves the dense
+  prototype's execution-dtype weight rounding without a resident dense head.
+  Checkpoint v3 records this mode; old files retain rotated-head semantics.
+- Offline tiny multimodal Qwen hybrid export/fresh-process reload preflight,
+  live packed-ownership checks and probe safetensors. This is a reference runtime,
+  not a fused kernel, provider win, or locally completed full-Qwen CUDA run.
+- Nine original vocabulary-screen records archived unchanged with SHA-256
+  provenance; results and next-run instructions added to the project docs.
+
 ### Vocabulary-budget experiment (2026-09-06)
 
 - Nine-arm Qwen3.5-4B vocabulary/backbone screen, generated Colab notebook,

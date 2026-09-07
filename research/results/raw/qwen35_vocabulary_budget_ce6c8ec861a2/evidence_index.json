@@ -1,0 +1,113 @@
+{
+  "protocol": "rotquant-vocabulary-screen-evidence-v1",
+  "source_bundle": "qwen35_vocabulary_budget_ce6c8ec861a2",
+  "original_bytes_preserved": true,
+  "trial_records": 9,
+  "files": {
+    "environment.json": {
+      "sha256": "6eda71605adbf603ea2d7d5218fafa7b217121d153b7f781996a9128b26a7f70",
+      "bytes": 654
+    },
+    "model_trials/b16_v16_s0.json": {
+      "sha256": "bca7a23ec12702d0ee41ea04cfb0d9ce84c9788b6b5a183e6d633fb378e81c02",
+      "bytes": 77978
+    },
+    "model_trials/b16_v16_s0.sha256": {
+      "sha256": "80adac6459543373576e928aa733e6f1243cb33dee5b11dd2d3f4bd1634b2013",
+      "bytes": 82
+    },
+    "model_trials/b16_v6_s0.json": {
+      "sha256": "22874412679c6966bd2d4d8548e04d64ea1ac848101237d8d8b141404837728d",
+      "bytes": 173870
+    },
+    "model_trials/b16_v6_s0.sha256": {
+      "sha256": "4a97e71166ae28b324e162e135d989169a30628a2db2f0c371ce8dae015d970e",
+      "bytes": 82
+    },
+    "model_trials/b16_v8_s0.json": {
+      "sha256": "6ce52f2d56dbe27ed17f7f9b1b3848dc876b2413f9221fede798d0928d95051e",
+      "bytes": 173790
+    },
+    "model_trials/b16_v8_s0.sha256": {
+      "sha256": "7d9e6bcd65371c98acf76c658b64c8e14005c1b108472ae56389618d26d1989f",
+      "bytes": 82
+    },
+    "model_trials/b4_v16_s0.json": {
+      "sha256": "6dc1f9e340b28b7302e04652e893c82f5ac263f1c2384093a547eb0ec49caaf6",
+      "bytes": 180293
+    },
+    "model_trials/b4_v16_s0.sha256": {
+      "sha256": "55c14d10afd2b008074d9480c35b78960945ecc0f13ddb520380824a83879aed",
+      "bytes": 82
+    },
+    "model_trials/b4_v6_s0.json": {
+      "sha256": "641d19f02ee04b80f50aee355d4d81842ae640d2608c0da49e0c67966dc71570",
+      "bytes": 273536
+    },
+    "model_trials/b4_v6_s0.sha256": {
+      "sha256": "0614e6ee1c19545b4fd3ffbacb48d157242eed5bbf97340007fc2faf0eea5df2",
+      "bytes": 82
+    },
+    "model_trials/b4_v8_s0.json": {
+      "sha256": "84c2c18be3dc03a6674a954456c0a71dfba236b8ab81eb6526ad386b77a50f88",
+      "bytes": 273573
+    },
+    "model_trials/b4_v8_s0.sha256": {
+      "sha256": "37b4ae2d053406d81f497d32f541472e63c7305e4a53c656e2f0d984fb2463bf",
+      "bytes": 82
+    },
+    "model_trials/b5_v16_s0.json": {
+      "sha256": "12596c38425cc9f9e8717762391721acef77b939a1f43882fb47a1d79704a0a0",
+      "bytes": 180270
+    },
+    "model_trials/b5_v16_s0.sha256": {
+      "sha256": "dcde135e786f99652f9006d652e70cf389acab3f651020dcd9e548ed6a9d73a6",
+      "bytes": 82
+    },
+    "model_trials/b5_v6_s0.json": {
+      "sha256": "6890d99bbdd0febbce0264a78b31c75a44976f021ea453a798956855ba4920e3",
+      "bytes": 273474
+    },
+    "model_trials/b5_v6_s0.sha256": {
+      "sha256": "e1895d10e48308683972a83c013ab173b82c3e6408d34eae11b76ec38a348a11",
+      "bytes": 82
+    },
+    "model_trials/b5_v8_s0.json": {
+      "sha256": "93c75e055bab3e6aaace58fff00512b5a90b63b3e424d95c050cc3370e5f5e7f",
+      "bytes": 273565
+    },
+    "model_trials/b5_v8_s0.sha256": {
+      "sha256": "67376d714ab3ea59a79b407aa5a172105b4c953b1718841696a6743675ac4478",
+      "bytes": 82
+    },
+    "progress.json": {
+      "sha256": "a3c17ad804e9771c45bf7cf840bc1c9b48013ba38ba8fb480533a9ab488fde2d",
+      "bytes": 131
+    },
+    "resources_b16_s0.json": {
+      "sha256": "ca0644021550400bf37f25b1111758ac6528399744b9b59ca70f2d0f483c8167",
+      "bytes": 600
+    },
+    "resources_b4_s0.json": {
+      "sha256": "5d1aa5bd6d1363043893475f1f44104053debb604973c31709d00513a2ab7c0e",
+      "bytes": 600
+    },
+    "resources_b5_s0.json": {
+      "sha256": "a53627ef77176e06d24a440c1cb66d1f9c706a9abfd4312334a2b77c3fb221d5",
+      "bytes": 600
+    },
+    "runtime_preflight.json": {
+      "sha256": "ebdd80248f694a0ecf21a764bbc22ede83c52d8c7c5b00f19350c59a9390c433",
+      "bytes": 1096
+    },
+    "screen_summary.json": {
+      "sha256": "55a0d37f55d486dc7af2ad80f91a6dd6b8958d2567054fb8923ff8efeae81035",
+      "bytes": 9390
+    },
+    "unsloth_tensor_ledger.json": {
+      "sha256": "95676d75ff9116716f2098e8e4ab71c4e1b12858e3e5084fd9ec699eec3b220c",
+      "bytes": 79945
+    }
+  },
+  "omissions": "Logs, binary tensors, model/tokenizer files and caches are not archived. No packed full-Qwen artifact is implied."
+}

@@ -518,6 +518,7 @@ def _write_packed_checkpoint(
             "embedding": embeddings[0][0], "head": heads[0][0],
             "config": asdict(owner.config), "shape": [owner.vocab_size, owner.hidden_size],
             "source_digest": owner.source_digest, "execution_dtype": _dtype_name(owner.execution_dtype),
+            "projection_mode": owner.projection_mode,
             "chunks": [_quantized_weight_spec(len(modules) + i, chunk, packed_tensors, codebook_keys)
                        for i, chunk in enumerate(owner.chunks)],
         }
@@ -689,6 +690,7 @@ def load_packed_model(
                  for chunk in vocabulary["chunks"]],
                 VocabularyConfig(**vocabulary["config"]), vocabulary["shape"],
                 _resolve_dtype(vocabulary["execution_dtype"]), vocabulary["source_digest"],
+                projection_mode=vocabulary.get("projection_mode", "rotated"),
             )
             aliases = install_packed_vocabulary(model, owner)
             if any(aliases[key] != vocabulary[key] for key in aliases):

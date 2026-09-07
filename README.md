@@ -126,14 +126,19 @@ large fixed-cost difference: RotQuant retained the tied vocabulary in FP16,
 while the provider compressed it. This is a hypothesis to test, not an
 explanation already proven to close the quality gap.
 
+The nine-arm [vocabulary-budget screen](docs/vocabulary_results_2026-09-07.md)
+completed with W5/W6 and W5/W8 finalists: primary KL fell 71.3% and 75.5%
+against W4/FP16 vocabulary. Those results use dense reconstruction and
+**projected**, not exported, bytes. They cannot establish a provider win.
+
 The next run is the
-[vocabulary-budget Colab](notebooks/qwen35_4b_vocabulary_budget_colab.ipynb).
-It crosses FP16/W4/W5 backbones with FP16/W8/W6 vocabulary in nine seed-0 arms,
-with unchanged source teachers, persistent calibration/chunk caches and live
-logs. Start with the [runbook](docs/vocabulary_budget_run.md). The first screen
-uses dense vocabulary reconstruction: its projected bytes are **not** a measured
-compressed artifact, and it cannot promote a provider winner. The code and
-notebook have local CPU checks; the full CUDA/Qwen run remains to be executed.
+[packed-vocabulary validation Colab](notebooks/qwen35_4b_packed_validation_colab.ipynb).
+It exports both W5 finalists, verifies shared packed ownership and measured
+file sizes, and evaluates fresh-process reloads without dense fallback caches.
+Start with the [runbook](docs/packed_vocabulary_validation_run.md). The code has
+CPU tests and tiny multimodal Qwen subprocess conformance checks; the full
+pretrained CUDA artifact run remains to be executed. This is a tiled reference
+runtime, not a fused-kernel speed claim.
 
 ## Install
 

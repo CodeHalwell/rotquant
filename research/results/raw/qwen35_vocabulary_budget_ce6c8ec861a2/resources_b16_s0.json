@@ -1,0 +1,11 @@
+{
+  "source_registered_bytes": 9078531072,
+  "source_vocabulary_dense_bytes": 1271398400,
+  "source_hessian_tensor_bytes": 16584278016,
+  "largest_hessian_group_tensor_bytes": 459276288,
+  "target_layers": 200,
+  "host_fp16_logit_reference_upper_bound_bytes": 12435368960,
+  "filesystem_reported_free_bytes": 182522245120,
+  "gpu_free_bytes": 32738050048,
+  "boundary": "Shape estimates exclude serialization, activations, solver workspaces and other process memory; filesystem free space may not reflect Drive quota. No total-runtime or fits-in-memory guarantee. Hessians are shared across W4/W5."
+}

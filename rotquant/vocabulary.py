@@ -106,8 +106,11 @@ class PackedVocabulary(nn.Module):
     """
 
     def __init__(self, chunks, config: VocabularyConfig, source_shape, source_dtype,
-                 source_digest: str):
+                 source_digest: str, *, projection_mode: str = "rotated"):
         super().__init__()
+        if projection_mode not in {"rotated", "dense_equivalent"}:
+            raise ValueError("unsupported packed vocabulary projection mode")
+        self.projection_mode = projection_mode
         self.chunks = chunks
         self.config = config
         self.vocab_size, self.hidden_size = map(int, source_shape)
@@ -207,6 +210,16 @@ class PackedVocabulary(nn.Module):
         return result.reshape(*ids.shape, self.hidden_size)
 
     def project(self, x):
+        if self.projection_mode == "dense_equivalent":
+            # Match the screened FP16 reconstructed matrix, including its final
+            # rounding, without keeping a full dense head. Rotating FP16 x and
+            # multiplying rounded rotated rows is only algebraically equivalent;
+            # finite-precision arithmetic need not preserve the prototype logits.
+            result = torch.empty((*x.shape[:-1], self.vocab_size), device=x.device, dtype=x.dtype)
+            for start, dense in self.reconstructed_chunks(x.device):
+                result[..., start:start + len(dense)] = torch.nn.functional.linear(
+                    x, dense.to(dtype=x.dtype))
+            return result
         rotated = self.rotation.rotate_activation(x)
         # Allocate output once, not all chunk logits plus a second concatenation.
         result = torch.empty((*x.shape[:-1], self.vocab_size), device=x.device, dtype=x.dtype)

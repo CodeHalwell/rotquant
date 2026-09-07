@@ -1,0 +1,46 @@
+{
+  "protocol": "vocabulary-budget-preflight-v1",
+  "device": "cuda",
+  "passed": true,
+  "checks": [
+    {
+      "vocabulary_bits": 8,
+      "source_restored": true,
+      "packed_payload_bytes": 17922,
+      "seconds": 10.759984454000005
+    },
+    {
+      "vocabulary_bits": 6,
+      "source_restored": true,
+      "packed_payload_bytes": 13026,
+      "seconds": 2.964250240000183
+    },
+    {
+      "backbone_bits": 4,
+      "metadata_preserved": true,
+      "seconds": 1.0786628639998526
+    },
+    {
+      "backbone_bits": 5,
+      "metadata_preserved": true,
+      "seconds": 1.697160968999924
+    },
+    {
+      "backbone_bits": 6,
+      "metadata_preserved": true,
+      "seconds": 0.05583369800001492
+    },
+    {
+      "backbone_bits": 8,
+      "metadata_preserved": true,
+      "seconds": 0.05863797599999998
+    },
+    {
+      "architecture": "tiny_qwen3_5_hybrid_text",
+      "vocabulary_bits": 6,
+      "source_restored": true,
+      "prototype_and_packed_generation": true
+    }
+  ],
+  "boundary": "Synthetic correctness checks; not full-Qwen quality or a throughput benchmark."
+}

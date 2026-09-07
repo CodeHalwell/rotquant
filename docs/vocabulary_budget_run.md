@@ -1,5 +1,10 @@
 # Qwen3.5-4B vocabulary-budget runbook
 
+The seed-0 screen completed successfully on 6 September. See the
+[results review](vocabulary_results_2026-09-07.md). For the **next** run use the
+[packed-vocabulary validation notebook/runbook](packed_vocabulary_validation_run.md);
+the instructions below reproduce the earlier nine-arm screen.
+
 Use [the vocabulary-budget notebook](../notebooks/qwen35_4b_vocabulary_budget_colab.ipynb).
 This replaces another allocator-v4 run. The [plan](vocabulary_budget_plan_2026-09-06.md)
 explains the hypothesis and the later gates.

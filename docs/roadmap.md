@@ -8,6 +8,14 @@ postponed cleanup.
 
 ## Stage 2: canonical GPU serving
 
+September 7 update: the nine-arm screen completed with two W5 finalists. See the
+[validated results](vocabulary_results_2026-09-07.md). The immediate runnable
+next milestone is [packed vocabulary export/reload validation](packed_vocabulary_validation_run.md):
+W5/W6 first, W5/W8 comparator, actual files and fresh-process quality checks.
+The notebook is prepared and CPU-tested; full-Qwen CUDA artifact validation,
+independent seed confirmation and a fresh provider comparison remain unexecuted.
+Do not restart a broad allocator/recovery sweep before these gates.
+
 September 6 priority update: the
 [vocabulary-budget plan](vocabulary_budget_plan_2026-09-06.md) now comes first.
 V4 did not improve primary KL over bits-only allocation, and the subsequent
@@ -44,8 +52,9 @@ Current gate status:
   unsafe parent exclusions, transactional checkpoint export, and hash-bound
   experiment resume;
 - [x] finite, per-seed no-regression confirmation and measured export provenance;
-- [ ] add the small multimodal round-trip fixture without relying on a remote
-  checkpoint or GPU.
+- [x] add a small multimodal Qwen hybrid round-trip fixture without relying on a
+  remote checkpoint or GPU; it validates retained vision state and the text path,
+  not vision accuracy.
 
 Acceptance: a fresh-process checkpoint round trip preserves packed bytes and
 reference logits for every supported loader class, and every successful

@@ -330,6 +330,8 @@ def validate_checkpoint_manifest(manifest: Any) -> None:
             _fail("tied_vocabulary.config", "unsupported rotation/group/row alignment")
         if vocabulary.get("execution_dtype") not in {"float16", "bfloat16", "float32"}:
             _fail("tied_vocabulary.execution_dtype", "unsupported execution dtype")
+        if vocabulary.get("projection_mode", "rotated") not in {"rotated", "dense_equivalent"}:
+            _fail("tied_vocabulary.projection_mode", "unsupported projection mode")
         source_digest = vocabulary.get("source_digest")
         if (not isinstance(source_digest, str) or len(source_digest) != 64
                 or any(char not in "0123456789abcdef" for char in source_digest)):
