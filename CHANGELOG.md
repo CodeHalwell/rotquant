@@ -9,6 +9,19 @@ software.
 
 ## [Unreleased]
 
+### Packed reload precision and checkpoint-only recovery (2026-09-07)
+
+- Preserve framework-reconstructed floating nonpersistent buffers at their
+  original precision during packed load. In particular, Qwen RoPE frequencies
+  remain FP32 for FP16/BF16 execution rather than being irreversibly rounded.
+- Strengthen the tiny Qwen preflight with source-like low-precision parameter
+  construction, FP32 rotary-buffer assertions and 64-token/eight-generation
+  probes; add exact FP16/BF16 CPU reload regression tests.
+- Add `--revalidate-from`, a dedicated recovery Colab, separate output/cache
+  roots and original-preparation/current-validator provenance. Saved artifacts
+  and probes are verified and reused without calibration, quantization or export.
+  Print numerical failure details immediately; acceptance thresholds are unchanged.
+
 ### Packed vocabulary validation (2026-09-07)
 
 - Focused W5/W6 and W5/W8 export/reload runner, generated Colab notebook,

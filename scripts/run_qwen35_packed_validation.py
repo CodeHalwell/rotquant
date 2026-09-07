@@ -64,6 +64,7 @@ from scripts.run_qwen35_vocabulary_budget import (
 PROTOCOL = "qwen35-packed-vocabulary-validation-v1"
 DEFAULT_CONFIG = ROOT / "configs/qwen35_4b_packed_validation_cuda.yaml"
 ARMS = ("b5_v6", "b5_v8")
+REVALIDATION_PROTOCOL = "qwen35-packed-checkpoint-revalidation-v1"
 
 
 def load_config(path):
@@ -214,6 +215,64 @@ def recover_prepared(root, identity):
     return prepared
 
 
+def revalidation_paths(root, source_root):
+    """Keep every recovery write outside the original evidence tree."""
+    root, source_root = Path(root).resolve(), Path(source_root).resolve()
+    if root.is_relative_to(source_root) or source_root.is_relative_to(root):
+        raise ValueError("revalidation output and source directories must not overlap")
+    if not source_root.is_dir():
+        raise ValueError("revalidation source directory does not exist")
+    return root, source_root
+
+
+def comparable_identity(identity):
+    """Only implementation revision and checkout location may change here.
+
+    Model/config, data content, runtime and acceptance thresholds must match.
+    Prompt paths are relocatable only when their recorded hashes match.
+    """
+    value = copy.deepcopy(identity)
+    source = value.pop("source", None)
+    if not isinstance(source, dict) or not all(source.get(k) for k in ("revision", "source_fingerprint")):
+        raise ValueError("preparation lacks implementation provenance")
+    files = value.pop("prompt_files")
+    used = set()
+    for key in ("logit_fidelity_suites", "trajectory_suites"):
+        for suite in value["config"].get("eval", {}).get(key, {}).values():
+            path = suite.get("prompt_file")
+            if path:
+                used.add(path)
+                suite["prompt_file"] = "sha256:" + files[path]
+    if used != set(files):
+        raise ValueError("prompt file provenance is incomplete or unexpected")
+    return value
+
+
+def validation_input(config, root, arm, seed, revalidate_from=None):
+    """Read and bind old artifacts; never copy, relabel or rewrite their evidence."""
+    identity = identity_for(config, seed, arm)
+    source_root = root
+    if revalidate_from is not None:
+        _, source_root = revalidation_paths(root, revalidate_from)
+    source_arm = source_root / f"{arm}_s{seed}"
+    prepared = read_record(source_arm / "prepared.json",
+                           identity if revalidate_from is None else None)
+    if prepared is None:
+        raise ValueError(f"prepared checkpoint is missing at {source_arm}; no quantization will be launched")
+    preparation_identity = prepared["identity"]
+    if revalidate_from is not None and comparable_identity(preparation_identity) != comparable_identity(identity):
+        raise ValueError("revalidation requires unchanged model/config, runtime, data and thresholds")
+    ledger = verify_prepared(source_arm, prepared, preparation_identity)
+    if revalidate_from is not None:
+        identity["revalidation"] = {
+            "protocol": REVALIDATION_PROTOCOL, "source_arm_dir": str(source_arm.resolve()),
+            "preparation_identity_sha256": digest(preparation_identity),
+            "prepared_sha256": file_digest(source_arm / "prepared.json"),
+            "manifest_sha256": prepared["export"]["manifest_sha256"],
+        }
+    return source_arm, prepared, ledger, identity
+
+
 def prepare_seed(config, root, seed, heartbeat_seconds):
     pending = []
     for arm in ARMS:
@@ -362,18 +421,18 @@ def paired_quality(actual, expected, arm, seed):
             "paired_inputs": True}
 
 
-def validate_worker(config, root, arm, seed, heartbeat_seconds=60):
+def validate_worker(config, root, arm, seed, heartbeat_seconds=60, *, revalidate_from=None):
     from safetensors.torch import load_file
     from transformers import AutoTokenizer
 
     arm_root = root / f"{arm}_s{seed}"
-    identity = identity_for(config, seed, arm)
+    if revalidate_from is not None:
+        revalidation_paths(root, revalidate_from)
+        os.environ["ROTQUANT_TOKEN_CACHE_DIR"] = str(root / "token_cache")
     progress(arm_root, "verify_artifact_and_evidence", arm=arm, seed=seed)
     with _Heartbeat(f"verify-reload/{arm}/seed-{seed}", seconds=heartbeat_seconds):
-        prepared = read_record(arm_root / "prepared.json", identity)
-        if prepared is None:
-            raise ValueError("prepare the checkpoint before validating it")
-        ledger = verify_prepared(arm_root, prepared, identity)
+        source_arm, prepared, ledger, identity = validation_input(
+            config, root, arm, seed, revalidate_from)
         existing = read_record(arm_root / "validation.json", identity)
     if existing is not None:
         if existing.get("manifest_sha256") != prepared["export"]["manifest_sha256"]:
@@ -397,17 +456,25 @@ def validate_worker(config, root, arm, seed, heartbeat_seconds=60):
         progress(arm_root, "fresh_packed_load", arm=arm, seed=seed)
         if device == "cuda":
             torch.cuda.reset_peak_memory_stats()
-        model = load_packed_model(arm_root / "checkpoint", device=device, dtype=dtype, fallback=False)
-        tokenizer = AutoTokenizer.from_pretrained(arm_root / "checkpoint", local_files_only=True)
+        model = load_packed_model(source_arm / "checkpoint", device=device, dtype=dtype, fallback=False)
+        tokenizer = AutoTokenizer.from_pretrained(source_arm / "checkpoint", local_files_only=True)
         residency_before = packed_residency(model)
         if residency_before["vocabulary_fingerprint"] != prepared["residency"]["vocabulary_fingerprint"]:
             raise ValueError("reloaded packed vocabulary fingerprint differs")
         load_peak = torch.cuda.max_memory_allocated() if device == "cuda" else None
-        expected = load_file(str(arm_root / "packed_probes.safetensors"))
+        expected = load_file(str(source_arm / "packed_probes.safetensors"))
+        progress(arm_root, "reload_numerical_probes", arm=arm, seed=seed)
         actual = capture_probes(model, probe_inputs(expected), device, **probe_settings(config))
         reload_parity = compare_probes(actual, expected, reload=True)
-        prototype_parity = compare_probes(actual, load_file(str(arm_root / "dense_probes.safetensors")))
+        prototype_parity = compare_probes(actual, load_file(str(source_arm / "dense_probes.safetensors")))
+        # Persist/report the useful numbers immediately, not just passed=False
+        # after the worker exits. Thresholds are unchanged on a recovery run.
+        save_record(arm_root / "reload_probe_report.json", {
+            "identity": identity, "reload_parity": reload_parity, "prototype_parity": prototype_parity})
+        print(json.dumps({"arm": arm, "seed": seed, "reload_parity": reload_parity,
+                          "prototype_parity": prototype_parity}), flush=True)
         result = {"protocol": PROTOCOL, "status": "complete", "identity": identity,
+                  "preparation_identity": prepared["identity"],
                   "arm": arm, "seed": seed, "worker_pid": os.getpid(),
                   "manifest_sha256": prepared["export"]["manifest_sha256"],
                   "artifact": ledger, "reload_parity": reload_parity,
@@ -438,21 +505,21 @@ def validate_worker(config, root, arm, seed, heartbeat_seconds=60):
         return result
 
 
-def summarize(root, config, seeds):
+def summarize(root, config, seeds, *, revalidate_from=None):
+    if revalidate_from is not None:
+        root, revalidate_from = revalidation_paths(root, revalidate_from)
     rows = []
     missing = []
     for seed in seeds:
         for arm in ARMS:
             arm_root = root / f"{arm}_s{seed}"
-            identity = identity_for(config, seed, arm)
-            row = read_record(arm_root / "validation.json", identity)
+            row = read_record(arm_root / "validation.json")
             if row is None:
                 missing.append(f"{arm}_s{seed}")
                 continue
-            prepared = read_record(arm_root / "prepared.json", identity)
-            if prepared is None:
-                raise ValueError("validated arm is missing preparation evidence")
-            verify_prepared(arm_root, prepared, identity)
+            _, prepared, _, identity = validation_input(config, root, arm, seed, revalidate_from)
+            if row.get("identity") != identity:
+                raise ValueError("validation record identity mismatch")
             if row["manifest_sha256"] != prepared["export"]["manifest_sha256"]:
                 raise ValueError("validation artifact identity mismatch")
             rows.append({"arm": arm, "seed": seed, "passed": row["passed"],
@@ -464,6 +531,7 @@ def summarize(root, config, seeds):
                              if k not in {"arm", "seed", "measured_artifact_bytes"}}
                             if row.get("metrics") else {})})
     result = {"protocol": PROTOCOL, "complete": not missing, "missing": missing, "rows": rows,
+              "revalidate_from": str(Path(revalidate_from).resolve()) if revalidate_from is not None else None,
               "seeds": list(seeds), "artifact_validated_arms": [arm for arm in ARMS
                   if not missing and all(r["passed"] for r in rows if r["arm"] == arm)],
               "provider_competitive": False, "independent_confirmation": False,
@@ -472,38 +540,55 @@ def summarize(root, config, seeds):
     return result
 
 
-def run(config_path, output_dir, *, seeds=(0,), heartbeat_seconds=60, prepare_only=False):
+def run(config_path, output_dir, *, seeds=(0,), heartbeat_seconds=60, prepare_only=False,
+        revalidate_from=None):
     config = load_config(config_path)
     root = Path(output_dir).resolve()
+    if revalidate_from is not None:
+        if prepare_only:
+            raise ValueError("revalidation cannot be combined with preparation")
+        root, revalidate_from = revalidation_paths(root, revalidate_from)
     root.mkdir(parents=True, exist_ok=True)
     with writer_lock(root / ".runner.lock"):
         marker = {"protocol": PROTOCOL, "config": config, "source": source_identity(),
                   "runtime": runtime_identity()}
+        if revalidate_from is not None:
+            marker["revalidate_from"] = str(revalidate_from)
         old = read_record(root / "run_identity.json")
         if old is not None and old != marker:
             raise ValueError("run identity changed; keep old results and use a new output directory")
         save_record(root / "run_identity.json", marker)
         write_result(str(root / "environment.json"), environment_record())
-        os.environ.setdefault("ROTQUANT_TOKEN_CACHE_DIR", str(root / "token_cache"))
+        # Never write caches into the original run even if a notebook inherited
+        # that environment variable from the earlier experiment.
+        os.environ["ROTQUANT_TOKEN_CACHE_DIR"] = str(root / "token_cache")
         try:
             for seed in seeds:
                 release_models()
-                prepare_seed(config, root, seed, heartbeat_seconds)
+                if revalidate_from is None:
+                    prepare_seed(config, root, seed, heartbeat_seconds)
+                else:
+                    print(f"checkpoint-only revalidation from {revalidate_from}; no calibration/quantization", flush=True)
+                    with _Heartbeat(f"verify-revalidation/seed-{seed}", seconds=heartbeat_seconds):
+                        for arm in ARMS:
+                            validation_input(config, root, arm, seed, revalidate_from)
                 release_models()
                 if not prepare_only:
                     for arm in ARMS:
                         progress(root, "fresh_process_validation", arm=arm, seed=seed)
                         try:
-                            subprocess.run([sys.executable, "-u", str(Path(__file__).resolve()),
-                                            "--config", str(Path(config_path).resolve()),
-                                            "--output-dir", str(root), "--seed", str(seed),
-                                            "--worker-arm", arm, "--heartbeat-seconds", str(heartbeat_seconds)],
-                                           cwd=ROOT, check=True)
+                            command = [sys.executable, "-u", str(Path(__file__).resolve()),
+                                       "--config", str(Path(config_path).resolve()),
+                                       "--output-dir", str(root), "--seed", str(seed),
+                                       "--worker-arm", arm, "--heartbeat-seconds", str(heartbeat_seconds)]
+                            if revalidate_from is not None:
+                                command.extend(["--revalidate-from", str(revalidate_from)])
+                            subprocess.run(command, cwd=ROOT, check=True)
                         finally:
                             # A failed worker must still appear as failed/missing,
                             # not vanish from a success-only partial summary.
-                            summarize(root, config, seeds)
-            result = summarize(root, config, seeds)
+                            summarize(root, config, seeds, revalidate_from=revalidate_from)
+            result = summarize(root, config, seeds, revalidate_from=revalidate_from)
             progress(root, "prepared" if prepare_only else "complete", summary=result)
             return result
         except BaseException as exc:
@@ -520,6 +605,8 @@ def main():
     parser.add_argument("--dry-run", action="store_true")
     parser.add_argument("--prepare-only", action="store_true")
     parser.add_argument("--assess-only", action="store_true")
+    parser.add_argument("--revalidate-from", type=Path,
+                        help="read original checkpoints/probes and write a new validation-only run; never requantize")
     parser.add_argument("--worker-arm", choices=ARMS, help=argparse.SUPPRESS)
     args = parser.parse_args()
     seeds = tuple(args.seed or [0])
@@ -527,20 +614,29 @@ def main():
         parser.error("seeds must be unique nonnegative integers")
     if args.heartbeat_seconds < 0:
         parser.error("heartbeat interval must be nonnegative")
+    if args.revalidate_from is not None:
+        if args.prepare_only:
+            parser.error("--revalidate-from cannot be combined with --prepare-only")
+        args.output_dir, args.revalidate_from = revalidation_paths(args.output_dir, args.revalidate_from)
     torch.set_float32_matmul_precision("highest")
     torch.backends.cuda.matmul.allow_tf32 = False
     torch.backends.cudnn.allow_tf32 = False
     config = load_config(args.config)
     if args.dry_run:
         print(json.dumps({"protocol": PROTOCOL, "arms": ARMS, "seeds": seeds,
-              "backbone_quantizations_per_seed": 1, "source": source_identity(),
+              "backbone_quantizations_per_seed": 0 if args.revalidate_from else 1,
+              "revalidate_from": str(args.revalidate_from) if args.revalidate_from else None,
+              "source": source_identity(),
               "target_bytes": config["target_artifact_bytes"],
               "checks": config["packed_validation"], "provider_benchmark": False,
-              "storage_note": "Two ~3.5 GB artifacts plus ~17 GB Hessians, source downloads, caches and staging space; reserve at least 45 GB of persistent free space."}, indent=2))
+              "storage_note": (
+                  "Read existing artifacts/probes in place. No Hessians, quantization or re-export; new logs/results/token cache and source downloads still need space."
+                  if args.revalidate_from else
+                  "Two ~3.5 GB artifacts plus ~17 GB Hessians, source downloads, caches and staging space; reserve at least 45 GB of persistent free space.")}, indent=2))
         return
     enable_default_logging()
     if args.assess_only:
-        result = summarize(args.output_dir, config, seeds)
+        result = summarize(args.output_dir, config, seeds, revalidate_from=args.revalidate_from)
         print(json.dumps(result, indent=2))
         if not result["complete"]:
             raise SystemExit("Validation incomplete")
@@ -550,12 +646,12 @@ def main():
         arm_root = args.output_dir / f"{args.worker_arm}_s{seeds[0]}"
         with writer_lock(arm_root / ".worker.lock"):
             result = validate_worker(config, args.output_dir, args.worker_arm, seeds[0],
-                                     args.heartbeat_seconds)
+                                     args.heartbeat_seconds, revalidate_from=args.revalidate_from)
         if not result["passed"]:
             raise SystemExit("Packed validation failed; inspect validation.json before spending more GPU time")
     else:
         run(args.config, args.output_dir, seeds=seeds, heartbeat_seconds=args.heartbeat_seconds,
-            prepare_only=args.prepare_only)
+            prepare_only=args.prepare_only, revalidate_from=args.revalidate_from)
 
 
 if __name__ == "__main__":

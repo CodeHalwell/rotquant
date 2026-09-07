@@ -7,6 +7,7 @@ import nbformat
 from nbformat.v4 import new_code_cell, new_markdown_cell, new_notebook
 
 OUTPUT = Path("notebooks/qwen35_4b_packed_validation_colab.ipynb")
+REVALIDATION_OUTPUT = Path("notebooks/qwen35_4b_packed_revalidation_colab.ipynb")
 
 
 def md(text):
@@ -17,9 +18,30 @@ def code(text):
     return new_code_cell(dedent(text).strip())
 
 
-def build_notebook():
+def build_notebook(*, revalidate=False):
+    revalidation_setting = ('Path("/content/drive/MyDrive/rotquant/qwen35_packed_validation/8f10ee60fc7f")'
+                            if revalidate else 'None')
     cells = [
         md('''
+        # RotQuant Qwen3.5-4B saved-checkpoint revalidation
+
+        ## Goal
+        Reuse the W5/W6 and W5/W8 artifacts from `8f10ee60fc7f` with the repaired
+        loader. **No Hessian collection, quantization or checkpoint export.**
+        Preserve all original files, including the failed W6 validation. New
+        records bind the original preparation and the current validator identities.
+
+        The old run stopped on reload numerical parity; full packed quality was
+        skipped. The loader fix preserves framework FP32 rotary-position buffers.
+        A tiny local reproduction reached exact reload parity after that fix;
+        **the actual 4B CUDA result is still unverified**. All thresholds stay unchanged.
+
+        Use the same A100 40 GB-class GPU and pinned software as the original run,
+        with high host RAM. Keep the checkpoints AND probe safetensors on Drive:
+        the compact evidence ZIP is insufficient. This still loads the source
+        teacher and runs full quality evaluation, so allow local download/cache
+        space and time; it is not a fused-kernel benchmark or a provider comparison.
+        ''' if revalidate else '''
         # RotQuant Qwen3.5-4B packed-vocabulary validation
 
         ## Goal
@@ -42,9 +64,11 @@ def build_notebook():
         ### 1. Freeze settings
         Defaults run both seed-0 candidates, W6 first. No new allocation, LoRA,
         A8/KV, independent confirmation or Unsloth inference is launched.
-        Keep the printed commit when resuming; do not silently move a run to newer code.
+        Keep the printed commit when resuming. `REVALIDATE_FROM` opts into a new,
+        separately recorded validation of old artifacts; it never resumes old
+        results under a different identity. Leave it `None` for a new full run.
         '''),
-        code('''
+        code(f'''
         from pathlib import Path
         REPO_URL = "https://github.com/CodeHalwell/rotquant.git"
         REPO_REF = "main"  # Publish this implementation before loading from main.
@@ -53,6 +77,7 @@ def build_notebook():
         SEEDS = (0,)
         RUN_EXPERIMENT = True
         PREPARE_ONLY = False  # True exports/probes only; full validation remains incomplete.
+        REVALIDATE_FROM = {revalidation_setting}
         REQUIRE_FAST_HADAMARD = True
         USE_HF_SECRET = False
         DOWNLOAD_RESULTS = True
@@ -85,12 +110,31 @@ def build_notebook():
         git("checkout", "--detach", "FETCH_HEAD")
         COMMIT = git("rev-parse", "HEAD")
         assert (REPO_DIR / "scripts/run_qwen35_packed_validation.py").exists(), "Publish/select the new code first."
-        RESULT_ROOT = RESULT_BASE / COMMIT[:12]
+        if REVALIDATE_FROM is not None:
+            REVALIDATE_FROM = Path(REVALIDATE_FROM).resolve()
+            assert not PREPARE_ONLY, "Recovery is validation-only, not preparation."
+            assert REVALIDATE_FROM.is_dir(), "Original Drive run is missing."
+            RESULT_ROOT = RESULT_BASE / f"{COMMIT[:12]}-revalidate-{REVALIDATE_FROM.name}"
+            for seed in SEEDS:
+                for arm in ("b5_v6", "b5_v8"):
+                    source_arm = REVALIDATE_FROM / f"{arm}_s{seed}"
+                    for name in ("prepared.json", "preparation.json", "dense_probes.safetensors",
+                                 "packed_probes.safetensors", "checkpoint/rotquant_config.json"):
+                        assert (source_arm / name).is_file(), f"Missing original evidence: {source_arm / name}"
+        else:
+            RESULT_ROOT = RESULT_BASE / COMMIT[:12]
+        if REVALIDATE_FROM is not None:
+            assert not RESULT_ROOT.resolve().is_relative_to(REVALIDATE_FROM), "Output overlaps original run."
+            assert not REVALIDATE_FROM.is_relative_to(RESULT_ROOT.resolve()), "Output overlaps original run."
         LOG_ROOT = RESULT_ROOT / "logs"
         LOG_ROOT.mkdir(parents=True, exist_ok=True)
         print({"commit": COMMIT, "result_root": str(RESULT_ROOT), "gpu": gpu.name,
                "seeds": SEEDS, "filesystem_free_gb": shutil.disk_usage(RESULT_ROOT).free/1e9})
-        print("Filesystem free space is NOT your Google Drive quota. Check Drive has >=45 GB free.")
+        print("Filesystem free space is NOT your Google Drive quota.")
+        if REVALIDATE_FROM is None:
+            print("Check Drive has >=45 GB free for a full preparation run.")
+        else:
+            print({"checkpoint_only": True, "original_run_unchanged": str(REVALIDATE_FROM)})
         sys.path.insert(0, str(REPO_DIR))
         from scripts.colab_runtime import run_live as _run_live
         def run_live(command, label, timeout_seconds=None):
@@ -150,6 +194,8 @@ def build_notebook():
                    "--output-dir", str(RESULT_ROOT), "--heartbeat-seconds", str(HEARTBEAT_SECONDS)]
         for seed in SEEDS:
             command.extend(["--seed", str(seed)])
+        if REVALIDATE_FROM is not None:
+            command.extend(["--revalidate-from", str(REVALIDATE_FROM)])
         run_live([*command, "--dry-run"], "plan")
         run_live([sys.executable, "-u", str(REPO_DIR / "scripts/preflight_packed_validation.py"),
                   "--device", "cuda", "--output", str(RESULT_ROOT / "runtime_preflight.json")], "preflight")
@@ -161,6 +207,13 @@ def build_notebook():
         The vocabulary head reconstructs only one tile at a time using the
         prototype's FP16 rounding. Full evaluation can be slow: there are no
         fused packed kernels. Stage markers and 60-second GPU heartbeats remain visible.
+
+        **With `REVALIDATE_FROM` set**, skip preparation entirely and read the
+        existing exports/probes. The plan must report zero backbone quantizations.
+        Current runtime, model/config, prompt contents and thresholds must match
+        the original preparation; only the validator code and checkout path may
+        change. Any mismatch stops before model work. Numerical results print
+        immediately; failed probes still skip the expensive full quality pass.
         '''),
         code('''
         if RUN_EXPERIMENT:
@@ -197,7 +250,7 @@ def build_notebook():
         code('''
         import zipfile
         if DOWNLOAD_RESULTS:
-            archive = Path("/content") / f"qwen35_packed_validation_{COMMIT[:12]}.zip"
+            archive = Path("/content") / f"qwen35_packed_validation_{RESULT_ROOT.name}.zip"
             paths = [*RESULT_ROOT.glob("*.json"), *RESULT_ROOT.glob("*.sha256"), *LOG_ROOT.glob("*.log")]
             for arm_root in RESULT_ROOT.glob("b5_v*_s*"):
                 paths.extend(arm_root.glob("*.json"))
@@ -208,6 +261,16 @@ def build_notebook():
             with zipfile.ZipFile(archive, "w", compression=zipfile.ZIP_DEFLATED) as bundle:
                 for path in sorted(set(paths)):
                     bundle.write(path, path.relative_to(RESULT_ROOT))
+                if REVALIDATE_FROM is not None:
+                    # Include small, original records under a separate namespace
+                    # without editing them or copying any checkpoint/probe tensors.
+                    for seed in SEEDS:
+                        for arm in ("b5_v6", "b5_v8"):
+                            source_arm = REVALIDATE_FROM / f"{arm}_s{seed}"
+                            originals = [*source_arm.glob("*.json"), *source_arm.glob("*.sha256"),
+                                         source_arm / "checkpoint/rotquant_config.json"]
+                            for path in sorted(set(originals)):
+                                bundle.write(path, Path("original") / path.relative_to(REVALIDATE_FROM))
             from google.colab import files
             files.download(str(archive))
         '''),
@@ -225,15 +288,17 @@ def build_notebook():
         cell.id = f"packed-validation-{index:02d}"
     return new_notebook(cells=cells, metadata={
         "kernelspec": {"display_name": "Python 3", "language": "python", "name": "python3"},
-        "language_info": {"name": "python"}, "colab": {"name": OUTPUT.name}})
+        "language_info": {"name": "python"},
+        "colab": {"name": (REVALIDATION_OUTPUT if revalidate else OUTPUT).name}})
 
 
 def main():
-    notebook = build_notebook()
-    nbformat.validate(notebook)
-    OUTPUT.parent.mkdir(parents=True, exist_ok=True)
-    nbformat.write(notebook, OUTPUT)
-    print(OUTPUT)
+    for output, revalidate in ((OUTPUT, False), (REVALIDATION_OUTPUT, True)):
+        notebook = build_notebook(revalidate=revalidate)
+        nbformat.validate(notebook)
+        output.parent.mkdir(parents=True, exist_ok=True)
+        nbformat.write(notebook, output)
+        print(output)
 
 
 if __name__ == "__main__":

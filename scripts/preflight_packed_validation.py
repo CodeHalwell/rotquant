@@ -32,7 +32,7 @@ from scripts.run_qwen35_packed_validation import packed_context
 
 
 def tiny_model(device="cpu", dtype=torch.float32):
-    from transformers import Qwen3_5Config, Qwen3_5ForConditionalGeneration
+    from transformers import AutoModelForMultimodalLM, Qwen3_5Config
 
     config = Qwen3_5Config(
         text_config={"vocab_size": 129, "hidden_size": 128, "intermediate_size": 256,
@@ -45,7 +45,17 @@ def tiny_model(device="cpu", dtype=torch.float32):
                        "num_heads": 4, "out_hidden_size": 128, "num_position_embeddings": 64,
                        "patch_size": 2, "spatial_merge_size": 2, "temporal_patch_size": 2},
         image_token_id=126, video_token_id=127, tie_word_embeddings=True)
-    return Qwen3_5ForConditionalGeneration(config).to(device=device, dtype=dtype).eval()
+    # Match the real source loader: low-precision parameters, but framework
+    # buffers such as RoPE inv_freq remain FP32. .half() on the whole model
+    # would hide a reload-only buffer precision regression in this fixture.
+    return AutoModelForMultimodalLM.from_config(config, dtype=dtype).to(device).eval()
+
+
+def rotary_buffer_check(model):
+    buffers = {name: buffer for name, buffer in model.named_buffers() if "inv_freq" in name}
+    if not buffers or any(buffer.dtype != torch.float32 for buffer in buffers.values()):
+        raise ValueError("Qwen rotary buffers must retain their framework FP32 dtype")
+    return {name: str(buffer.dtype) for name, buffer in buffers.items()}
 
 
 def reload_probe(checkpoint, expected_path, device, dtype):
@@ -53,11 +63,13 @@ def reload_probe(checkpoint, expected_path, device, dtype):
 
     expected = load_file(str(expected_path))
     model = load_packed_model(checkpoint, device=device, dtype=dtype, fallback=False)
+    rotary_buffers = rotary_buffer_check(model)
     before = packed_residency(model)
     actual = capture_probes(model, probe_inputs(expected), device,
-                            prompt_tokens=4, logit_positions=4, new_tokens=2)
+                            prompt_tokens=64, logit_positions=4, new_tokens=8)
     parity = compare_probes(actual, expected, reload=True)
     return {"passed": parity["passed"], "parity": parity,
+            "rotary_buffers": rotary_buffers,
             "residency_before": before, "residency_after": packed_residency(model),
             "artifact": audit_artifact(checkpoint)}
 
@@ -72,6 +84,7 @@ def preflight(device="cpu"):
         for bits in (6, 8):
             torch.manual_seed(20260907)
             model = tiny_model(device, dtype)
+            rotary_buffer_check(model)
             owner = quantize_vocabulary(model.get_input_embeddings().weight,
                                         VocabularyConfig(bits=bits, chunk_rows=64))
             owner.projection_mode = "dense_equivalent"
@@ -79,14 +92,14 @@ def preflight(device="cpu"):
                 bits=5, group_size=128, scale_bits=8), block=128, fallback=True,
                 include=["model.language_model.layers."],
                 exclude=["linear_attn.in_proj_a", "linear_attn.in_proj_b"]))
-            prompts = [{"input_ids": torch.tensor([[1, 2, 3, 4]])}]
+            prompts = [{"input_ids": torch.arange(1, 65).unsqueeze(0)}]
             with vocabulary_prototype(model, owner):
-                dense = capture_probes(model, prompts, device, prompt_tokens=4,
-                                       logit_positions=4, new_tokens=2)
+                dense = capture_probes(model, prompts, device, prompt_tokens=64,
+                                       logit_positions=4, new_tokens=8)
             with packed_context(model, owner, device, dtype):
                 packed_residency(model)
-                packed = capture_probes(model, prompts, device, prompt_tokens=4,
-                                        logit_positions=4, new_tokens=2)
+                packed = capture_probes(model, prompts, device, prompt_tokens=64,
+                                        logit_positions=4, new_tokens=8)
                 parity = compare_probes(packed, dense)
                 if not parity["passed"]:
                     raise ValueError(f"tiny Qwen W5/V{bits} prototype parity failed: {parity}")

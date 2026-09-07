@@ -756,7 +756,21 @@ def load_packed_model(
         from transformers import GenerationConfig
 
         model.generation_config = GenerationConfig.from_pretrained(checkpoint)
+    # Transformers reconstructs nonpersistent buffers (notably RoPE inverse
+    # frequencies) in their computation dtype, often FP32 even for FP16 weights.
+    # They are absent from state_dict. A blanket dtype conversion rounds these
+    # values permanently; converting the rounded tensor back to FP32 cannot fix
+    # it. Keep the original tensors across the move, matching from_pretrained's
+    # device-only move of these framework-owned buffers.
+    reconstructed_buffers = [
+        (module, name, buffer)
+        for module in model.modules()
+        for name, buffer in module.named_buffers(recurse=False)
+        if name in module._non_persistent_buffers_set and buffer.is_floating_point()
+    ]
     model.to(device=device, dtype=resolved_dtype).eval()
+    for module, name, buffer in reconstructed_buffers:
+        module._buffers[name] = buffer.to(device=device)
     # ``Module.to(dtype=...)`` correctly converts ordinary model tensors but
     # would also erase the explicitly deployed butterfly metadata dtype.  That
     # dtype is part of the packed artifact's byte budget, so restore it after

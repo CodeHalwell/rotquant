@@ -10,6 +10,75 @@ has not been executed locally.** These changes must be published before the
 notebook's default `REPO_REF = "main"` can load them. No new provider result,
 independent confirmation, fused-kernel speedup or full-Qwen artifact pass is claimed.
 
+## Recover the `8f10ee60fc7f` reload failure without requantizing
+
+Use [the saved-checkpoint revalidation notebook](../notebooks/qwen35_4b_packed_revalidation_colab.ipynb).
+Its default `REVALIDATE_FROM` points to the original Drive run. Run it top to
+bottom **after the fixed code has been published**. Keep `PREPARE_ONLY = False`.
+The plan must print `backbone_quantizations_per_seed: 0`.
+
+The original W5/W6 run passed the prototype probes but failed the stricter reload
+probes (mean KL 1.1783e-5); full packed quality was skipped. Investigation found
+that the loader's blanket FP16 conversion rounded framework-created FP32 RoPE
+buffers. Those nonpersistent tensors are absent from the checkpoint state; they
+must be reconstructed and kept at their framework precision, not cast down and
+back up. The local tiny-Qwen regression reaches exactly equal outputs after
+preserving them. The actual 4B CUDA rerun is still required to confirm the cause.
+
+The fix does not change codes, scales, artifact files, or numerical tolerances.
+The preflight now constructs low-precision parameters while retaining FP32 RoPE
+buffers, asserts those buffer dtypes after reload, and uses 64 input tokens and
+eight generated tokens. The previous whole-model cast in the tiny fixture had
+hidden this difference between the real source loader and the packed loader.
+
+Recovery reads the two original `checkpoint/` directories, preparation records,
+and dense/packed probe safetensors. It writes only to a **separate, nonoverlapping
+output directory**, including a new token cache, logs and validation records.
+The original failed validation remains unchanged. Each new result records the
+original preparation identity, prepared-file checksum and manifest hash, plus
+the current validator identity. No original record is relabelled as a new run.
+
+Model/config, runtime versions/GPU, prompt contents, seeds and thresholds must
+match. Only implementation provenance and hash-equivalent prompt-file locations
+may change. Missing/corrupt artifacts or incompatible settings stop before
+expensive model work. Closing the browser is safe; explicit cell interruption
+stops the process group. Resume with the same fixed commit and output folder.
+
+For an existing Colab session, once the checkout contains the fixed code, this
+cell uses the saved artifacts directly (no installation or quantization):
+
+```python
+import subprocess, sys
+from pathlib import Path
+
+repo = Path("/content/rotquant-packed-validation")
+sys.path.insert(0, str(repo))
+from scripts.colab_runtime import run_live
+source = Path("/content/drive/MyDrive/rotquant/qwen35_packed_validation/8f10ee60fc7f")
+assert not subprocess.check_output(["git", "status", "--porcelain"], cwd=repo, text=True).strip()
+revision = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=repo, text=True).strip()
+assert "--revalidate-from" in (repo / "scripts/run_qwen35_packed_validation.py").read_text(), "Load the fixed code first."
+output = source.parent / f"{revision[:12]}-revalidate-{source.name}"
+logs = output / "logs"
+command = [sys.executable, "-u", str(repo / "scripts/run_qwen35_packed_validation.py"),
+           "--output-dir", str(output), "--revalidate-from", str(source),
+           "--seed", "0", "--heartbeat-seconds", "60"]
+run_live([*command, "--dry-run"], "plan", repo_dir=repo, log_root=logs)
+run_live([sys.executable, "-u", str(repo / "scripts/preflight_packed_validation.py"),
+          "--device", "cuda", "--output", str(output / "runtime_preflight.json")],
+         "preflight", repo_dir=repo, log_root=logs)
+run_live(command, "packed-validation", repo_dir=repo, log_root=logs)
+```
+
+Keep the original runtime's fast-Hadamard selection and package versions. The
+revalidation notebook provides setup for a fresh Colab session. Both recovery
+routes still load the pinned source teacher and repeat full development quality
+after numerical parity passes. They skip Hessians, vocabulary quantization,
+backbone GPTQ and re-export, not the required quality checks. The compact ZIP
+keeps original small records under `original/`; tensors remain in the source
+Drive directory. A failed new parity check prints its measurements immediately
+and does not silently relax thresholds or proceed to a full quality run.
+
 ## What to run
 
 Run the notebook top to bottom on an A100 40 GB-class runtime. Keep:
@@ -151,13 +220,22 @@ bindings and safely finalizes the record without requantizing. An incomplete or
 unverifiable orphan is preserved, never automatically overwritten; retain it
 and choose a new root. Do not delete large caches/checkpoints to make a failed
 gate pass. A recorded failed validation remains failed on resume; a code fix
-requires a new revision/run.
+requires a new revision/run. Use `--revalidate-from OLD_RUN --output-dir NEW_RUN`
+for the explicit checkpoint-only path described above, not a normal run against
+the old output directory.
 
 The compact ZIP contains JSON records, checksums, logs and checkpoint manifests,
 **not tensor binaries or probe safetensors**. Keep actual checkpoints and probes
 on Drive; the compact bundle alone cannot independently reload the model.
 
 ## Local validation and exact GPU gap
+
+After the reload fix, the complete local suite reports **643 passed, 17 skipped**
+(uncompiled AVX2 native tests). FP16/BF16 tiny Qwen regressions preserve the FP32
+rotary values and match saved/reloaded outputs exactly. Recovery tests verify
+unchanged original files, no preparation calls, resume, lineage and rejection of
+incompatible settings. Both generated notebooks are schema-validated and their
+code cells compile; neither full notebook has been executed in Colab locally.
 
 ```bash
 .venv/bin/python scripts/build_qwen35_packed_validation_notebook.py

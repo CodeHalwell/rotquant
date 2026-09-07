@@ -135,10 +135,14 @@ The next run is the
 [packed-vocabulary validation Colab](notebooks/qwen35_4b_packed_validation_colab.ipynb).
 It exports both W5 finalists, verifies shared packed ownership and measured
 file sizes, and evaluates fresh-process reloads without dense fallback caches.
-Start with the [runbook](docs/packed_vocabulary_validation_run.md). The code has
-CPU tests and tiny multimodal Qwen subprocess conformance checks; the full
-pretrained CUDA artifact run remains to be executed. This is a tiled reference
-runtime, not a fused-kernel speed claim.
+Start with the [runbook](docs/packed_vocabulary_validation_run.md). The first CUDA
+run exported both artifacts but stopped on W5/W6 reload numerical parity before
+full packed-quality evaluation. The repaired loader preserves FP32 rotary buffers;
+the [checkpoint-only recovery Colab](notebooks/qwen35_4b_packed_revalidation_colab.ipynb)
+reuses those exports without quantization and preserves the old failure evidence.
+CPU regressions and tiny Qwen subprocess checks are available; full pretrained
+CUDA artifact acceptance is still pending. This is a tiled reference runtime,
+not a fused-kernel speed claim.
 
 ## Install
 

@@ -23,7 +23,11 @@ from rotquant.validation import (
 )
 from rotquant.vocabulary import VocabularyConfig, quantize_vocabulary
 from scripts import run_qwen35_packed_validation as runner
-from scripts.build_qwen35_packed_validation_notebook import OUTPUT, build_notebook
+from scripts.build_qwen35_packed_validation_notebook import (
+    OUTPUT,
+    REVALIDATION_OUTPUT,
+    build_notebook,
+)
 
 
 def tiny_llama():
@@ -129,6 +133,38 @@ def test_tiny_multimodal_preflight_runs_fresh_processes():
     for row in report["checks"]:
         assert row["fresh_process_reload"]["parity"]["max_abs_error"] == 0
         assert row["fresh_process_reload"]["residency_after"]["passed"]
+        assert set(row["fresh_process_reload"]["rotary_buffers"].values()) == {"torch.float32"}
+
+
+@pytest.mark.parametrize("dtype", [torch.float16, torch.bfloat16])
+def test_low_precision_qwen_preserves_fp32_rotary_values_and_exact_reload(tmp_path, dtype):
+    from scripts.preflight_packed_validation import rotary_buffer_check, tiny_model
+
+    torch.manual_seed(20260907)
+    model = tiny_model(dtype=dtype)
+    rotary_buffer_check(model)
+    original_buffers = {name: b.clone() for name, b in model.named_buffers() if "inv_freq" in name}
+    assert any(not torch.equal(b, b.to(dtype).float()) for b in original_buffers.values())
+    owner = quantize_vocabulary(model.get_input_embeddings().weight,
+                               VocabularyConfig(bits=6, chunk_rows=64))
+    owner.projection_mode = "dense_equivalent"
+    patch_model(model, PatchConfig(quant=QuantConfig(bits=5, group_size=128, scale_bits=8),
+                                  block=128, fallback=True,
+                                  include=["model.language_model.layers."],
+                                  exclude=["linear_attn.in_proj_a", "linear_attn.in_proj_b"]))
+    prompts = [{"input_ids": torch.arange(1, 65).unsqueeze(0)}]
+    with runner.packed_context(model, owner, "cpu", dtype):
+        expected = capture_probes(model, prompts, "cpu", new_tokens=8)
+        save_packed_checkpoint(model, tmp_path / "packed", model_loader="multimodal_lm")
+    loaded = load_packed_model(tmp_path / "packed", dtype=dtype)
+    rotary_buffer_check(loaded)
+    for name, before in original_buffers.items():
+        after = loaded.get_buffer(name)
+        assert after.dtype == before.dtype
+        assert torch.equal(after, before)  # FP16 then .float() is not sufficient.
+    actual = capture_probes(loaded, prompts, "cpu", new_tokens=8)
+    assert compare_probes(actual, expected, reload=True)["max_abs_error"] == 0
+    assert all(torch.equal(actual[name], value) for name, value in expected.items())
 
 
 def test_prepare_validate_resume_and_identity_gates(tmp_path, monkeypatch):
@@ -136,6 +172,9 @@ def test_prepare_validate_resume_and_identity_gates(tmp_path, monkeypatch):
     from tokenizers.models import WordLevel
     from transformers import PreTrainedTokenizerFast
 
+    revalidation_root = tmp_path / "revalidation"
+    tmp_path = tmp_path / "original"
+    tmp_path.mkdir()
     config = runner.load_config(runner.DEFAULT_CONFIG)
     config.update(model="offline-tiny", model_loader="causal_lm", device="cpu", dtype="float32")
     config["quant"].update(group_size=32, error_comp="none")
@@ -189,14 +228,79 @@ def test_prepare_validate_resume_and_identity_gates(tmp_path, monkeypatch):
     summary = runner.summarize(tmp_path, config, (0,))
     assert summary["complete"] and summary["artifact_validated_arms"] == list(runner.ARMS)
     assert not summary["independent_confirmation"]
+    # A historical failure must survive a new-code validation unchanged.
+    old_failure_path = tmp_path / "b5_v6_s0/validation.json"
+    old_failure = runner.read_record(old_failure_path)
+    old_failure["passed"] = False
+    runner.save_record(old_failure_path, old_failure)
+    files_before = {str(p.relative_to(tmp_path)): p.read_bytes()
+                    for p in tmp_path.rglob("*") if p.is_file()}
+    with monkeypatch.context() as newer:
+        newer.setattr(runner, "source_identity", lambda: {"revision": "new-code", "source_fingerprint": "new-bytes"})
+        newer.setattr(runner, "load_config", lambda path: config)
+        newer.setattr(runner, "prepare_seed", lambda *args: pytest.fail("revalidation must not quantize"))
+
+        def child(command, **kwargs):
+            assert "--revalidate-from" in command
+            arm = command[command.index("--worker-arm") + 1]
+            result = runner.validate_worker(config, revalidation_root, arm, 0, 0, revalidate_from=tmp_path)
+            assert result["passed"]
+            assert result["identity"]["source"]["revision"] == "new-code"
+            assert result["preparation_identity"] == old_failure["identity"] | {"arm": arm}
+            return SimpleNamespace(returncode=0)
+
+        newer.setattr(runner.subprocess, "run", child)
+        newer.setenv("ROTQUANT_TOKEN_CACHE_DIR", str(tmp_path / "token_cache"))
+        # The report binds both code identities and the old artifact hashes;
+        # source evidence and failed validation are never relabelled/rewritten.
+        result = runner.run(runner.DEFAULT_CONFIG, revalidation_root, heartbeat_seconds=0,
+                            revalidate_from=tmp_path)
+        assert result["complete"] and len(calls) == 5
+        runner.run(runner.DEFAULT_CONFIG, revalidation_root, heartbeat_seconds=0, revalidate_from=tmp_path)
+        assert len(calls) == 5
+        import os
+        assert os.environ["ROTQUANT_TOKEN_CACHE_DIR"] == str(revalidation_root / "token_cache")
+        changed = copy.deepcopy(config)
+        changed["target_artifact_bytes"] += 1
+        with pytest.raises(ValueError, match="unchanged"):
+            runner.validation_input(changed, revalidation_root, "b5_v6", 0, tmp_path)
+        with pytest.raises(ValueError, match="overlap"):
+            runner.run(runner.DEFAULT_CONFIG, tmp_path / "nested", revalidate_from=tmp_path)
+        with pytest.raises(ValueError, match="missing"):
+            runner.validation_input(config, revalidation_root, "b5_v6", 1, tmp_path)
+    assert {str(p.relative_to(tmp_path)): p.read_bytes()
+            for p in tmp_path.rglob("*") if p.is_file()} == files_before
     root = tmp_path / "b5_v6_s0"
     (root / "packed_probes.safetensors").write_bytes(b"corrupt")
     with pytest.raises(ValueError, match="probe checksum"):
         runner.validate_worker(config, tmp_path, "b5_v6", 0, 0)
+    with pytest.raises(ValueError, match="probe checksum"):
+        runner.validation_input(config, revalidation_root, "b5_v6", 0, tmp_path)
     changed = copy.deepcopy(config)
     changed["vocabulary"]["seed"] = 99
     with pytest.raises(ValueError, match="identity mismatch"):
         runner.prepare_seed(changed, tmp_path, 0, 0)
+
+
+def test_revalidation_identity_allows_only_code_and_path_relocation():
+    config = runner.load_config(runner.DEFAULT_CONFIG)
+    original = runner.identity_for(config, 0, "b5_v6")
+    moved = copy.deepcopy(original)
+    moved["source"] = {"revision": "new", "source_fingerprint": "new"}
+    paths = {path: "/new-checkout/" + str(i) for i, path in enumerate(moved["prompt_files"])}
+    moved["prompt_files"] = {paths[path]: value for path, value in moved["prompt_files"].items()}
+    for key in ("logit_fidelity_suites", "trajectory_suites"):
+        for suite in moved["config"]["eval"].get(key, {}).values():
+            if suite.get("prompt_file"):
+                suite["prompt_file"] = paths[suite["prompt_file"]]
+    assert runner.comparable_identity(moved) == runner.comparable_identity(original)
+    for key in ("runtime", "reload_parity", "prototype_parity", "quality_guards"):
+        changed = copy.deepcopy(moved)
+        changed[key]["changed"] = True
+        assert runner.comparable_identity(changed) != runner.comparable_identity(original)
+    changed = copy.deepcopy(moved)
+    changed["prompt_files"][next(iter(changed["prompt_files"]))] = "different-content"
+    assert runner.comparable_identity(changed) != runner.comparable_identity(original)
 
 
 def test_paired_quality_missing_inputs_or_windows_cannot_pass():
@@ -255,6 +359,15 @@ def test_notebook_and_live_logs(tmp_path):
     assert "SEEDS = (0,)" in text and "PREPARE_ONLY = False" in text
     assert "--assess-only" in text and "preflight_packed_validation.py" in text
     assert "glob(\"*.safetensors\")" not in text
+    revalidation = build_notebook(revalidate=True)
+    nbformat.validate(revalidation)
+    assert revalidation == nbformat.read(REVALIDATION_OUTPUT, as_version=4)
+    for cell in revalidation.cells:
+        if cell.cell_type == "code":
+            compile(cell.source, cell.id, "exec")
+    recovery_text = "\n".join(cell.source for cell in revalidation.cells)
+    assert 'REVALIDATE_FROM = Path("/content/drive/MyDrive/rotquant/qwen35_packed_validation/8f10ee60fc7f")' in recovery_text
+    assert '--revalidate-from' in recovery_text and 'RELOAD_PARITY' not in recovery_text
     log = run_live([sys.executable, "-c", "print('durable output', flush=True)"], "smoke",
                    repo_dir=tmp_path, log_root=tmp_path)
     assert "durable output" in log.read_text()

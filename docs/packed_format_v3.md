@@ -33,6 +33,15 @@ projection has no persistent dense head. Retie/resize APIs remain unsupported
 and must fail instead of recreating dense vocabulary weights. These execution
 paths transiently dequantize: no fused throughput claim is implied.
 
+On checkpoint load, framework-owned nonpersistent floating buffers are
+reconstructed from the model configuration and retain their constructor dtype
+when moved to the requested device. In particular, Qwen's RoPE frequency buffers
+must stay FP32 even with FP16/BF16 model parameters. They are not checkpoint
+weights, and rounding them to FP16 then converting back to FP32 loses information.
+This loader correction does not change the artifact format or serialized bytes.
+An explicit later whole-model `.half()` by application code can still downcast
+ordinary framework buffers; use the loader's `dtype` argument instead.
+
 The [validation workflow](packed_vocabulary_validation_run.md) checks live
 ownership, absent dense caches, actual complete bytes, bounded numerical probes,
 fresh-process reload and full development quality. Tiny multimodal-Qwen text-path

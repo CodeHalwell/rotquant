@@ -8,6 +8,33 @@ Google Drive.
 
 ## 2026-09-07: vocabulary-budget screen and artifact milestone
 
+### Reload failure follow-up (user-provided Colab evidence)
+
+The `8f10ee60fc7f` packed run exported W5/W6 at **3,441,544,638 bytes**
+(142,988,706 below budget), and W5/W8 at approximately 3.600 GB according to
+the log. W5/W6 fresh-process probes measured maximum absolute logit error
+0.0234375, mean absolute error 0.002812524235248686 and mean KL
+1.1783272186767043e-5. All 16 sampled top-1 positions and all four short greedy
+generations matched. The broader prototype comparison passed, but the strict
+reload gate failed; full packed quality was **skipped**, not measured as worse.
+W5/W8 reload validation was not reached. These numbers are transcribed from the
+user's output, not independently recomputed from downloaded artifact tensors.
+
+Diagnosis: the packed loader's final dtype conversion downcast the framework's
+FP32 nonpersistent rotary-frequency buffers. A tiny CPU Qwen reproduction with
+FP16 parameters and FP32 RoPE buffers showed output drift; restoring the original
+buffers reduced it to exactly zero. This is a demonstrated loader defect and a
+strong candidate for the full-model failure, not yet a confirmed 4B CUDA diagnosis.
+The old tiny fixture had downcast its own buffers before export, masking the bug.
+
+Decision: preserve framework buffer precision, strengthen preflight, and
+[revalidate the existing exports](packed_vocabulary_validation_run.md#recover-the-8f10ee60fc7f-reload-failure-without-requantizing)
+under a new validator identity. Keep all thresholds and old failure evidence.
+Do not repeat the roughly 39-minute Hessian collection or quantization, and do
+not claim packed-quality acceptance until the saved artifacts pass the full run.
+
+### Original screen
+
 The [nine-arm screen](vocabulary_results_2026-09-07.md), implementation
 `ce6c8ec861a2`, completed on A100 40 GB at seed 0. W5/W6 and W5/W8 reduce
 primary teacher KL to 0.004741 and 0.004037 versus W4/FP16 vocabulary 0.016497;
