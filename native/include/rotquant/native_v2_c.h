@@ -18,14 +18,20 @@ typedef enum rq_native_v2_status {
     RQ_NATIVE_V2_STATUS_INVALID_ARGUMENT = 1,
     RQ_NATIVE_V2_STATUS_OUT_OF_RANGE = 2,
     RQ_NATIVE_V2_STATUS_KERNEL_UNAVAILABLE = 3,
-    RQ_NATIVE_V2_STATUS_INTERNAL_ERROR = 4
+    RQ_NATIVE_V2_STATUS_INTERNAL_ERROR = 4,
+    /* Widens the enum's value range to all of int32 so that an out-of-range
+     * value from a foreign caller is a defined value the switch defaults can
+     * reject, not undefined behaviour at the load. Never returned. */
+    RQ_NATIVE_V2_STATUS_FORCE_INT32 = 0x7fffffff
 } rq_native_v2_status;
 
 typedef enum rq_native_v2_kernel {
     RQ_NATIVE_V2_KERNEL_AUTO = 0,
     RQ_NATIVE_V2_KERNEL_SCALAR = 1,
     RQ_NATIVE_V2_KERNEL_NEON = 2,
-    RQ_NATIVE_V2_KERNEL_AVX2 = 3
+    RQ_NATIVE_V2_KERNEL_AVX2 = 3,
+    /* See RQ_NATIVE_V2_STATUS_FORCE_INT32. Never a valid request. */
+    RQ_NATIVE_V2_KERNEL_FORCE_INT32 = 0x7fffffff
 } rq_native_v2_kernel;
 
 typedef struct rq_native_v2_layout {

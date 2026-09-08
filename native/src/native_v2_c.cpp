@@ -53,6 +53,7 @@ rq::CpuKernel to_cpp_kernel(rq_native_v2_kernel kernel) {
         case RQ_NATIVE_V2_KERNEL_SCALAR: return rq::CpuKernel::scalar;
         case RQ_NATIVE_V2_KERNEL_NEON: return rq::CpuKernel::neon;
         case RQ_NATIVE_V2_KERNEL_AVX2: return rq::CpuKernel::avx2;
+        case RQ_NATIVE_V2_KERNEL_FORCE_INT32: break;
     }
     throw std::invalid_argument("unknown RotQuant C ABI kernel value");
 }
