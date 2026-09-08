@@ -1,0 +1,207 @@
+{
+  "identity": {
+    "protocol": "qwen35-packed-vocabulary-validation-v1",
+    "config": {
+      "model": "unsloth/Qwen3.5-4B",
+      "device": "cuda",
+      "dtype": "float16",
+      "seed": 0,
+      "n_calib": 128,
+      "calib_seq_len": 512,
+      "eval": {
+        "perplexity": true,
+        "ppl_datasets": [
+          "wikitext2",
+          "c4"
+        ],
+        "ppl": {
+          "seq_len": 2048,
+          "max_samples": 32
+        },
+        "zeroshot": false,
+        "tasks": [
+          "arc_challenge",
+          "arc_easy",
+          "boolq",
+          "piqa",
+          "winogrande",
+          "hellaswag"
+        ],
+        "throughput": false,
+        "logit_fidelity": {
+          "batches": 24,
+          "prompt_len": 512,
+          "skip": 4096,
+          "bootstrap_draws": 4000
+        },
+        "logit_fidelity_suites": {
+          "diverse": {
+            "batches": 25,
+            "prompt_len": 512,
+            "prompt_file": "/content/rotquant-packed-validation/research/eval_suites/qwen35_diverse_development_v1.json",
+            "prompt_field": "text",
+            "bootstrap_draws": 4000
+          }
+        },
+        "fail_fast": {
+          "mean_teacher_kl_max": 0.25,
+          "top1_agreement_min": 0.75
+        },
+        "trajectory_suites": {
+          "diverse": {
+            "batches": 25,
+            "prompt_len": 256,
+            "new_tokens": 32,
+            "prompt_file": "/content/rotquant-packed-validation/research/eval_suites/qwen35_diverse_development_v1.json",
+            "prompt_field": "prompt",
+            "bootstrap_draws": 4000
+          }
+        }
+      },
+      "experiment": "QWEN35_VOCABULARY_BUDGET_V1",
+      "label": "qwen35_4b_vocabulary_budget",
+      "model_revision": "3764fa359b9082ea5a1e4a5e3ac3aaf6e9671636",
+      "model_loader": "multimodal_lm",
+      "calib_dataset_revision": "1588ec454efa1a09f29cd18ddd04fe05fc8653a2",
+      "hessian_collection": "streamed",
+      "hessian_layers_per_pass": 4,
+      "quant": {
+        "bits": 5,
+        "codebook": "gaussian",
+        "scale": "mse_search",
+        "scale_bits": 8,
+        "collect_scale_diagnostics": true,
+        "group_size": 128,
+        "error_comp": "gptq",
+        "gptq_block": 128,
+        "gptq_actorder": true,
+        "gptq_recompute_scales": true,
+        "bias_correction": "none"
+      },
+      "patch": {
+        "rotation": "fwht",
+        "block": 128,
+        "mode": "consistent",
+        "share_rotations": false,
+        "fallback": true,
+        "include": [
+          "model.language_model.layers."
+        ],
+        "exclude": [
+          "linear_attn.in_proj_a",
+          "linear_attn.in_proj_b",
+          "lm_head",
+          "embed_out"
+        ]
+      },
+      "vocabulary": {
+        "group_size": 128,
+        "block": 128,
+        "chunk_rows": 1024
+      },
+      "target_artifact_bytes": 3584533344,
+      "artifact_overhead_estimate_bytes": 20750000,
+      "packed_validation": {
+        "projection_mode": "dense_equivalent",
+        "probe_prompts": 4,
+        "probe_prompt_tokens": 64,
+        "probe_logit_positions": 4,
+        "probe_new_tokens": 8
+      }
+    },
+    "seed": 0,
+    "arm": "b5_v8",
+    "source": {
+      "revision": "8f10ee60fc7fcaa44c707a50b9d22f5efeefb802",
+      "source_fingerprint": "63dbcc16019bf63b040353f9f802cde5406b493788b6b4c006cb1f5053ecfd4e"
+    },
+    "runtime": {
+      "versions": {
+        "torch": "2.11.0+cu128",
+        "transformers": "5.9.0",
+        "datasets": "4.8.5",
+        "safetensors": "0.7.0",
+        "fast-hadamard-transform": "1.1.0"
+      },
+      "cuda": "12.8",
+      "python": "3.13.15",
+      "gpu": "NVIDIA A100-SXM4-40GB",
+      "disable_fast_hadamard": "",
+      "tf32": false
+    },
+    "prompt_files": {
+      "/content/rotquant-packed-validation/research/eval_suites/qwen35_diverse_development_v1.json": "3e0cc423084e0ea793be89aa32e78f1a57797ab7a3a2d239dfdf5e427539323a"
+    },
+    "prototype_parity": {
+      "max_abs_error": 0.125,
+      "mean_abs_error": 0.005,
+      "mean_kl": 0.0001,
+      "top1_agreement_min": 0.99
+    },
+    "reload_parity": {
+      "max_abs_error": 0.002,
+      "mean_abs_error": 0.0002,
+      "mean_kl": 1e-06,
+      "top1_agreement_min": 1.0
+    },
+    "quality_guards": {
+      "primary_kl": [
+        "mean_teacher_kl",
+        "ratio",
+        1.02
+      ],
+      "primary_top1": [
+        "top1_agreement",
+        "delta",
+        -0.01
+      ],
+      "wikitext2": [
+        "ppl_wikitext2",
+        "ratio",
+        1.02
+      ],
+      "c4": [
+        "ppl_c4",
+        "ratio",
+        1.02
+      ],
+      "diverse_kl": [
+        "diverse_mean_teacher_kl",
+        "ratio",
+        1.02
+      ],
+      "diverse_top1": [
+        "diverse_top1_agreement",
+        "delta",
+        -0.01
+      ],
+      "trajectory": [
+        "diverse_trajectory_token_agreement",
+        "delta",
+        -0.02
+      ]
+    }
+  },
+  "max_abs_error": 0.0078125,
+  "mean_abs_error": 9.47317423253349e-06,
+  "mean_kl": 3.167109309260613e-08,
+  "top1_agreement": 1.0,
+  "positions": 16,
+  "generation_probes": 4,
+  "exact_generation_probes": 4,
+  "thresholds": {
+    "max_abs_error": 0.125,
+    "mean_abs_error": 0.005,
+    "mean_kl": 0.0001,
+    "top1_agreement_min": 0.99
+  },
+  "guards": {
+    "max_abs_error": true,
+    "mean_abs_error": true,
+    "mean_kl": true,
+    "top1": true
+  },
+  "passed": true,
+  "comparison": "prototype",
+  "boundary": "Bounded numerical probes, not task accuracy or full-suite equivalence."
+}

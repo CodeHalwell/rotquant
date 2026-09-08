@@ -1,0 +1,20 @@
+{
+  "git_sha": "89d25f3d7166616d734d724749bee22fcad501fb",
+  "library_versions": {
+    "python": "3.13.15",
+    "rotquant": "0.1.0",
+    "torch": "2.11.0+cu128",
+    "numpy": "2.1.3",
+    "scipy": "1.15.3",
+    "transformers": "5.9.0",
+    "datasets": "4.8.5",
+    "lm_eval": "not-installed"
+  },
+  "gpu": {
+    "cuda_available": true,
+    "device_name": "NVIDIA A100-SXM4-40GB",
+    "cuda_version": "12.8",
+    "driver": "580.82.07"
+  },
+  "timestamp": "2026-09-07T22:56:43+0000"
+}

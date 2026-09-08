@@ -4,11 +4,12 @@ Use [the new Colab notebook](../notebooks/qwen35_4b_packed_validation_colab.ipyn
 not another nine-arm screen. This implements the artifact milestone following
 the [successful vocabulary screen](vocabulary_results_2026-09-07.md).
 
-Status: code, generated notebook, CPU fixture tests and offline tiny multimodal
-Qwen fresh-process reload checks are available. **The full pretrained CUDA run
-has not been executed locally.** These changes must be published before the
-notebook's default `REPO_REF = "main"` can load them. No new provider result,
-independent confirmation, fused-kernel speedup or full-Qwen artifact pass is claimed.
+September 8 status: **both artifacts passed supplied CUDA revalidation** with
+loader `89d25f3`. Compact records are archived; next use
+[fresh quality and recipe replication](fresh_quality_run_2026-09-08.md).
+No independent local CUDA rerun, provider win, independent calibration-corpus
+confirmation or fused-kernel speedup is claimed. The instructions below retain
+the original artifact/recovery protocol; no full repeat is needed now.
 
 ## Recover the `8f10ee60fc7f` reload failure without requantizing
 
@@ -23,7 +24,8 @@ that the loader's blanket FP16 conversion rounded framework-created FP32 RoPE
 buffers. Those nonpersistent tensors are absent from the checkpoint state; they
 must be reconstructed and kept at their framework precision, not cast down and
 back up. The local tiny-Qwen regression reaches exactly equal outputs after
-preserving them. The actual 4B CUDA rerun is still required to confirm the cause.
+preserving them. The subsequent supplied 4B CUDA rerun reached zero error on the
+saved reload probes for both artifacts and passed development quality guards.
 
 The fix does not change codes, scales, artifact files, or numerical tolerances.
 The preflight now constructs low-precision parameters while retaining FP32 RoPE

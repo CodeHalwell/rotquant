@@ -1,0 +1,78 @@
+{
+  "protocol": "qwen35-packed-vocabulary-validation-v1",
+  "phase": "complete",
+  "pid": 11114,
+  "updated_at": "2026-09-07T23:53:22Z",
+  "summary": {
+    "protocol": "qwen35-packed-vocabulary-validation-v1",
+    "complete": true,
+    "missing": [],
+    "rows": [
+      {
+        "arm": "b5_v6",
+        "seed": 0,
+        "passed": true,
+        "measured_artifact_bytes": 3441544638,
+        "size": {
+          "target_bytes": 3584533344,
+          "measured_bytes": 3441544638,
+          "delta_bytes": -142988706,
+          "within_budget": true,
+          "within_one_percent_pairing": false,
+          "no_more_than_one_percent_over": true
+        },
+        "reload_parity": true,
+        "prototype_parity": true,
+        "quality": true,
+        "mean_teacher_kl": 0.004740943802934959,
+        "p95_teacher_kl": 0.01374626625329256,
+        "top1_agreement": 0.9605348988910632,
+        "ppl_wikitext2": 9.507944107055664,
+        "ppl_c4": 14.079388618469238,
+        "diverse_mean_teacher_kl": 0.01071638175986527,
+        "diverse_top1_agreement": 0.941564561734213,
+        "diverse_trajectory_token_agreement": 0.81625,
+        "projected_artifact_bytes": null,
+        "evaluation_halted": false
+      },
+      {
+        "arm": "b5_v8",
+        "seed": 0,
+        "passed": true,
+        "measured_artifact_bytes": 3600470206,
+        "size": {
+          "target_bytes": 3584533344,
+          "measured_bytes": 3600470206,
+          "delta_bytes": 15936862,
+          "within_budget": false,
+          "within_one_percent_pairing": true,
+          "no_more_than_one_percent_over": true
+        },
+        "reload_parity": true,
+        "prototype_parity": true,
+        "quality": true,
+        "mean_teacher_kl": 0.004037312842511851,
+        "p95_teacher_kl": 0.012604553252458572,
+        "top1_agreement": 0.9659980430528375,
+        "ppl_wikitext2": 9.505033493041992,
+        "ppl_c4": 14.071825981140137,
+        "diverse_mean_teacher_kl": 0.009799855471855808,
+        "diverse_top1_agreement": 0.946277097078228,
+        "diverse_trajectory_token_agreement": 0.795,
+        "projected_artifact_bytes": null,
+        "evaluation_halted": false
+      }
+    ],
+    "revalidate_from": "/content/drive/MyDrive/rotquant/qwen35_packed_validation/8f10ee60fc7f",
+    "seeds": [
+      0
+    ],
+    "artifact_validated_arms": [
+      "b5_v6",
+      "b5_v8"
+    ],
+    "provider_competitive": false,
+    "independent_confirmation": false,
+    "interpretation": "Packed artifact conformance on reused development inputs. No provider, speed, or independent-validation win is claimed."
+  }
+}

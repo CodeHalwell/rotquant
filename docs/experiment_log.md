@@ -6,6 +6,26 @@ learned, negative results, and the decision that followed. Results produced in
 external notebooks are recorded here even when their raw artifacts live on
 Google Drive.
 
+## 2026-09-08: packed revalidation passed; fresh diagnostics prepared
+
+The `89d25f3` checkpoint-only CUDA rerun passed W5/W6 and W5/W8 with unchanged
+thresholds and zero error on their 16-position/four-generation reload probes.
+Full development-quality guards passed. Primary KL was 0.0047409438/0.0040373128,
+and actual complete artifacts measured 3,441,544,638/3,600,470,206 bytes. W6 is
+under budget; W8 is 0.445% over the target, within the allowed ceiling.
+The [compact archive](../research/results/raw/qwen35_packed_revalidation_89d25f3/evidence_index.json)
+preserves 37 original JSON/checksum files and all 14 digest pairs, including the
+old W6 failure. Absent weights/probes prevent an independent local CUDA rerun.
+
+Decision: prepare [fresh quality plus seeds 1/2](fresh_quality_run_2026-09-08.md),
+not another allocator or recovery sweep. The new notebook freezes fresh C4 and
+96 strict, authored task diagnostics, captures a common FP16 teacher, evaluates
+the saved artifacts, measures a BF16-GGUF engine/precision bridge and Unsloth
+anchor, then repeats both recipes at seeds 1/2. These are quantization-RNG seeds
+on fixed calibration data, not independent calibration-corpus replications.
+New task/provider results remain unexecuted. Synthetic unit-task scores are not
+real coding or agentic benchmark claims; kernel performance stays a later track.
+
 ## 2026-09-07: vocabulary-budget screen and artifact milestone
 
 ### Reload failure follow-up (user-provided Colab evidence)

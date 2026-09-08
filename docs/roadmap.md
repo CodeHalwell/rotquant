@@ -8,12 +8,19 @@ postponed cleanup.
 
 ## Stage 2: canonical GPU serving
 
-September 7 update: the nine-arm screen completed with two W5 finalists. See the
+September 8 update: **both seed-0 artifacts passed packed revalidation** using
+loader `89d25f3` in the supplied CUDA records. The archived evidence retains the
+old failure. Next is [fresh quality and recipe replication](fresh_quality_run_2026-09-08.md):
+new C4/authored task inputs, common-FP16 Unsloth comparison with BF16-GGUF bridge,
+and seeds 1/2. Preparation is not GPU execution or proof of provider parity.
+Real-task benchmark expansion and packed-kernel profiling follow.
+
+September 7 historical update: the nine-arm screen completed with two W5 finalists. See the
 [validated results](vocabulary_results_2026-09-07.md). The immediate runnable
 next milestone is [packed vocabulary export/reload validation](packed_vocabulary_validation_run.md):
 W5/W6 first, W5/W8 comparator, actual files and fresh-process quality checks.
-The notebook is prepared and CPU-tested; full-Qwen CUDA artifact validation,
-independent seed confirmation and a fresh provider comparison remain unexecuted.
+The September 8 entry supersedes that artifact-validation status. Independent
+seed confirmation and a fresh provider comparison remain unexecuted.
 Do not restart a broad allocator/recovery sweep before these gates.
 
 September 6 priority update: the

@@ -1,0 +1,9 @@
+{
+  "protocol": "qwen35-packed-vocabulary-validation-v1",
+  "phase": "complete",
+  "pid": 22986,
+  "updated_at": "2026-09-07T21:41:14Z",
+  "passed": false,
+  "arm": "b5_v6",
+  "seed": 0
+}
