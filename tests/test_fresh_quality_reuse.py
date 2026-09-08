@@ -109,7 +109,7 @@ def reusable(tmp_path, monkeypatch):
             path = directory / f"{item['id']}.json"
             value = {**item, "manifest": manifest["fingerprint"], "collection": runner.fingerprint(identity),
                      "tokens": 2, "mean_teacher_kl": 0., "top1_agreement": 1.,
-                     "task_success": True, "source_task_success": True, "json_valid": True,
+                     "source_nll": 1.5, "candidate_nll": 1.5, "task_success": True, "source_task_success": True, "json_valid": True,
                      "truncated": False, "trajectory_token_agreement": 1., "exact_trajectory": True}
             if label == "source_fp16":
                 runner._atomic_npz(path.with_suffix(".npz"), logits=np.zeros((2, 5), dtype=np.float32))

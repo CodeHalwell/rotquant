@@ -226,7 +226,7 @@ def build_notebook():
                 os.environ.update({"CMAKE_ARGS": "-DGGML_CUDA=on", "CMAKE_BUILD_PARALLEL_LEVEL": "2", "FORCE_CMAKE": "1"})
                 run_live([sys.executable, "-m", "pip", "install", "-v", "--force-reinstall", "--no-deps",
                           f"git+https://github.com/abetlen/llama-cpp-python.git@{LLAMA_CPP_PYTHON_REVISION}"],
-                         "llama-cuda-build", timeout_seconds=1800)
+                         "llama-cuda-build", timeout_seconds=3600)
             run_live([sys.executable, "-c", check_build], "llama-build-check")
             fresh("bridge", "gguf-bf16-bridge")
             fresh("unsloth", "unsloth-common-and-bf16")

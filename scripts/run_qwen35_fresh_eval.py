@@ -946,10 +946,14 @@ def summarize(root, manifest, expected_labels):
                 "tokens": tokens,
                 "mean_teacher_kl": sum(v["tokens"] * v["mean_teacher_kl"] for v in subset) / tokens,
                 "top1_agreement": sum(v["tokens"] * v["top1_agreement"] for v in subset) / tokens,
+                # Token-weighted like KL; the plan reports NLL alongside KL/top-1.
+                "source_nll": sum(v["tokens"] * v["source_nll"] for v in subset) / tokens,
+                "candidate_nll": sum(v["tokens"] * v["candidate_nll"] for v in subset) / tokens,
                 "artifact_bytes": (marker.get("ledger") or {}).get("measured_artifact_bytes"),
                 "producer_source": marker["identity"].get("source"),
                 "gguf_input_policy": marker["identity"].get("gguf_input_policy"),
             }
+            row["nll_delta"] = row["candidate_nll"] - row["source_nll"]
             if domain != "c4":
                 for key in (
                     "task_success",
