@@ -2,8 +2,8 @@
 
 Use [the new Colab notebook](../notebooks/qwen35_4b_fresh_quality_colab.ipynb).
 This follows successful packed revalidation, not another allocator/LoRA sweep.
-The code must be published before `REPO_REF=main` can load it. The full pretrained
-CUDA notebook has not been executed locally.
+The notebook is published on `main`. The full pretrained CUDA notebook has not
+been executed locally.
 
 ## Starting evidence
 
@@ -63,7 +63,16 @@ in `scripts/run_unsloth_qwen35_4b_kl.py`. This is the existing Qwen3.5 release,
 ## Measurements and limits
 
 C4 scores all 511 next-token positions/document. Task generation stops at the
-source EOS set or 128 tokens, with thinking disabled and greedy decoding. KL
+source EOS set or 128 tokens, with thinking disabled and greedy decoding. The
+stop set combines source generation/model-config EOS IDs with tokenizer EOS,
+identically for HF, packed and GGUF arms. The pinned repository has no separate
+`generation_config.json`: use `GenerationConfig.from_model_config` to read its
+nested `text_config` instead. Its [model EOS](https://huggingface.co/unsloth/Qwen3.5-4B/blob/3764fa359b9082ea5a1e4a5e3ac3aaf6e9671636/config.json)
+is 248044 (`<|endoftext|>`), and its pinned tokenizer EOS is 248046 (`<|im_end|>`).
+Both stop generation; otherwise normal chat termination could be scored as
+truncation. Resolve/log/validate these IDs before artifact scans and C4 capture.
+Only confirmed missing Hub files allow fallback; authentication, network,
+offline-cache and invalid-config errors remain failures. KL
 uses up to 32 positions on the source continuation. Variable EOS lengths mean
 this is **not an exact 32-token Divergence-300 reproduction**.
 
@@ -131,6 +140,20 @@ explicit interruption terminates the subprocess group.
 Compact downloads include output text, prompt metrics, manifests, summaries,
 logs and small replication evidence—not model/reference/probe binaries. Retain
 the latter on Drive for reproducibility and profiling.
+
+### Recover the `bdf65958e248` generation-config failure
+
+The first Colab source phase failed while reading stop IDs, before loading the
+FP16 model or writing any per-prompt quality results. Frozen inputs succeeded;
+this is a setup failure, not a quantization result. Keep that folder as evidence.
+
+Use the fixed code on `main` and a **new commit-named result root**. Rerun the
+checkout/root cell and the freeze cell before the source cell. Do not merely
+pull and rerun source against the old `common` command: it still points to the
+old root, whose manifest correctly rejects changed code/stopping policy. There
+is no need to reinstall unchanged dependencies or requantize the seed-0
+checkpoints. Keep `ARTIFACT_SOURCE` pointed at the original `8f10ee60fc7f` folder.
+The freeze logs should now print `stop_ids: [248044, 248046]` before C4 capture.
 
 ## Local validation and next decision
 

@@ -65,6 +65,7 @@ SETTINGS = {
     "enable_thinking": False,
     "temperature": 0,
     "seed": 0,
+    "stop_policy": "source-config-plus-tokenizer-eos-v1",
     "task_scope": "96 authored unit diagnostics; not a real-world agent/coding benchmark",
 }
 
@@ -366,14 +367,46 @@ class LlamaBackend:
         return output
 
 
-def stop_ids_for_source():
-    from transformers import GenerationConfig
+def stop_ids_for_source(tokenizer=None):
+    """Resolve pinned generation defaults and the tokenizer's chat terminator.
 
-    config = GenerationConfig.from_pretrained(MODEL_ID, revision=MODEL_REVISION)
+    A separate generation_config.json is optional on the Hub. Only a confirmed
+    missing entry permits fallback: offline-cache misses, auth failures and bad
+    JSON must not silently change the experiment's stopping rules.
+    """
+    from huggingface_hub import hf_hub_download
+    from huggingface_hub.errors import EntryNotFoundError, LocalEntryNotFoundError
+    from transformers import AutoConfig, GenerationConfig
+
+    origin = "generation_config.json"
+    try:
+        path = hf_hub_download(MODEL_ID, "generation_config.json", revision=MODEL_REVISION)
+    except LocalEntryNotFoundError:
+        raise
+    except EntryNotFoundError:
+        config = GenerationConfig.from_model_config(
+            AutoConfig.from_pretrained(MODEL_ID, revision=MODEL_REVISION)
+        )
+        origin = "config.json (including nested text_config)"
+    else:
+        config = GenerationConfig.from_dict(json.loads(Path(path).read_text()))
     ids = config.eos_token_id
     ids = ids if isinstance(ids, list) else [ids]
     if not ids or any(type(i) is not int or i < 0 for i in ids):
         raise ValueError("source EOS IDs missing")
+    tokenizer = load_tokenizer() if tokenizer is None else tokenizer
+    # Qwen's model EOS is endoftext, whereas completed chat replies use im_end.
+    # Apply this explicit union to HF, packed and GGUF arms, not engine defaults.
+    chat_eos = tokenizer.eos_token_id
+    if chat_eos is not None:
+        if type(chat_eos) is not int or chat_eos < 0:
+            raise ValueError("invalid tokenizer EOS ID")
+        ids = [*ids, chat_eos]
+    ids = list(dict.fromkeys(ids))
+    if not set(ids).issubset(tokenizer.get_vocab().values()):
+        raise ValueError("source EOS IDs are not defined tokenizer tokens")
+    print(json.dumps({"stop_config": origin, "stop_ids": ids,
+                      "stop_policy": SETTINGS["stop_policy"]}), flush=True)
     return ids
 
 
@@ -513,7 +546,7 @@ def run_collection(
     tokenizer = load_tokenizer()
     if tokenizer_identity(tokenizer, manifest["tokenizer"]["size"]) != manifest["tokenizer"]:
         raise ValueError("tokenizer/template changed after freeze")
-    stops = stop_ids_for_source()
+    stops = stop_ids_for_source(tokenizer)
     base_identity = {
         "manifest": manifest["fingerprint"],
         "source": source_identity(),
@@ -848,6 +881,8 @@ def main():
         _Heartbeat(f"fresh/{args.phase}", seconds=args.heartbeat_seconds),
     ):
         if args.phase == "freeze":
+            # Fail before artifact scans/C4 selection, not at the first model load.
+            stop_ids_for_source()
             progress(root, "verify_original_artifacts_before_capture")
             for arm in ("b5_v6", "b5_v8"):
                 original = args.evidence_root / f"{arm}_s0"

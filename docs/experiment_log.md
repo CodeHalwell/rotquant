@@ -6,6 +6,22 @@ learned, negative results, and the decision that followed. Results produced in
 external notebooks are recorded here even when their raw artifacts live on
 Google Drive.
 
+## 2026-09-08: fresh-source generation-config setup failure
+
+The user-provided `bdf65958e248` Colab traceback shows that frozen inputs were
+saved, but source collection failed before model load: the pinned
+`unsloth/Qwen3.5-4B` revision has no `generation_config.json`. This is not a
+quality/quantization failure and produces no new candidate evidence.
+
+Fix: resolve the optional generation file, falling back only on confirmed Hub
+absence to `GenerationConfig.from_model_config`, including nested text config.
+Local pinned-config/tokenizer inspection verified model EOS 248044 and chat EOS
+248046; use their explicit union across all arms, and record the stopping
+policy. Do not silently convert connectivity/authentication failures to defaults.
+Check stop tokens before costly artifact verification/C4 capture. Restart under
+a new code-bound output root, retaining the failed run and original checkpoints.
+No generation/quality result or performance improvement is claimed by this fix.
+
 ## 2026-09-08: packed revalidation passed; fresh diagnostics prepared
 
 The `89d25f3` checkpoint-only CUDA rerun passed W5/W6 and W5/W8 with unchanged

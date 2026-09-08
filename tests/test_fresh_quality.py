@@ -71,6 +71,7 @@ def test_family_interval_pairs_and_does_not_inflate_template_evidence():
 
 class Tokenizer:
     chat_template = "frozen-template"
+    eos_token_id = 4
     special_tokens_map: ClassVar[dict] = {"eos_token": "stop"}
 
     def __len__(self):
@@ -99,6 +100,88 @@ class Backend:
         logits = np.arange((len(ids) - 1) * 5, dtype=np.float32).reshape(-1, 5) / 10
         logits[:, 0] += self.offset
         return logits
+
+
+def test_missing_generation_file_uses_nested_model_eos_and_chat_eos(monkeypatch):
+    import huggingface_hub
+    import transformers
+    from huggingface_hub.errors import EntryNotFoundError
+
+    calls = []
+
+    def missing(repo, name, **kwargs):
+        calls.append((repo, name, kwargs))
+        raise EntryNotFoundError("generation_config.json is absent at the pinned revision")
+
+    def model_config(repo, **kwargs):
+        calls.append((repo, "config.json", kwargs))
+        # The actual model has EOS only in its nested text config.
+        return transformers.Qwen3_5Config(text_config={"eos_token_id": 3})
+
+    monkeypatch.setattr(huggingface_hub, "hf_hub_download", missing)
+    monkeypatch.setattr(transformers.AutoConfig, "from_pretrained", model_config)
+    assert runner.stop_ids_for_source(Tokenizer()) == [3, 4]
+    assert calls == [
+        (runner.MODEL_ID, name, {"revision": runner.MODEL_REVISION})
+        for name in ("generation_config.json", "config.json")
+    ]
+
+
+@pytest.mark.parametrize("eos, expected", [(3, [3, 4]), ([3, 4, 3], [3, 4]), (4, [4])])
+def test_generation_file_takes_precedence_and_deduplicates_eos(
+    tmp_path, monkeypatch, eos, expected
+):
+    import huggingface_hub
+    import transformers
+
+    path = tmp_path / "generation_config.json"
+    path.write_text(json.dumps({"eos_token_id": eos}))
+    monkeypatch.setattr(huggingface_hub, "hf_hub_download", lambda *a, **k: str(path))
+
+    def unexpected(*a, **k):
+        pytest.fail("existing generation config must not be replaced with model defaults")
+
+    monkeypatch.setattr(transformers.AutoConfig, "from_pretrained", unexpected)
+    assert runner.stop_ids_for_source(Tokenizer()) == expected
+
+
+@pytest.mark.parametrize("eos", [None, [], True, -1, 3.0, "3", [3, False], [99]])
+def test_invalid_or_unmapped_source_eos_is_rejected(tmp_path, monkeypatch, eos):
+    import huggingface_hub
+
+    path = tmp_path / "generation_config.json"
+    path.write_text(json.dumps({"eos_token_id": eos}))
+    monkeypatch.setattr(huggingface_hub, "hf_hub_download", lambda *a, **k: str(path))
+    with pytest.raises(ValueError):
+        runner.stop_ids_for_source(Tokenizer())
+
+
+@pytest.mark.parametrize("failure", ["offline", "permission", "network", "json"])
+def test_stop_resolution_does_not_hide_unrelated_failures(tmp_path, monkeypatch, failure):
+    import huggingface_hub
+    import transformers
+    from huggingface_hub.errors import LocalEntryNotFoundError
+
+    path = tmp_path / "generation_config.json"
+    path.write_text("{broken json")
+    error = {
+        "offline": LocalEntryNotFoundError("not cached; cannot verify absence"),
+        "permission": PermissionError("denied"),
+        "network": ConnectionError("unavailable"),
+    }.get(failure)
+
+    def download(*a, **k):
+        if error is not None:
+            raise error
+        return str(path)
+
+    def unexpected(*a, **k):
+        pytest.fail("only a confirmed missing Hub entry permits fallback")
+
+    monkeypatch.setattr(huggingface_hub, "hf_hub_download", download)
+    monkeypatch.setattr(transformers.AutoConfig, "from_pretrained", unexpected)
+    with pytest.raises(json.JSONDecodeError if error is None else type(error)):
+        runner.stop_ids_for_source(Tokenizer())
 
 
 def save_reference(tmp_path, label, item, manifest, record, logits):
@@ -295,7 +378,7 @@ def test_collection_resumes_prompts_and_recovers_missing_completion(tmp_path, mo
     }
     calls = []
     monkeypatch.setattr(runner, "load_tokenizer", lambda: tokenizer)
-    monkeypatch.setattr(runner, "stop_ids_for_source", lambda: [4])
+    monkeypatch.setattr(runner, "stop_ids_for_source", lambda *a: [4])
     monkeypatch.setattr(runner, "fresh_runtime", lambda: {"runtime": "fixed"})
     monkeypatch.setattr(runner, "source_identity", lambda: {"source": "fixed"})
     monkeypatch.setattr(
