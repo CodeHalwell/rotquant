@@ -49,6 +49,12 @@ def build_notebook():
         For a shorter first session set RUN_REPLICATION=False. This produces a
         useful seed-0 comparison but does not complete seeds 1/2. Re-enable it later
         with the same commit/root. No failed/missing arm is treated as a success.
+
+        To recover the tokenizer-gate failure from 733bb3d, set REUSE_FRESH_ROOT
+        to its `fresh` directory. The new commit gets a separate output root;
+        checksummed completed HF/seed-0 results retain their original identities
+        and reference tensors stay in the old directory. Both directories must
+        remain available. Missing/incomplete results are not silently adopted.
         """),
         code("""
         from pathlib import Path
@@ -57,6 +63,9 @@ def build_notebook():
         REPO_DIR = Path("/content/rotquant-fresh-quality")
         ARTIFACT_SOURCE = Path("/content/drive/MyDrive/rotquant/qwen35_packed_validation/8f10ee60fc7f")
         RESULT_BASE = Path("/content/drive/MyDrive/rotquant/qwen35_fresh_quality")
+        # Optional recovery from the completed 733bb3d HF/packed collections:
+        REUSE_FRESH_ROOT = None  # Path("/content/drive/MyDrive/rotquant/qwen35_fresh_quality/733bb3d2e477/fresh")
+        GGUF_INPUT_POLICY = "frozen-hf"  # Same frozen IDs for all arms; native tokenization audited separately.
         RUN_UNSLOTH = True
         RUN_REPLICATION = True
         REPLICATION_SEEDS = (1, 2)
@@ -145,11 +154,15 @@ def build_notebook():
         code("""
         common = [sys.executable, "-u", str(REPO_DIR / "scripts/run_qwen35_fresh_eval.py"),
                   "--output-dir", str(EVAL_ROOT), "--evidence-root", str(ARTIFACT_SOURCE),
-                  "--heartbeat-seconds", str(HEARTBEAT_SECONDS)]
+                  "--heartbeat-seconds", str(HEARTBEAT_SECONDS),
+                  "--gguf-input-policy", GGUF_INPUT_POLICY]
         def fresh(phase, label, extra=()):
             run_live([*common, "--phase", phase, *extra], label)
         run_live([*common, "--phase", "freeze", "--dry-run"], "plan")
-        fresh("freeze", "freeze-inputs")
+        if REUSE_FRESH_ROOT is not None:
+            fresh("reuse", "reuse-completed-inputs", ["--reuse-root", str(REUSE_FRESH_ROOT)])
+        else:
+            fresh("freeze", "freeze-inputs")
         """),
         md("""
         ### 6. Capture the common FP16 source once
@@ -177,13 +190,24 @@ def build_notebook():
         md("""
         ### 8. Install the pinned provider engine and measure its BF16 bridge
         We verify the Git installation metadata, shared-library hashes, all token-ID
-        mappings and rendered chat tokenization. A mismatch stops; no vocabulary
-        slicing, template substitutions or engine mismatch is silently accepted.
+        mappings and exact decoded prompt bytes. Native chat retokenization is
+        audited separately: four Hindi prompts differed in the first Colab check.
+        With GGUF_INPUT_POLICY="frozen-hf", every arm receives the original HF
+        IDs directly. Different native splitting alone does not block this controlled
+        comparison. Mapping, padding, frozen HF retokenization and decoded-byte
+        failures still stop. This is **not native-tokenizer serving parity**.
+        Use "strict" to require native tokenization equality as an additional gate.
+        No vocabulary slicing, changed prompts or omitted Hindi tasks.
 
         The bridge measures BF16 GGUF vs the common HF FP16 teacher, exposing their
         combined conversion/engine/precision discrepancy. Unsloth then gets BOTH
         common-FP16 KL and same-engine BF16 KL on the same frozen contexts. Do not
         subtract the bridge KL: KL divergences are not additive.
+
+        Keep PyTorch imported before llama.cpp in custom diagnostics: the Colab
+        build's system NCCL can conflict with PyTorch when loaded first. The runner
+        already uses PyTorch-first order. Reuse the verified build; do not reinstall
+        the engine to diagnose a text-tokenizer mismatch.
         """),
         code("""
         if RUN_UNSLOTH:
@@ -274,6 +298,15 @@ def build_notebook():
                     if path.is_file() and not path.is_symlink() and path.suffix in (".json", ".sha256", ".log"):
                         if "hessians" not in path.parts and "vocabulary_cache" not in path.parts:
                             bundle.write(path, path.relative_to(RESULT_ROOT))
+                # Keep imported per-prompt evidence in the compact handoff too.
+                if (EVAL_ROOT / "reuse.json").exists():
+                    import hashlib
+                    reuse = json.loads((EVAL_ROOT / "reuse.json").read_text())
+                    for name, digest in reuse["files"].items():
+                        path = Path(reuse["root"]) / name
+                        assert hashlib.sha256(path.read_bytes()).hexdigest() == digest, f"Reused evidence changed: {name}"
+                        bundle.write(path, "reused/" + name)
+                        bundle.write(path.with_suffix(".sha256"), "reused/" + str(Path(name).with_suffix(".sha256")))
             from google.colab import files
             files.download(str(archive))
         """),

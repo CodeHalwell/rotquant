@@ -49,7 +49,8 @@ Multilingual is the largest observed fidelity gap, based on only five snippets.
    the old full development evaluation or requantize seed 0.
 5. **Provider controls:** evaluate pinned BF16 GGUF against common HF FP16, then
    Unsloth UD-Q4_K_XL against both references on identical contexts. Verify the
-   installed engine Git provenance, library hashes, token axis and chat tokens.
+   installed engine Git provenance, library hashes, token axis and decoded chat
+   bytes. Use frozen HF IDs directly; audit native tokenizer splitting separately.
 6. **Seeds 1/2:** one W5 backbone preparation per seed, shared by its W6/W8 pair.
    Reuse the existing export preparation and development/prototype evidence,
    then run fresh-process reload probes and the new quality suite. No allocator
@@ -110,6 +111,30 @@ logit dimension and verify real token mappings plus the converter's
 [`[PAD{id}]` unused slots](https://github.com/ggml-org/llama.cpp/blob/4df29be4f4c3673f428170fda944a5b19f743bb8/conversion/base.py).
 Do not slice vocabulary rows and renormalize KL to conceal an axis mismatch.
 
+The first Colab native-tokenizer audit found four mismatches out of 96 authored
+prompts: the four Hindi additions, each 44 HF tokens versus 36 GGUF-native tokens.
+The pinned HF tokenizer regex uses `\p{L}+`, whereas the pinned llama.cpp
+[`qwen35` pre-tokenizer](https://github.com/ggml-org/llama.cpp/blob/4df29be4f4c3673f428170fda944a5b19f743bb8/src/llama-vocab.cpp#L360)
+groups `\p{L}` and `\p{M}` (combining marks). This explains the observed
+letter/mark splitting pattern; it is not evidence of quantization degradation.
+A local in-memory regex-only change to the pinned HF tokenizer reproduced
+exactly those four length differences and the reported first six differing
+GGUF IDs. All 96 original HF prompts decoded to their rendered bytes exactly.
+This diagnostic changed no saved inputs, model weights or experiment results.
+The original guard blocked the bridge before any prompt scoring.
+
+The notebook now explicitly selects `--gguf-input-policy frozen-hf`. Full
+token-ID/row mappings and padding remain hard gates. For every task, current HF
+retokenization must reproduce the frozen IDs, and HF decoding plus GGUF decoding
+of **both** frozen/native sequences must reproduce the exact rendered UTF-8
+bytes. Native segmentation differences are saved in `tokenizer_audit.json`, not
+hidden or substituted into inference. Both GGUF generation and KL already feed
+the frozen IDs directly. The CLI default remains `strict`, which also requires
+native segmentation equality. Neither mode slices vocabulary logits, drops
+Hindi prompts, or changes templates. This experiment measures common-input
+model fidelity, **not native-text serving/tokenizer parity**. A native-input
+deployment comparison remains a separate follow-up.
+
 ## Run and resume
 
 ```python
@@ -154,6 +179,48 @@ old root, whose manifest correctly rejects changed code/stopping policy. There
 is no need to reinstall unchanged dependencies or requantize the seed-0
 checkpoints. Keep `ARTIFACT_SOURCE` pointed at the original `8f10ee60fc7f` folder.
 The freeze logs should now print `stop_ids: [248044, 248046]` before C4 capture.
+
+### Recover the `733bb3d2e477` GGUF tokenizer-gate failure
+
+Do not rerun the completed teacher or seed-0 quality evaluations, and do not
+rebuild the verified llama.cpp installation. Update the checkout and establish
+a **new commit-named** result root. In the updated notebook, set
+`REUSE_FRESH_ROOT` to the old `733bb3d2e477/fresh` directory and keep
+`GGUF_INPUT_POLICY="frozen-hf"`.
+
+The `reuse` phase verifies the exact reviewed producer revision/source hash,
+unchanged runtime, frozen protocol, original preparation evidence, source
+reference tensor hashes, and all completed per-prompt HF/packed records. It
+preserves the old manifest fingerprint and records a new consumer/reuse receipt.
+Only `source_fp16`, `b5_v6_s0`, and `b5_v8_s0` are eligible; no failed or completed
+GGUF collection is imported. Original files are only read, not rewritten.
+References remain in the original folder, avoiding duplication of large arrays.
+Later reads verify the imported record digests and reference tensor digests;
+summary rows expose each producer identity. Compact downloads include the
+imported small evidence under `reused/` as well as the receipt. Keep both Drive
+folders: the original tensors are still required.
+
+Example phase commands (use the notebook variables for absolute paths):
+
+```python
+fresh("reuse", "reuse-completed", ["--reuse-root", str(PREVIOUS_FRESH_ROOT)])
+fresh("bridge", "gguf-bf16-bridge")
+fresh("unsloth", "unsloth-common-and-bf16")
+```
+
+Include `--gguf-input-policy frozen-hf` in `common`. Then continue with seeds
+1/2 and the summary cells. In a full notebook rerun, the source/seed-0 cells
+verify and reuse the adopted completions instead of running inference again.
+The consumer code is pinned too; changing it again requires a new reviewed
+recovery, not a bypass of manifest identity checks.
+
+Custom diagnostics must import PyTorch **before** llama.cpp. In the supplied
+Colab log, importing llama.cpp first exposed `libtorch_cuda.so: undefined symbol:
+ncclCommShrink`; the build linked system NCCL. PyTorch-first order successfully
+ran the tokenizer diagnostic. The production runner already uses that order.
+No package upgrade, engine rebuild or reference regeneration was required for
+that diagnostic. Full CUDA execution of the new bridge gate remains to be run
+on Colab; local tests cover the audit, guarded reuse and unchanged HF scoring.
 
 ## Local validation and next decision
 

@@ -6,6 +6,36 @@ learned, negative results, and the decision that followed. Results produced in
 external notebooks are recorded here even when their raw artifacts live on
 Google Drive.
 
+## 2026-09-08: four Hindi tokenizer mismatches; controlled bridge recovery
+
+The user-provided Colab build log shows llama-cpp-python 0.3.35 built in about
+29 minutes at the pinned Git revision, then passed its binary/provenance check.
+The BF16 bridge stopped before scoring: native GGUF tokenization differed from
+the frozen HF chat inputs. A vocabulary-only diagnostic reported exactly four
+of 96 mismatches, the Hindi addition tasks, at 44 HF versus 36 native tokens.
+The pinned HF pre-tokenizer separates Unicode marks; llama.cpp's `qwen35`
+pattern groups letters/marks. This is a tokenizer distinction, not a measured
+quality loss. The first diagnostic failed due to an NCCL import conflict;
+PyTorch-first order (already used by the runner) let it complete.
+
+Local reproduction changed only the pre-tokenizer regex in memory and recovered
+the same four length differences and first six differing native IDs; all 96
+original HF byte roundtrips passed. No saved tokenizer or evaluation input was
+modified in that reproduction.
+
+Decision: keep the full token-axis gate, add exact decoded-byte/roundtrip gates,
+and explicitly compare all arms on frozen HF IDs. Record native segmentation
+differences separately; retain strict native-equality mode as an option. Do not
+drop Hindi or relabel common-input fidelity as native serving parity. Both
+prediction and generation already pass token IDs directly to llama.cpp.
+
+The [recovery workflow](fresh_quality_run_2026-09-08.md#recover-the-733bb3d2e477-gguf-tokenizer-gate-failure)
+adopts only completed HF/seed-0 records from the exact reviewed 733bb3d source
+under a new consumer receipt/output root, with unchanged runtime/protocol,
+checksummed provenance and full source-reference verification. Original
+records/tensors are not modified or copied wholesale. No GGUF results are
+imported, and no new bridge/Unsloth quality result is claimed yet.
+
 ## 2026-09-08: fresh-source generation-config setup failure
 
 The user-provided `bdf65958e248` Colab traceback shows that frozen inputs were

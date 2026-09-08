@@ -68,6 +68,13 @@ SETTINGS = {
     "stop_policy": "source-config-plus-tokenizer-eos-v1",
     "task_scope": "96 authored unit diagnostics; not a real-world agent/coding benchmark",
 }
+# Only this reviewed implementation's completed HF/packed collections may be
+# reused across the tokenizer-gate change. Do not accept arbitrary old code.
+REUSABLE_SOURCE = {
+    "revision": "733bb3d2e47761e5b03fe35d1f6ee1e8b93cebb8",
+    "source_fingerprint": "5cdcfe2d92f3d1b1586b471f90883d60f7d3a9fe5e14d60cfa74ec80a7dfe4a9",
+}
+REUSABLE_LABELS = ("source_fp16", "b5_v6_s0", "b5_v8_s0")
 
 
 def progress(root, phase, **details):
@@ -168,8 +175,7 @@ def archived_data_manifests():
     return entries, fingerprint(files)
 
 
-def freeze(root, evidence):
-    separate(root, evidence)
+def freeze_context(evidence):
     previous, bindings = history(evidence)
     archived, archive_hash = archived_data_manifests()
     identity = {
@@ -184,9 +190,21 @@ def freeze(root, evidence):
         "runtime": fresh_runtime(),
         "authored_tasks_sha256": fingerprint(task_suite()),
     }
+    return previous, archived, identity
+
+
+def freeze(root, evidence):
+    separate(root, evidence)
+    previous, archived, identity = freeze_context(evidence)
     existing = read_record(root / "manifest.json")
     if existing is not None:
-        if existing["identity"] != identity:
+        reuse = reuse_receipt(root)
+        expected = dict(identity)
+        if reuse is not None:
+            expected["source"] = REUSABLE_SOURCE
+            if reuse["manifest"] != existing["fingerprint"]:
+                raise ValueError("reused manifest changed")
+        if existing["identity"] != expected:
             raise ValueError("frozen protocol changed; preserve this run and choose a fresh root")
         validate_manifest(existing)
         print("resume frozen inputs; no retokenization", flush=True)
@@ -367,6 +385,39 @@ class LlamaBackend:
         return output
 
 
+def audit_gguf_inputs(model, tokenizer, manifest, policy):
+    """Separate native segmentation parity from the frozen-ID scoring contract."""
+    if policy not in ("strict", "frozen-hf"):
+        raise ValueError("unknown GGUF input policy")
+    records, failures = [], []
+    for item in manifest["items"]:
+        if item["kind"] != "task":
+            continue
+        raw, ids = item["rendered"].encode("utf-8"), item["input_ids"]
+        native = model.tokenize(raw, add_bos=False, special=True)
+        checks = {
+            "hf_retokenization": tokenizer(item["rendered"], add_special_tokens=False).input_ids == ids,
+            "hf_roundtrip": tokenizer.decode(ids, skip_special_tokens=False,
+                                             clean_up_tokenization_spaces=False).encode("utf-8") == raw,
+            "gguf_frozen_roundtrip": model.detokenize(ids, special=True) == raw,
+            "gguf_native_roundtrip": model.detokenize(native, special=True) == raw,
+        }
+        same = native == ids
+        if not all(checks.values()) or (policy == "strict" and not same):
+            failures.append(item["id"])
+        records.append({"id": item["id"], "input_hash": item["input_hash"],
+                        "native_input_hash": _input_hash(np.array(native)),
+                        "native_tokenization_equal": same, "checks": checks,
+                        "frozen_ids": ids, "native_ids": native})
+    return {
+        "protocol": "qwen35-gguf-input-audit-v1", "policy": policy,
+        "manifest": manifest["fingerprint"], "prompts": len(records),
+        "native_mismatches": [r["id"] for r in records if not r["native_tokenization_equal"]],
+        "failed_prompts": failures, "passed": not failures, "records": records,
+        "boundary": "Scoring/generation consume frozen HF IDs directly, after full output-axis validation. Native text-tokenizer equivalence is measured separately, not asserted.",
+    }
+
+
 def stop_ids_for_source(tokenizer=None):
     """Resolve pinned generation defaults and the tokenizer's chat terminator.
 
@@ -431,8 +482,117 @@ def llama_build_identity():
     }
 
 
+def reuse_receipt(root):
+    receipt = read_record(root / "reuse.json")
+    if receipt is not None:
+        if receipt["consumer_source"] != source_identity():
+            raise ValueError("reuse consumer code changed; use a fresh output root")
+        if receipt["producer_source"] != REUSABLE_SOURCE:
+            raise ValueError("unreviewed reusable producer")
+        if not set(receipt["labels"]) <= set(REUSABLE_LABELS):
+            raise ValueError("only reviewed HF/packed collections can be reused")
+        separate(root, receipt["root"])
+    return receipt
+
+
+def collection_path(root, label, name):
+    receipt = reuse_receipt(root)
+    relative = f"runs/{label}/{name}"
+    if receipt is not None and label in receipt["labels"]:
+        path = Path(receipt["root"]) / relative
+        if not path.is_file() or file_digest(path) != receipt["files"].get(relative):
+            raise ValueError(f"reused record changed or missing: {relative}")
+        return path
+    return root / relative
+
+
 def paths_for(root, label, item):
-    return root / "runs" / label / (item["id"] + ".json")
+    return collection_path(root, label, item["id"] + ".json")
+
+
+def reuse_completed(root, evidence, previous, labels, device):
+    """Adopt frozen inputs and read-only completed collections, never old GGUF attempts."""
+    root, previous = Path(root).resolve(), Path(previous).resolve()
+    separate(root, previous)
+    separate(root, evidence)
+    if not labels or len(set(labels)) != len(labels) or not set(labels) <= set(REUSABLE_LABELS):
+        raise ValueError("reuse requires unique reviewed HF/packed labels")
+    if "source_fp16" not in labels:
+        raise ValueError("reuse requires the completed common source")
+    if read_record(previous / "reuse.json") is not None:
+        raise ValueError("chained reuse is not allowed")
+    manifest = read_record(previous / "manifest.json")
+    if manifest is None:
+        raise ValueError("missing previous frozen manifest")
+    validate_manifest(manifest)
+    _, _, expected = freeze_context(evidence)
+    expected["source"] = REUSABLE_SOURCE
+    if manifest["identity"] != expected:
+        raise ValueError("reuse requires reviewed source, unchanged runtime, inputs and evidence")
+    receipt = {
+        "protocol": "qwen35-reviewed-fresh-reuse-v1", "root": str(previous),
+        "producer_source": REUSABLE_SOURCE, "consumer_source": source_identity(),
+        "manifest": manifest["fingerprint"], "labels": list(labels), "files": {},
+        "boundary": "Original per-prompt results retain their producer identities; no GGUF results or aggregates are imported. Reference tensors remain in the original folder and are hash-checked on consumption.",
+    }
+    stops = stop_ids_for_source()
+    for label in labels:
+        directory = previous / "runs" / label
+        identity = read_record(directory / "identity.json")
+        marker = read_record(directory / "complete.json")
+        required = {"manifest": manifest["fingerprint"], "source": REUSABLE_SOURCE,
+                    "runtime": expected["runtime"], "stop_ids": stops,
+                    "device": device, "label": label}
+        if identity is None or any(identity.get(k) != v for k, v in required.items()):
+            raise ValueError(f"reused collection identity mismatch: {label}")
+        if (marker is None or marker.get("complete") is not True or
+                marker.get("identity") != identity or marker.get("manifest") != manifest["fingerprint"]):
+            raise ValueError(f"only completed collections can be reused: {label}")
+        if label.startswith("b5_"):
+            arm = label.rsplit("_s", 1)[0]
+            prepared = read_record(Path(evidence) / label / "prepared.json")
+            parity = read_record(directory / "reload_probe_report.json")
+            if (prepared is None or recipe_signature(prepared["identity"]) != manifest["recipes"][arm]
+                    or identity.get("prepared_sha256") != file_digest(Path(evidence) / label / "prepared.json")
+                    or identity.get("manifest_sha256") != prepared["export"]["manifest_sha256"]
+                    or parity is None or parity.get("identity") != identity
+                    or not parity.get("parity", {}).get("passed")):
+                raise ValueError(f"reused packed provenance/parity mismatch: {label}")
+        for name in ("identity.json", "complete.json", "reload_probe_report.json"):
+            if (directory / name).exists():
+                read_record(directory / name)
+                receipt["files"][f"runs/{label}/{name}"] = file_digest(directory / name)
+        for index, item in enumerate(manifest["items"], 1):
+            path = directory / (item["id"] + ".json")
+            value = read_record(path)
+            if value is None or any(value.get(k) != v for k, v in {
+                "id": item["id"], "input_hash": item["input_hash"],
+                "manifest": manifest["fingerprint"], "collection": fingerprint(identity),
+            }.items()):
+                raise ValueError(f"incomplete/mismatched reused prompt: {path}")
+            if label == "source_fp16":
+                # Hash once during adoption; shape/finite checks run on consumption.
+                # Avoid a second large Drive read just to materialize each array here.
+                record, tensor_path = reference_record(previous, label, item, manifest)
+                if file_digest(tensor_path) != record["reference_sha256"]:
+                    raise ValueError(f"corrupt reused reference tensor: {tensor_path}")
+            receipt["files"][f"runs/{label}/{item['id']}.json"] = file_digest(path)
+            if index == 1 or index % 8 == 0 or index == len(manifest["items"]):
+                progress(root, "verify_reused_prompts", label=label, completed=index,
+                         total=len(manifest["items"]))
+    old = read_record(root / "reuse.json")
+    existing_manifest = read_record(root / "manifest.json")
+    if old is not None and old != receipt:
+        raise ValueError("reuse receipt changed; preserve output and choose a fresh root")
+    if existing_manifest is not None and existing_manifest != manifest:
+        raise ValueError("destination has different frozen inputs")
+    if (root / "runs").exists() and old is None:
+        raise ValueError("cannot introduce reuse into an existing collection run")
+    # These two records can be safely completed after an interrupted publication.
+    save_record(root / "reuse.json", receipt)
+    save_record(root / "manifest.json", manifest)
+    print("Reused completed collections without copying reference tensors:", labels, flush=True)
+    return manifest
 
 
 def reference_record(root, label, item, manifest):
@@ -541,7 +701,8 @@ def score_one(backend, item, manifest, root, label):
 
 
 def run_collection(
-    root, manifest, label, *, artifact_root=None, seed=0, gguf_dir=None, device="cuda"
+    root, manifest, label, *, artifact_root=None, seed=0, gguf_dir=None, device="cuda",
+    gguf_input_policy="strict",
 ):
     tokenizer = load_tokenizer()
     if tokenizer_identity(tokenizer, manifest["tokenizer"]["size"]) != manifest["tokenizer"]:
@@ -584,11 +745,26 @@ def run_collection(
             manifest_sha256=prepared["export"]["manifest_sha256"],
         )
     elif label in ("gguf_bf16_bridge", "unsloth_ud_q4"):
+        base_identity["gguf_input_policy"] = gguf_input_policy
         base_identity["llama_build"] = llama_build_identity()
         base_identity["gguf_revision"] = GGUF_REVISION
         descriptor = BF16 if label == "gguf_bf16_bridge" else UD_Q4
         base_identity["gguf"] = descriptor.__dict__
     base_identity = json.loads(json.dumps(base_identity))
+    reuse = reuse_receipt(root)
+    if reuse is not None and label in reuse["labels"]:
+        original = read_record(collection_path(root, label, "identity.json"))
+        if {**original, "source": base_identity["source"]} != base_identity:
+            raise ValueError("reused collection parameters changed")
+        marker = read_record(collection_path(root, label, "complete.json"))
+        if not marker.get("complete") or marker["identity"] != original:
+            raise ValueError("reused completion mismatch")
+        for item in manifest["items"]:
+            read_record(paths_for(root, label, item))
+            if label == "source_fp16":
+                load_reference(root, label, item, manifest)
+        print(f"reuse {label}: verified completed original; no inference rerun", flush=True)
+        return
     run_dir = root / "runs" / label
     run_dir.mkdir(parents=True, exist_ok=True)
     old = read_record(run_dir / "identity.json")
@@ -654,15 +830,17 @@ def run_collection(
         model = _llama(
             path, SETTINGS["max_prompt_tokens"] + SETTINGS["max_new_tokens"], verbose=False
         )
-        backend = LlamaBackend(model, tokenizer, stops, manifest["tokenizer"]["size"])
-        # Render once with HF and require the GGUF tokenizer to reproduce all chat inputs.
-        for item in manifest["items"]:
-            if (
-                item["kind"] == "task"
-                and model.tokenize(item["rendered"].encode(), add_bos=False, special=True)
-                != item["input_ids"]
-            ):
-                raise ValueError("HF/GGUF rendered prompt tokenization differs")
+        try:
+            backend = LlamaBackend(model, tokenizer, stops, manifest["tokenizer"]["size"])
+            audit = audit_gguf_inputs(model, tokenizer, manifest, gguf_input_policy)
+            save_record(run_dir / "tokenizer_audit.json", {"identity": base_identity, **audit})
+            progress(root, "tokenizer_audit", label=label, policy=gguf_input_policy,
+                     native_mismatches=audit["native_mismatches"], passed=audit["passed"])
+            if not audit["passed"]:
+                raise ValueError("HF/GGUF input audit failed; inspect tokenizer_audit.json")
+        except BaseException:
+            model.close()
+            raise
     try:
         for index, item in enumerate(pending, 1):
             started = time.monotonic()
@@ -732,15 +910,23 @@ def summarize(root, manifest, expected_labels):
         or not set(expected_labels) <= allowed
     ):
         raise ValueError("expected labels must be unique registered run names")
-    rows, complete, missing = [], {}, []
+    rows, complete, missing, tokenizer_audits = [], {}, [], {}
     for label in expected_labels:
-        marker = read_record(root / "runs" / label / "complete.json")
+        marker = read_record(collection_path(root, label, "complete.json"))
         values = [read_record(paths_for(root, label, item)) for item in manifest["items"]]
         if marker is None or not marker.get("complete") or any(value is None for value in values):
             missing.append(label)
             continue
         if marker["manifest"] != manifest["fingerprint"]:
             raise ValueError("summary manifest mismatch")
+        if label in ("gguf_bf16_bridge", "unsloth_ud_q4"):
+            audit = read_record(root / "runs" / label / "tokenizer_audit.json")
+            if (audit is None or audit.get("identity") != marker["identity"] or not audit.get("passed")
+                    or audit.get("manifest") != manifest["fingerprint"]
+                    or audit.get("policy") != marker["identity"].get("gguf_input_policy")):
+                raise ValueError("summary requires the matching passed GGUF input audit")
+            tokenizer_audits[label] = {key: audit[key] for key in (
+                "policy", "prompts", "native_mismatches", "passed", "boundary")}
         for item, value in zip(manifest["items"], values):
             if (value["id"], value["input_hash"], value["manifest"], value["collection"]) != (
                 item["id"],
@@ -761,6 +947,8 @@ def summarize(root, manifest, expected_labels):
                 "mean_teacher_kl": sum(v["tokens"] * v["mean_teacher_kl"] for v in subset) / tokens,
                 "top1_agreement": sum(v["tokens"] * v["top1_agreement"] for v in subset) / tokens,
                 "artifact_bytes": (marker.get("ledger") or {}).get("measured_artifact_bytes"),
+                "producer_source": marker["identity"].get("source"),
+                "gguf_input_policy": marker["identity"].get("gguf_input_policy"),
             }
             if domain != "c4":
                 for key in (
@@ -816,9 +1004,11 @@ def summarize(root, manifest, expected_labels):
         "missing": missing,
         "rows": rows,
         "paired_contrasts": contrasts,
+        "tokenizer_audits": tokenizer_audits,
+        "reuse": reuse_receipt(root),
         "provider_competitive": False,
         "independent_confirmation": False,
-        "interpretation": "Fresh C4 plus authored diagnostic families. Cross-engine/common-FP16 scores include engine and precision differences; inspect the BF16 bridge. Seeds replicate rotation/quantization on the fixed calibration selection, not independent calibration corpora. No automatic promotion.",
+        "interpretation": "Fresh C4 plus authored diagnostic families on frozen HF token IDs, not native tokenizer/end-to-end serving parity. Cross-engine/common-FP16 scores include engine and precision differences; inspect the BF16 bridge and tokenizer audits. Seeds replicate rotation/quantization on the fixed calibration selection, not independent calibration corpora. No automatic promotion.",
     }
     save_record(root / "summary.json", result)
     return result
@@ -835,10 +1025,13 @@ def main():
     )
     parser.add_argument(
         "--phase",
-        choices=("freeze", "source", "packed", "bridge", "unsloth", "summary"),
+        choices=("freeze", "reuse", "source", "packed", "bridge", "unsloth", "summary"),
         required=True,
     )
     parser.add_argument("--artifact-root", type=Path)
+    parser.add_argument("--reuse-root", type=Path)
+    parser.add_argument("--reuse-label", action="append", choices=REUSABLE_LABELS)
+    parser.add_argument("--gguf-input-policy", choices=("strict", "frozen-hf"), default="strict")
     parser.add_argument("--arm", choices=("b5_v6", "b5_v8"), default="b5_v6")
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument("--gguf-dir", type=Path, default=Path("/content/unsloth-qwen35-4b-gguf"))
@@ -847,6 +1040,10 @@ def main():
     parser.add_argument("--expect", action="append", default=[])
     parser.add_argument("--dry-run", action="store_true")
     args = parser.parse_args()
+    if args.phase == "reuse" and args.reuse_root is None:
+        parser.error("reuse requires --reuse-root; old results are never modified")
+    if args.phase != "reuse" and (args.reuse_root or args.reuse_label):
+        parser.error("--reuse-root/--reuse-label apply only to the reuse phase")
     if args.seed not in (0, 1, 2) or args.heartbeat_seconds <= 0:
         parser.error("seeds are 0/1/2 and heartbeat must be positive")
     if args.dry_run:
@@ -855,7 +1052,8 @@ def main():
                 {
                     "protocol": PROTOCOL,
                     "settings": SETTINGS,
-                    "phases": ["freeze", "source", "packed", "bridge", "unsloth", "summary"],
+                    "phases": ["freeze", "reuse", "source", "packed", "bridge", "unsloth", "summary"],
+                    "gguf_input_policy": args.gguf_input_policy,
                     "existing_seed0_quantizations": 0,
                     "replication_backbones": 2,
                     "historical_aggregate_reuse": False,
@@ -880,6 +1078,11 @@ def main():
         writer_lock(root / ".runner.lock"),
         _Heartbeat(f"fresh/{args.phase}", seconds=args.heartbeat_seconds),
     ):
+        if args.phase == "reuse":
+            reuse_completed(root, args.evidence_root, args.reuse_root,
+                            args.reuse_label or list(REUSABLE_LABELS), args.device)
+            progress(root, "reuse_complete", original_root=str(args.reuse_root))
+            return
         if args.phase == "freeze":
             # Fail before artifact scans/C4 selection, not at the first model load.
             stop_ids_for_source()
@@ -914,6 +1117,7 @@ def main():
                 seed=args.seed,
                 gguf_dir=args.gguf_dir,
                 device=args.device,
+                gguf_input_policy=args.gguf_input_policy,
             )
 
 
