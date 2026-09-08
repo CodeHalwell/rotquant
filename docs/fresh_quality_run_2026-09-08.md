@@ -222,6 +222,52 @@ No package upgrade, engine rebuild or reference regeneration was required for
 that diagnostic. Full CUDA execution of the new bridge gate remains to be run
 on Colab; local tests cover the audit, guarded reuse and unchanged HF scoring.
 
+## Operational notes from the 2026-09-08 review
+
+These change no protocol, threshold, input or reviewed scoring code. They
+record how the run can fail for reasons that are not quantization results.
+
+- **Merge first, then pin.** `source_identity()` binds the reuse receipt and
+  every phase's manifest to the exact HEAD and to the hash of all `.py` files
+  under `rotquant/` and `scripts/`. Any commit to `main` between sessions
+  forces a fresh output root. Publish everything before the session starts
+  and keep `REPO_REF` at the printed SHA until the summary exists.
+- **The archive is part of the frozen protocol.** `historical_archive_sha256`
+  hashes every JSON under `research/results/raw`. Committing the tokenizer
+  audit, a compact bundle or any other raw record before the run's summary
+  exists makes every remaining phase, and reuse, refuse with "frozen protocol
+  changed". Archive after the summary, in one commit.
+- **Reuse binds the runtime, not just the code.** The manifest identity
+  includes the torch/CUDA/Python versions and the exact GPU name recorded by
+  the `733bb3d` session (`torch 2.11.0+cu128`, Python 3.13, A100-SXM4-40GB).
+  A different Colab SKU or a torch bump makes `reuse` refuse. That is the
+  intended fail-closed behaviour; the only fallback is to rerun `source` and
+  the seed-0 `packed` arms in a fresh root. Check the runtime against the old
+  `manifest.json` before building anything, and budget for the fallback.
+- **The llama.cpp CUDA build timeout is now 3600 s.** The recorded build took
+  about 29 minutes against a 1800 s limit; a slower VM would have been killed
+  and restarted from zero. The library hash enters only GGUF identities, which
+  are never reused.
+- **Read the tool-selection column with a caveat.** The `condition` family's
+  positive branch is unreachable (`a = 13 + 7 i` never exceeds 50), so its six
+  variants share the `none` answer with the `missing` family. A "none"-biased
+  student scores half of tool selection for free. The task hash is frozen in
+  the manifest, so correcting the family invalidates reuse; fix it after this
+  run and say so in the results.
+- **Task-domain intervals are descriptive.** Each task domain has four
+  families (one for multilingual arithmetic), so the family bootstrap has at
+  most 35 distinct resamples and its coverage is far below nominal. Report
+  those `ci95` fields as descriptive ranges, not as evidence. The C4 domain
+  (24 families) is fine.
+- **Summary rows now carry token-weighted `source_nll`, `candidate_nll` and
+  `nll_delta`**, as the measurement list above promises; earlier per-prompt
+  records already contained the per-prompt values.
+- **Seed-1/2 recipe identity is checked only after preparation.** The
+  `packed` phase compares the new `prepared.json` recipe with the frozen
+  seed-0 recipe after the multi-hour Hessian/GPTQ/export work. The current
+  `configs/qwen35_4b_packed_validation_cuda.yaml` matches the archived seed-0
+  identity; do not edit it before the replication seeds finish.
+
 ## Local validation and next decision
 
 Offline tests cover strict oracles, clustered pairing, full-logit alignment,

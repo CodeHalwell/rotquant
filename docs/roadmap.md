@@ -8,6 +8,14 @@ postponed cleanup.
 
 ## Stage 2: canonical GPU serving
 
+September 8 review: the [project deep dive](project_deep_dive_2026-09-08.md)
+audits the evidence behind every item below, lists the defects found in the
+library, allocator, KV simulator, native runtime, CI and documentation, and
+orders the next steps: run the prepared fresh-quality experiment, make its
+result meaningful outside the repository, then build one runtime path for the
+winning recipe (native/GGUF/llama.cpp first) before any CUDA kernel or vLLM
+work. It also records that CI on `main` was red at the published revision.
+
 September 8 update: **both seed-0 artifacts passed packed revalidation** using
 loader `89d25f3` in the supplied CUDA records. The archived evidence retains the
 old failure. Next is [fresh quality and recipe replication](fresh_quality_run_2026-09-08.md):

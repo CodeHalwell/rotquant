@@ -131,18 +131,25 @@ completed with W5/W6 and W5/W8 finalists: primary KL fell 71.3% and 75.5%
 against W4/FP16 vocabulary. Those results use dense reconstruction and
 **projected**, not exported, bytes. They cannot establish a provider win.
 
-The next run is the
-[packed-vocabulary validation Colab](notebooks/qwen35_4b_packed_validation_colab.ipynb).
-It exports both W5 finalists, verifies shared packed ownership and measured
-file sizes, and evaluates fresh-process reloads without dense fallback caches.
-Start with the [runbook](docs/packed_vocabulary_validation_run.md). The first CUDA
-run exported both artifacts but stopped on W5/W6 reload numerical parity before
-full packed-quality evaluation. The repaired loader preserves FP32 rotary buffers;
-the [checkpoint-only recovery Colab](notebooks/qwen35_4b_packed_revalidation_colab.ipynb)
-reuses those exports without quantization and preserves the old failure evidence.
-CPU regressions and tiny Qwen subprocess checks are available; full pretrained
-CUDA artifact acceptance is still pending. This is a tiled reference runtime,
-not a fused-kernel speed claim.
+The [packed-vocabulary validation Colab](notebooks/qwen35_4b_packed_validation_colab.ipynb)
+then exported both W5 finalists as real checkpoint-v3 artifacts (3.44 GB and
+3.60 GB, measured). A first CUDA run failed the W5/W6 fresh-process reload gate;
+the loader was repaired to keep the framework's FP32 rotary buffers, and the
+[checkpoint-only revalidation](notebooks/qwen35_4b_packed_revalidation_colab.ipynb)
+of the saved artifacts then passed with zero probe error for both recipes
+(see the [runbook](docs/packed_vocabulary_validation_run.md)). Those quality
+numbers are still seed 0 on development prompts, scored against a Transformers
+FP16 teacher, and the artifacts run only on a tiled Python reference path.
+
+**The next run** is the
+[fresh quality and recipe replication Colab](notebooks/qwen35_4b_fresh_quality_colab.ipynb):
+calibration-disjoint C4 and authored task inputs, one common FP16 teacher for
+every arm, a BF16-GGUF engine bridge, the pinned Unsloth artifact on the same
+frozen inputs, and seeds 1/2. Start with its
+[runbook](docs/fresh_quality_run_2026-09-08.md). The
+[project deep dive of 8 September](docs/project_deep_dive_2026-09-08.md) records
+the state of the evidence, the defects found in review, and the ordered next
+steps that follow that run.
 
 ## Install
 
@@ -167,10 +174,13 @@ Run commands inside the managed venv with `uv run <cmd>`, or activate it first:
 source .venv/bin/activate
 ```
 
-> **GPU / CUDA PyTorch:** `uv sync` installs the default (CPU) torch wheel. For a
-> CUDA-enabled build, follow the [PyTorch install selector](https://pytorch.org/get-started/locally/)
+> **Torch wheel:** `uv sync` installs whatever `uv.lock` pins from PyPI. On
+> Linux that is currently the CUDA build (`torch 2.12.0+cu130`, roughly 5 GB
+> with its NVIDIA libraries), which runs on CPU when no GPU is present; on
+> macOS it is the CPU/MPS build. For a smaller CPU-only Linux environment, or a
+> different CUDA version, follow the [PyTorch install selector](https://pytorch.org/get-started/locally/)
 > and either use `uv pip install` with the appropriate `--extra-index-url`, or add a
-> `[tool.uv.sources]` override in `pyproject.toml` pointing at the CUDA wheel index.
+> `[tool.uv.sources]` override in `pyproject.toml` pointing at the wheel index.
 
 The **core foundation + correctness tests run on CPU with just `torch`, `numpy`,
 `scipy`** — no GPU, model download, or CUDA kernel needed.
@@ -284,8 +294,8 @@ pytest tests/ -q
 ```
 
 CI runs the full suite (including the cross-language native conformance
-tests) on Python 3.10/3.11/3.12 plus ruff lint on every push and pull
-request; the native workflow additionally builds with ASan/UBSan and checks
+tests) on Python 3.10/3.11/3.12/3.13 plus ruff lint on every push to `main`
+and every pull request; the native workflow additionally builds with ASan/UBSan and checks
 that the pinned llama.cpp patch still applies.
 
 * `test_rotation_invariance` — rotating the activation then matmul equals

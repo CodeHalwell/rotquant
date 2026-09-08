@@ -9,6 +9,32 @@ software.
 
 ## [Unreleased]
 
+### Project deep dive (2026-09-08)
+
+- Python CI on `main` had failed on every Python version since `a4ac776`: the
+  reuse-compatibility test diffs the checkout against the reviewed producer
+  revision, which a shallow `actions/checkout` clone cannot resolve. The tests
+  job now fetches full history and sets `ROTQUANT_REQUIRE_GIT_HISTORY` so the
+  guard fails rather than skips; a shallow developer clone skips with
+  instructions.
+- `scripts/build_qwen35_fresh_eval_notebook.py` gains the repository-root
+  bootstrap the other builders have, so it runs as a script from any working
+  directory; the generated notebook is unchanged.
+- Fresh-quality summary rows carry token-weighted `source_nll`,
+  `candidate_nll` and `nll_delta`; the Colab llama.cpp CUDA build timeout is
+  3600 s (the recorded build took about 29 minutes against 1800 s).
+- Native C ABI: out-of-range `rq_native_v2_kernel`/`rq_native_v2_status`
+  integers from a foreign caller were undefined behaviour at the parameter
+  load (UBSan-reported); a sentinel enumerator makes every int32 a defined,
+  rejected value.
+- README: CI runs Python 3.10–3.13; on Linux `uv sync` installs the locked
+  CUDA torch build, not a CPU wheel; the next-run pointer now names the
+  fresh-quality Colab. The fresh-quality runbook records the operational
+  hazards found in review (runtime-bound reuse, the archive as part of the
+  frozen protocol, the degenerate `condition` task family, descriptive
+  task-domain intervals). `docs/project_deep_dive_2026-09-08.md` records the
+  full review, including the library defects queued behind the reuse freeze.
+
 ### Packed reload precision and checkpoint-only recovery (2026-09-07)
 
 - Preserve framework-reconstructed floating nonpersistent buffers at their
