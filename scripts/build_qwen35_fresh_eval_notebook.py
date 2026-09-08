@@ -1,14 +1,19 @@
 #!/usr/bin/env python3
 """Build the next Colab experiment with separate quality and replication phases."""
 
+import sys
 from pathlib import Path
 
 import nbformat
 
+ROOT = Path(__file__).resolve().parents[1]
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
+
 from scripts.build_qwen35_packed_validation_notebook import build_notebook as packed_notebook
 from scripts.build_qwen35_packed_validation_notebook import code, md
 
-OUTPUT = Path("notebooks/qwen35_4b_fresh_quality_colab.ipynb")
+OUTPUT = ROOT / "notebooks" / "qwen35_4b_fresh_quality_colab.ipynb"
 
 
 def build_notebook():
