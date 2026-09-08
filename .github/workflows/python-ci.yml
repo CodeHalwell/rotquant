@@ -35,6 +35,11 @@ jobs:
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
+        with:
+          # tests/test_fresh_quality_reuse.py diffs the checkout against the
+          # reviewed producer revision with `git show`/`git diff`; a shallow
+          # clone cannot resolve that commit and the guard would not run.
+          fetch-depth: 0
       - uses: astral-sh/setup-uv@v5
         with:
           python-version: ${{ matrix.python-version }}
@@ -50,4 +55,7 @@ jobs:
       - name: Ensure native suite cannot silently skip
         run: cmake --version
       - name: Pytest
+        env:
+          # History-dependent guards must run here, never skip.
+          ROTQUANT_REQUIRE_GIT_HISTORY: "1"
         run: uv run --no-sync pytest tests/ -q --cov=rotquant --cov-report=term
