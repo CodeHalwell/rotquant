@@ -227,5 +227,44 @@ def test_reuse_compatibility_keeps_reviewed_hf_scoring_and_core_code_unchanged()
         assert functions(old)[name] == functions(new)[name], f"re-review reuse compatibility: {name}"
     code = subprocess.check_output(["git", "diff", revision, "--", "rotquant",
                                     "scripts/run_experiment.py", "scripts/run_unsloth_qwen35_4b_kl.py",
-                                    "scripts/run_qwen35_packed_validation.py"], cwd=runner.ROOT, text=True)
+                                    "scripts/run_qwen35_packed_validation.py",
+                                    # Audited 2026-09-09: these exporters and the
+                                    # isolated matrix ABI are not executed by the
+                                    # frozen HF/packed scoring path. Package-root
+                                    # imports expose native.py, but scoring does
+                                    # not invoke its functions. Core execution,
+                                    # imports, checkpoint and scorer remain frozen.
+                                    ":(exclude)rotquant/native.py",
+                                    ":(exclude)rotquant/gguf.py",
+                                    ":(exclude)rotquant/native_v3.py",
+                                    ":(exclude)rotquant/native_v3_ffi.py"],
+                                   cwd=runner.ROOT, text=True)
     assert not code, "re-review compatibility when model execution/scoring code changes"
+    # Do not turn the two existing-module exclusions into a blanket future
+    # exemption. Their only reviewed changes are these fail-closed guards and
+    # native.py's torch import. New matrix modules remain unreferenced by the
+    # frozen model/scorer/import graph, which the diff above still protects.
+    for filename, function, message in (
+        ("native.py", "encode_quantized_weight",
+         ("native v2 requires stored 16-bit scales; use native v3 to preserve "
+          "8-bit scale codes/offsets/steps without rounding")),
+        ("gguf.py", "_validate_qweight",
+         ("native GGUF v1 requires stored 16-bit scales; compressed scales "
+          "need a new GGUF/operator contract, not a lossy conversion")),
+    ):
+        path = f"rotquant/{filename}"
+        previous = ast.parse(subprocess.check_output(["git", "show", f"{revision}:{path}"],
+                                                     cwd=runner.ROOT, text=True))
+        current = ast.parse((runner.ROOT / path).read_text())
+        approved_guard = ast.parse(
+            "if qweight.scale_bits_main != 16 or qweight.scales.dtype != torch.float16:\n"
+            f"    raise ValueError({message!r})").body[0]
+        target = next(node for node in current.body if isinstance(node, ast.FunctionDef)
+                      and node.name == function)
+        matches = [node for node in target.body if ast.dump(node) == ast.dump(approved_guard)]
+        assert len(matches) == 1, f"re-review exporter guard: {path}"
+        target.body.remove(matches[0])
+        if filename == "native.py":
+            approved_import = ast.parse("import torch").body[0]
+            current.body = [node for node in current.body if ast.dump(node) != ast.dump(approved_import)]
+        assert ast.dump(current) == ast.dump(previous), f"re-review exporter module: {path}"

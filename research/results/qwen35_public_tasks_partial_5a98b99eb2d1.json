@@ -1,0 +1,44 @@
+{
+  "record_kind": "partial_log_observation",
+  "status": "stopped_incomplete",
+  "date": "2026-09-09",
+  "code_revision": "5a98b99eb2d178c2da9705a5cd8afcb1f0f3e026",
+  "evidence": {
+    "source": "user-supplied console log",
+    "attachment": "34a3046c-5239-4024-910b-02cbd197a670/pasted-text.txt",
+    "sha256": "94e764a311a771ffeedf10bfb202f0716b42ffbb21c75d5921becc49477e2e57",
+    "method": "Parse prompt_complete JSON lines; deduplicate by (label, prompt); sum recorded seconds, tokens and outcomes. Pair by exact prompt ID.",
+    "complete_result_bundle_imported": false,
+    "drive_inspected": false
+  },
+  "planned_prompts_per_arm": 384,
+  "source_fp16": {
+    "completed": 384,
+    "generated_tokens": 100281,
+    "generation_and_scoring_seconds": 6522.513437992995,
+    "benchmarks": {
+      "gsm8k": {"completed": 128, "successes": 115, "truncated": 5},
+      "cruxeval_o": {"completed": 128, "successes": 42, "truncated": 10},
+      "ifeval": {"completed": 128, "successes": 101, "truncated": 4}
+    }
+  },
+  "b5_v6_s0": {
+    "completed": 30,
+    "benchmark": "gsm8k",
+    "successes": 27,
+    "truncated": 1,
+    "generated_tokens": 9417,
+    "generation_and_scoring_seconds": 11123.391286134993,
+    "matched_source_generated_tokens": 10320,
+    "matched_source_generation_and_scoring_seconds": 668.889824675,
+    "paired_success_outcome_flips": 0
+  },
+  "promotion": false,
+  "decision": "Preserve partial evidence; implement native model execution and speed/memory/cost preflight before another paid sweep. New backend requires new runtime-bound receipts.",
+  "limitations": [
+    "Partial log observations, not a complete comparative benchmark or official leaderboard score",
+    "No completed provider comparison or six-artifact replication in the supplied log",
+    "Generation-plus-scoring timing is not a controlled native kernel benchmark",
+    "Matching 30 pass/fail outcomes does not establish model equivalence"
+  ]
+}

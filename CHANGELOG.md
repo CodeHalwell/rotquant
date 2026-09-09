@@ -9,6 +9,23 @@ software.
 
 ## [Unreleased]
 
+### Native serving preparation (2026-09-09)
+
+- Fix L5: native-v2/GGUF-v1 exporters reject non-FP16 scale storage; they no
+  longer silently change scale8/32 weights by casting scales to FP16.
+- Add the independent native-v3 matrix wire format: original int32 code words,
+  exact affine uint8 scale codes/FP16 metadata or FP16 scales, FP32 scalar table,
+  strict version/shape/finite-value/tail validation. Existing formats unchanged.
+- Add the C++ scalar CPU decoder/streaming matmul, versioned C ABI and prepared
+  Python binding with one retained compact buffer, plus cross-language tests
+  and a native CTest suite. No full-model GGUF/Metal/CUDA support is claimed.
+- Add `scripts/check_native_v3.py`: bounded local progress/reporting and an
+  explicit blocked model-readiness result. Document CPU/model/accelerator parity
+  and speed/memory/cost gates before restarting a paid sweep.
+- Narrow the historical reuse audit only for reviewed exporter/matrix modules;
+  retain checkpoint, quantizer, model/scorer and receipt identity protections.
+  Existing notebooks, artifacts and archived results are not rewritten.
+
 ### Project review (2026-09-09)
 
 - `docs/project_review_2026-09-09.md` records the state of the evidence after

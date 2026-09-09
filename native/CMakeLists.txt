@@ -27,7 +27,14 @@ endfunction()
 add_library(rotquant_native
     src/native_v2.cpp
     src/native_v2_c.cpp
+    src/native_v3.cpp
 )
+# Native-v3 affine scales use separate binary32 multiply/add, not FMA.
+if(MSVC)
+    set_source_files_properties(src/native_v3.cpp PROPERTIES COMPILE_OPTIONS "/fp:strict")
+else()
+    set_source_files_properties(src/native_v3.cpp PROPERTIES COMPILE_OPTIONS "-ffp-contract=off")
+endif()
 add_library(RotQuant::native ALIAS rotquant_native)
 set_target_properties(rotquant_native PROPERTIES EXPORT_NAME native)
 target_include_directories(rotquant_native PUBLIC
@@ -89,6 +96,10 @@ if(ROTQUANT_NATIVE_BUILD_TOOLS)
     rotquant_native_enable_warnings(rotquant-native-c-conformance)
 
     enable_testing()
+    add_executable(rotquant-native-v3-conformance tests/v3_conformance.cpp)
+    target_link_libraries(rotquant-native-v3-conformance PRIVATE RotQuant::native)
+    rotquant_native_enable_warnings(rotquant-native-v3-conformance)
+    add_test(NAME rotquant-native-v3-conformance COMMAND rotquant-native-v3-conformance)
     add_test(NAME rotquant-native-conformance COMMAND rotquant-native-conformance)
     add_test(
         NAME rotquant-native-c-conformance

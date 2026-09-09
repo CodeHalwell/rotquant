@@ -14,21 +14,24 @@ All six packed reload gates passed; both W5 recipes beat the pinned provider on
 fresh C4 KL, but the authored task suite does not justify an overall task win.
 W5/W6 remains the under-budget candidate; W5/W8 the fidelity alternative.
 
-Immediate next milestone: run the new [public-task release gate](public_tasks_run_2026-09-09.md)
-on saved checkpoints, with frozen public math/code-understanding/instruction
-inputs and the same provider/bridge controls. No new allocator/recovery sweep,
-re-quantization or promotion based on a lucky seed. Following that evidence,
-implement and profile one native/GGUF/llama.cpp serving path for the retained
-recipe. Broader models, genuine agent/code-execution benchmarks, and GPU kernel
-work remain subsequent gates. This entry supersedes the pending experiment
-status in the historical September 7/8 entries below.
+Latest decision: the user stopped the [public-task run](public_tasks_run_2026-09-09.md)
+after the first W5/W6 arm proved too slow on the Python reference path.
+**Native serving preparation now precedes another paid sweep.** The
+[native-v3 contract and implementation sequence](native_runtime_v3.md) are the
+current next steps. Exact 1–8-bit matrix storage with scale8/16 and compiled scalar
+CPU conformance are implemented; full-model W5/W6/W8 GGUF, Metal and CUDA are not.
+The legacy lossy scale export is rejected. Next: exact graph/vocabulary operators,
+CPU model parity, accelerator kernels, a measured speed/memory/cost preflight,
+then a new runtime-bound public-task run. No new allocator/recovery sweep,
+re-quantization or promotion. Existing checkpoint and evaluation receipts remain
+unchanged; do not mix new-runtime results into the stopped run's identity.
 
 ### September 9 serving requirement: minimize memory traffic
 
 User priority: compression must reduce avoidable inference memory traffic, not
 just checkpoint size. Reading weights and runtime state is unavoidable; a small
 artifact alone does not demonstrate lower bandwidth use or faster generation.
-Keep the public-task gate first, then apply these requirements to the retained
+Apply these requirements before restarting the public-task gate, on the retained
 W5 backbone and W6/W8 vocabulary recipe on one measured serving path:
 
 - [ ] Upload static weights, scales, codebooks and rotation tensors once per
@@ -73,8 +76,8 @@ proposed experiments, not evidence of gains or a change to the current Colab.
 The [full-frontier comparison plan](unsloth_full_frontier_plan_2026-09-09.md)
 expands the external target from one `UD-Q4_K_XL` checkpoint to every published
 quant variant: the pinned September 9 inventory contains 21 for Qwen3.5-4B and
-24 for Qwen3.8-27B, including standard and Dynamic formats. After the current
-public-task run, prepare a manifest-driven, sequential, resumable 4B sweep with
+24 for Qwen3.8-27B, including standard and Dynamic formats. After native serving
+and the resumed public-task milestone, prepare a manifest-driven, sequential, resumable 4B sweep with
 common teacher/task inputs, complete-byte accounting and explicit coverage/
 failure records. Retain the measured serving work as a separate gate; transfer
 the validated benchmark machinery to 27B under a separate compute budget.

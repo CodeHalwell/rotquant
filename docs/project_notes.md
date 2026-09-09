@@ -1,5 +1,12 @@
 # RotQuant project notes
 
+Latest follow-up: the public-task notebook was stopped for reference-runtime
+cost. Native-first implementation and acceptance gates are now in
+[`native_runtime_v3.md`](native_runtime_v3.md) and the roadmap. L5 is fixed;
+exact native-v3 matrix storage and scalar CPU conformance are implemented, **not
+W5 full-model GGUF/Metal/CUDA**. The original review and inventory below retain
+historical context; no saved artifact or task outcome was replaced.
+
 Working reference notes, written 9 September 2026 against `85e1254` (origin/main)
 plus the [same-day review](project_review_2026-09-09.md). They are a companion
 to, not a replacement for, the three documents that carry authority:
@@ -41,7 +48,7 @@ review and several have been superseded. Read them in this order.
 | What is the plan and what is the gate status right now? | `roadmap.md` (Stage 2 header and its dated updates) | Current; the top entries supersede the historical ones below them |
 | What has every run measured and decided? | `experiment_log.md` | Current ledger; newest entries at the top, older narrative below the result table |
 | What are the current headline numbers? | `fresh_quality_results_2026-09-09.md` | Current |
-| What is the next GPU run? | `public_tasks_run_2026-09-09.md` | Current, not yet executed |
+| What is the next GPU run? | `native_runtime_v3.md`, then `public_tasks_run_2026-09-09.md` | Public-task run stopped; native model parity and speed/cost preflight first |
 | Why is the Unsloth comparison structured the way it is? | `results_review_2026-09-06.md` | Current; the byte-budget finding |
 | What is the maths and what is only hypothesis? | `how_rotquant_works.md` (sections 14 and 15 especially) | Current |
 | What may a competitive claim say? | `competitive_eval.md`, `competitive_data.md` | Current contract; the 300-prompt suite it describes has never been built |
@@ -235,7 +242,7 @@ simulator with endpoint check), `layer_mse`, `quantization`
 
 | Notebook | Cells | Status |
 |---|---:|---|
-| `qwen35_4b_public_tasks_colab` | 22 | **Live: the next run** |
+| `qwen35_4b_public_tasks_colab` | 22 | **Stopped: reference path too slow; preserve for provenance** |
 | `qwen35_4b_fresh_quality_colab` | 24 | Completed 9 Sep (producer `d4292d6`) |
 | `qwen35_4b_packed_revalidation_colab` | 18 | Completed 8 Sep (loader `89d25f3`) |
 | `qwen35_4b_packed_validation_colab` | 18 | Completed 7 Sep (`8f10ee6`); W6 reload gate failed, later revalidated |
@@ -346,12 +353,12 @@ internalising because the identity discipline is also what makes runs brittle:
   output root for any run whose notebook tracks `main`.
 - Reuse of the seed-0 fresh-quality records binds the runtime: `torch
   2.11.0+cu128`, Python 3.13, an A100-SXM4-40GB. A different SKU refuses.
-- `tests/test_fresh_quality_reuse.py` asserts that `git diff 733bb3d --
-  rotquant scripts/run_experiment.py scripts/run_unsloth_qwen35_4b_kl.py
-  scripts/run_qwen35_packed_validation.py` is empty and that five functions
-  of the fresh-eval runner are AST-identical to that revision. This is the
-  "reuse freeze": the library cannot change until that test is retired or
-  `REUSABLE_SOURCE` is re-reviewed. The run it protected is complete.
+- `tests/test_fresh_quality_reuse.py` still protects the frozen checkpoint,
+  quantizer, model/scoring paths and five runner ASTs against `733bb3d`.
+  The September 9 native preparation narrowly exempts the isolated matrix
+  modules and audits the **exact** L5 guard additions to the two legacy
+  exporters; other edits to those modules require re-review too. It does not
+  authorize reusing old records with a native model backend.
 - The public-task runner binds its receipts to `source_identity()` too, so
   the same "merge, pin, then run" rule applies to the next session.
 
@@ -392,15 +399,22 @@ scale layouts fail closed.
 | Recipe | Python `QuantLinear` (reference, per-layer dequant) | Native-v2 C++ | RotQuant-GGUF v1 / llama.cpp patch |
 |---|---|---|---|
 | W4, fp16 scales, FWHT or butterfly, tied vocab fp16 or 4-bit RMS | Yes | Yes (byte-exact) | Yes (CPU scalar, Metal) |
-| W4 with 8-bit scales (`scale8`) | Yes | Exported lossily: scales decoded to fp32 and re-rounded to fp16 (defect L5) | Same defect |
+| W4 with 8-bit scales (`scale8`) | Yes | Rejected (L5 fixed; formerly lossy) | Rejected (L5 fixed; formerly lossy) |
 | W5 backbone, 8-bit scales | Yes | No layout for 5-bit with 8-bit scales | No |
 | Packed W6/W8 tied vocabulary (checkpoint v3) | Yes, tiled | No | No |
 | Any activation quantisation (A8) | Yes (dequantised immediately) | No | No |
 | KV cache codes | Simulator only | No | 3.25-bpv map implemented in the patch, quality withdrawn |
 
-The consequence: the recipe with the best quality evidence has no runtime
-outside Python, and no resident-memory or throughput measurement exists for
-it. The 3.44/3.60 GB figures are file sizes.
+The consequence: the recipe with the best quality evidence has no full-model
+runtime outside Python, and no native resident-memory or throughput measurement
+exists for it. The 3.44/3.60 GB figures are file sizes.
+
+The new [native-v3 matrix primitive](native_runtime_v3.md) can exactly encode
+and reconstruct W1–W8 with scale8/16 in scalar C++. This adds matrix conformance,
+not graph-level support to the GGUF/Metal columns above; rotations, shared
+vocabulary semantics and final FP16 rounding remain operator responsibilities.
+The stopped public-task log is now a slow **reference-path** timing observation,
+not a native serving benchmark.
 
 ### 6.4 Serving backends
 
@@ -695,7 +709,7 @@ Status as of `85e1254`. "Open" means verified still present in the code today.
 | L2 | `checkpoint.py:771-787` | `model.to(dtype)` rounds fp32 butterfly angles before restoring them; `LearnedRotation.theta` and `DenseOrthogonal.R` never restored | Open |
 | L3 | `checkpoint.py:313-317` | `torch_dtype` inferred from the first floating tensor; a v3 artifact with fp32 theta reloads as fp32 | Open |
 | L4 | `quantize.py:958`, `calibrate.py:181-188`, `linear.py:402-403` | GPTQ without a Hessian warns and falls back to rounding; `refresh_quantization()` re-packs GPTQ layers as RTN | Open |
-| L5 | `native.py:238-280`, `gguf.py:87-105, 231-285` | Exporters ignore `scale_bits_main`; scale8 artifacts export lossily and are charged 16 bits per scale | Open |
+| L5 | `native.py`, `gguf.py`, `native_v3.py` | Legacy exporters now reject non-FP16 scales; separate native-v3 matrix storage preserves compressed scales exactly | Fixed for export; full-model v3 integration pending |
 | L6 | `rotate.py:255` | A block that does not divide the dimension is silently replaced by the largest power-of-two divisor | Open |
 | L7 | `linear.py:114-149`, `patch.py:437-438` | In-process `.half()` recasts rotation parameters | Open |
 | L8 | `quantize.py:137-146` | `replace(cfg, codebook=…)` keeps Gaussian search bounds, so a uniform codebook clips at 1.5σ (the E2 confound) | Open |
@@ -921,13 +935,13 @@ scripts/serve_rotquant_gguf.sh out.gguf 8085
 
 ## 14. Next steps
 
-Ordered in [`project_review_2026-09-09.md`](project_review_2026-09-09.md) §4:
-run the public-task gate; lift the reuse freeze and land L1–L12, tag v0.1.0 and
-bump the version, strip withdrawn numbers, cut the README; build one measured
-serving path for the W5 recipe (native-v2 and GGUF at W5/W6/W8 with an 8-bit
-scale layout and the packed vocabulary, a compiling llama.cpp patch workflow,
-same-engine provider comparison, memory and throughput on named hardware);
-only then the research branches, starting with the 4B all-variant sweep.
+The stopped-run update supersedes the original review's §4 ordering. Follow
+[`native_runtime_v3.md`](native_runtime_v3.md): exact full-model GGUF/CPU graph
+and shared vocabulary, numerical conformance, packed Metal/CUDA execution,
+measured speed/memory/cost preflight, then a new runtime-bound public-task run.
+The matrix format/CPU floor and L5 are implemented; the full-model/GPU steps and
+remaining review defects are not. Research branches and all-variant 4B/27B
+comparisons wait for this serving path. No version tag or release is implied.
 
 ## 15. Glossary
 

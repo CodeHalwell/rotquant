@@ -7,6 +7,7 @@ import os
 import platform
 import shutil
 import subprocess
+import sys
 from pathlib import Path
 
 import numpy as np
@@ -20,6 +21,9 @@ from rotquant.native import (
     reference_streaming_matmul,
 )
 from rotquant.native_ffi import NativeRuntimeError, NativeRuntimeLibrary
+from rotquant.native_v3 import NativeV3Matrix, decode_native_v3_rows, encode_native_v3
+from rotquant.native_v3_ffi import NativeV3Runtime
+from rotquant.quantize import QuantConfig, Quantizer
 from rotquant.runtime import KernelRegistry, run_kernel
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -123,6 +127,101 @@ def test_cpp_self_conformance(native_cpp_binaries):
     )
     assert result.returncode == 0, result.stderr
     assert "bits 1..8" in result.stdout
+
+
+@pytest.mark.parametrize("bits", range(1, 9))
+@pytest.mark.parametrize("scale_bits", [8, 16])
+def test_v3_compiled_decoder_matches_canonical_torch(native_cpp_binaries, bits, scale_bits):
+    import torch
+
+    generator = torch.Generator().manual_seed(27)
+    q = Quantizer(QuantConfig(bits=bits, scale_bits=scale_bits, group_size=7, scale="rms",
+                             scale_quant_group_size=4)).quantize_weight(
+        torch.randn(7, 19, generator=generator) * torch.arange(1, 8)[:, None])
+    encoded = encode_native_v3(q)
+    runtime = NativeV3Runtime(native_cpp_binaries["library"])
+    prepared = runtime.prepare(encoded)
+    address = ctypes.addressof(prepared._buffer)
+    expected = q.dequantize().numpy()
+    np.testing.assert_array_equal(prepared.dequantize_rows(), expected)
+    np.testing.assert_array_equal(prepared.dequantize_rows(2, 3), expected[2:5])
+    x = np.random.default_rng(5).normal(size=(3, 19)).astype(np.float32)
+    for _ in range(2):
+        np.testing.assert_allclose(prepared.matmul(x), x @ expected.T, atol=2e-5, rtol=2e-6)
+        assert ctypes.addressof(prepared._buffer) == address
+    assert prepared.persistent_bytes == encoded.persistent_bytes
+    with pytest.raises(TypeError, match="float32"):
+        prepared.matmul(x.astype(np.float16))
+    with pytest.raises(ValueError, match="contiguous"):
+        prepared.matmul(x[:, ::-1])
+    unaligned = np.frombuffer(bytearray(1 + x.nbytes), offset=1, dtype=np.float32).reshape(x.shape)
+    with pytest.raises(ValueError, match="aligned"):
+        prepared.matmul(unaligned)
+    x[0, 0] = np.inf
+    with pytest.raises(RuntimeError, match="non-finite input"):
+        prepared.matmul(x)
+
+
+def test_v3_preflight_does_not_authorize_a_paid_model_run(native_cpp_binaries):
+    result = subprocess.run([sys.executable, str(ROOT / "scripts/check_native_v3.py"),
+                             "--library", str(native_cpp_binaries["library"]),
+                             "--require-model-runtime"], capture_output=True, text=True, check=False)
+    assert result.returncode == 2, result.stdout + result.stderr
+    report = json.loads(result.stdout.splitlines()[-1])
+    assert report["matrix_conformance_passed"]
+    assert len(report["cases"]) == 16
+    assert not report["paid_model_run_ready"]
+    assert len(report["blockers"]) == 4
+
+
+def test_v3_cpp_parser_agrees_with_python_on_mutated_wire_bytes(native_cpp_binaries):
+    import torch
+
+    q = Quantizer(QuantConfig(bits=5, scale_bits=8, scale="rms", group_size=7,
+                             scale_quant_group_size=4)).quantize_weight(
+                                 torch.randn(3, 19, generator=torch.Generator().manual_seed(31)))
+    blob = encode_native_v3(q).to_bytes()
+    runtime = NativeV3Runtime(native_cpp_binaries["library"])
+    rng = np.random.default_rng(17)
+    variants = [blob[:-1], blob + b"\0"]
+    for _ in range(128):
+        data = bytearray(blob)
+        data[int(rng.integers(0, len(data)))] ^= 1 << int(rng.integers(0, 8))
+        variants.append(bytes(data))
+    for raw in variants:
+        try:
+            matrix = NativeV3Matrix.from_bytes(raw)
+        except (ValueError, TypeError):
+            matrix = None
+        # Use the raw C ABI so malformed payloads aren't rejected by the wrapper first.
+        buffer = (ctypes.c_uint8 * len(raw)).from_buffer_copy(raw)
+        output = np.full((3, 19), 123., dtype=np.float32)
+        status = runtime.library.rq_native_v3_dequantize(
+            buffer, len(raw), output.ctypes.data_as(ctypes.POINTER(ctypes.c_float)), 57, 0, 3)
+        if matrix is None:
+            assert status != 0
+            np.testing.assert_array_equal(output, np.full((3, 19), 123.))
+        else:
+            # Mutations of valid dimensions cannot preserve this exact payload
+            # and scale shape in this fixture; verify rather than assuming that.
+            assert matrix.layout.out_features == 3 and matrix.layout.in_features == 19
+            assert status == 0
+            np.testing.assert_array_equal(output, decode_native_v3_rows(matrix))
+
+
+@pytest.mark.parametrize("bits,scale_bits", [(5, 8), (6, 16), (8, 16)])
+def test_v3_preserves_gptq_group128_projection(native_cpp_binaries, bits, scale_bits):
+    import torch
+
+    weight = torch.randn(3, 137, generator=torch.Generator().manual_seed(93))
+    q = Quantizer(QuantConfig(bits=bits, codebook="gaussian", scale_bits=scale_bits,
+                             group_size=128, scale="mse_search", error_comp="gptq",
+                             mse_search_grid=3)).quantize_weight(weight, H=torch.eye(137))
+    matrix = encode_native_v3(q)
+    handle = NativeV3Runtime(native_cpp_binaries["library"]).prepare(matrix)
+    assert matrix.words.tobytes() == q.packed.data.numpy().tobytes()
+    assert matrix.scales.tobytes() == q.scales.numpy().tobytes()
+    np.testing.assert_array_equal(handle.dequantize_rows(), q.dequantize().numpy())
 
 
 @pytest.mark.parametrize("bits", range(1, 9))

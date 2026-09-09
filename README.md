@@ -148,16 +148,17 @@ common-FP16 KL by 55.6–57.9% versus the pinned Unsloth UD-Q4_K_XL; W5/W8 by
 W4 models or evidence of general task/serving superiority. The authored tasks
 exposed seed sensitivity and two oracle/format interpretation limitations.
 
-**The next run** is the
-[public-task Colab](notebooks/qwen35_4b_public_tasks_colab.ipynb): GSM8K,
-CRUXEval-O and IFEval on the existing six checkpoints, with FP16/Unsloth/BF16
-bridge controls. No re-quantization or training. It starts with a separate
-eight-example-per-benchmark smoke scope; the standard run is 128 each.
-Read the [runbook](docs/public_tasks_run_2026-09-09.md). Full-model CUDA execution
-of this new protocol remains unvalidated locally. The
+**Next: native runtime, not another paid Colab yet.** The public-task run was
+stopped after the W5/W6 Python reference path proved too slow. The
+[native-v3 preparation](docs/native_runtime_v3.md) adds exact 1–8-bit matrix
+storage with compressed scales and scalar CPU conformance. It does **not** yet
+provide W5/W6/W8 full-model GGUF/Metal/CUDA execution. That path must pass model
+parity and a speed/memory/cost preflight before a new runtime-bound
+[public-task run](docs/public_tasks_run_2026-09-09.md). Saved checkpoints and
+partial results are preserved; no re-quantization or training is required. The
 [project deep dive of 8 September](docs/project_deep_dive_2026-09-08.md) records
 the state of the evidence, the defects found in review, and the ordered next
-steps that follow that run.
+historical next steps; the roadmap records the revised native-first order.
 
 For a single reference that maps the repository, the formats, every recorded
 result with its canonical numbers, the negative results, the open defects and

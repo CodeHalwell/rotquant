@@ -114,6 +114,15 @@ def test_native_qdata_round_trip():
     np.testing.assert_array_equal(actual_scales, scales)
 
 
+@pytest.mark.parametrize("scale_bits", [8, 32])
+def test_gguf_v1_rejects_lossy_scale_conversion(scale_bits):
+    rotation = ButterflyRotation(256, block=128, seed=0)
+    qweight = Quantizer(QuantConfig(bits=4, group_size=128, scale_bits=scale_bits,
+                                   scale="rms")).quantize_weight(torch.randn(3, 256))
+    with pytest.raises(ValueError, match="requires stored 16-bit scales"):
+        native_tensor(qweight, rotation)
+
+
 def test_native_reference_matches_quant_linear():
     layer = _layer()
     x = torch.randn(2, 3, layer.in_features)

@@ -1,5 +1,11 @@
 # RotQuant native runtime
 
+New: [native-v3 matrix contract](../docs/native_runtime_v3.md) preserves canonical
+1–8-bit words and affine uint8 or FP16 scales. The same library now exports a
+separate v3 C ABI with scalar CPU decode/streaming-matmul conformance. It does
+not add a W5 full-model llama.cpp/Metal/CUDA path. The v2 API below is unchanged;
+its Python exporter now rejects non-FP16 scale storage rather than rounding it.
+
 This directory contains the backend-neutral C++17 implementation of the
 RotQuant native-v2 block contract. It is intentionally independent of PyTorch,
 NumPy, GGUF, and a particular model architecture. It includes a portable scalar

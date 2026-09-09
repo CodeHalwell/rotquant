@@ -6,6 +6,41 @@ learned, negative results, and the decision that followed. Results produced in
 external notebooks are recorded here even when their raw artifacts live on
 Google Drive.
 
+## 2026-09-09: public-task run stopped; native serving takes priority
+
+The user stopped the run at `5a98b99eb2d178c2da9705a5cd8afcb1f0f3e026`
+because the tiled Python reference execution was too costly. Supplied log:
+`34a3046c-5239-4024-910b-02cbd197a670/pasted-text.txt`, SHA-256
+`94e764a311a771ffeedf10bfb202f0716b42ffbb21c75d5921becc49477e2e57`.
+This is log-derived partial evidence, not a completed checksummed result-bundle
+import; no direct inspection or mutation of Drive was performed.
+The [machine-readable partial observation](../research/results/qwen35_public_tasks_partial_5a98b99eb2d1.json)
+records the log hash, aggregation method and exact observed counts/times outside
+the frozen raw archive. It is not an imported complete evaluation receipt.
+
+In that log the source FP16 arm finished 384 prompts. The custom frozen subset
+scored 115/128 GSM8K, 42/128 CRUXEval-O, 101/128 IFEval, with 5/10/4 truncated
+responses respectively. These are this protocol's scores, not official
+leaderboard results. The first `b5_v6_s0` arm finished only 30 GSM8K prompts:
+27/30 passed, the same pass/fail outcomes as FP16 on those exact prompts, one
+truncation. It emitted 9,417 tokens over 185.39 minutes of logged generation +
+scoring (about 0.85 tokens/s), versus about 15.43 tokens/s on the matched source
+prompts. This roughly 18x observed slowdown is not a controlled kernel benchmark
+and does not establish where every second was spent. GPU activity was present;
+the process was making progress, not merely hung.
+
+There is **no complete RotQuant/provider public-task comparison or promotion**.
+Retain saved model files and the partial per-prompt receipts. New native execution
+must use a new runtime-bound root and cannot inherit old reference-path scores.
+
+Local next-stage preparation closes lossy-export defect L5 and establishes the
+[native-v3 matrix contract](native_runtime_v3.md), compiled CPU conformance and
+a bounded readiness check. Scale8 codes/offsets/steps are retained exactly; the
+new CPU matrix primitive is not a full-model runtime or new quality evidence.
+Full-model export/vocabulary operators, Metal/CUDA, and measured speed/memory/
+cost gates remain required before another paid sweep. No new model calibration,
+GPU run or archived-evidence rewrite is part of this work.
+
 ## 2026-09-09: every published Unsloth quant added to comparison scope
 
 The user requested the whole published size range, not only Dynamic Q4. Public
