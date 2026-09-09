@@ -56,7 +56,8 @@ review and several have been superseded. Read them in this order.
 | Odd ones out | `kv_retrieval.md`, `turboquant_extensions.md` | Design notes; the retrieval oracle and the TurboQuant arms are parked |
 | The paper | `paper/main.tex`, `paper/data/publication_results.json` | Stale: still framed around the withdrawn joint weight-plus-KV result |
 
-The README is a 666-line front page that accumulated the run-by-run narrative.
+The README is a front page of about 690 lines that accumulated the run-by-run
+narrative.
 Its "next run" paragraph is now correct, but it still states a Llama-2-7B/13B
 confirmation bar that no result has met, and its layout block omits `docs/`,
 `notebooks/`, `native/` and `research/`.
@@ -293,7 +294,7 @@ never executed.
   backend including `kernels/rotquant.metal`. It recognises `*.rqweight` and
   `*.rqrotation` tensors and evaluates them through a `ggml_custom` operator.
   A stock llama.cpp build fails closed on such a file.
-- Scope is **4-bit only**: Gaussian codebook, group 128, fp16 scales, FWHT or
+- The patch's scope is **4-bit only**: Gaussian codebook, group 128, fp16 scales, FWHT or
   butterfly rotations of block 128, tied vocabulary at 4-bit with RMS scales.
   It cannot load the W5 recipe, 8-bit scales or the packed W6/W8 vocabulary.
 
@@ -384,23 +385,25 @@ is roughly 15 GB.
 Per group: one little-endian fp16 scale then `ceil(group_size × bits / 8)`
 LSB-first code bytes; partial final groups padded with zero codes; the
 codebook travels as `2^bits` fp32 centroids. For 4-bit, group 128 this is
-byte-identical to RotQuant-GGUF v1. Residual, sketch, per-row-scale and 8-bit
-scale layouts fail closed.
+byte-identical to RotQuant-GGUF v1. Residual, sketch and per-row-scale
+encodings fail closed; 8-bit scales are not rejected but silently decoded and
+re-rounded to fp16 by the exporter (defect L5).
 
 ### 6.3 Compatibility matrix
 
-| Recipe | Python `QuantLinear` (reference, per-layer dequant) | Native-v2 C++ | RotQuant-GGUF v1 / llama.cpp patch |
+| Recipe | Python `QuantLinear` (reference path, per-layer dequant, runs the whole model) | Native-v2 C++ (per-matrix dequantize and matmul kernels for 1–8-bit blocks with fp16 scales; no embedding lookup, no model execution) | RotQuant-GGUF v1 / llama.cpp patch (whole model, 4-bit only) |
 |---|---|---|---|
-| W4, fp16 scales, FWHT or butterfly, tied vocab fp16 or 4-bit RMS | Yes | Yes (byte-exact) | Yes (CPU scalar, Metal) |
-| W4 with 8-bit scales (`scale8`) | Yes | Exported lossily: scales decoded to fp32 and re-rounded to fp16 (defect L5) | Same defect |
-| W5 backbone, 8-bit scales | Yes | No layout for 5-bit with 8-bit scales | No |
-| Packed W6/W8 tied vocabulary (checkpoint v3) | Yes, tiled | No | No |
+| W4, fp16 scales, FWHT or butterfly | Yes | Backbone matrices, byte-exact | Yes, with the tied vocabulary at 4-bit RMS (CPU scalar, Metal) |
+| W4 with 8-bit scales (`scale8`) | Yes | Lossy: the exporter does not check `scale_bits_main`, decodes the scales and re-rounds them to fp16 (defect L5) | Same lossy conversion |
+| W5 backbone, 8-bit scales | Yes | 5-bit blocks exist, but the same lossy scale conversion applies (L5), so the export is not bit-exact with the artifact | No: GGUF v1 is 4-bit only |
+| Packed W6/W8 tied vocabulary (checkpoint v3) | Yes, tiled | No layout and no lookup operation | No |
 | Any activation quantisation (A8) | Yes (dequantised immediately) | No | No |
 | KV cache codes | Simulator only | No | 3.25-bpv map implemented in the patch, quality withdrawn |
 
-The consequence: the recipe with the best quality evidence has no runtime
-outside Python, and no resident-memory or throughput measurement exists for
-it. The 3.44/3.60 GB figures are file sizes.
+The consequence: no runtime outside the Python reference path reproduces the
+W5 artifacts' numerics as a complete model, and no resident-memory or
+throughput measurement exists for them. The 3.44/3.60 GB figures are file
+sizes.
 
 ### 6.4 Serving backends
 
@@ -924,9 +927,11 @@ scripts/serve_rotquant_gguf.sh out.gguf 8085
 Ordered in [`project_review_2026-09-09.md`](project_review_2026-09-09.md) §4:
 run the public-task gate; lift the reuse freeze and land L1–L12, tag v0.1.0 and
 bump the version, strip withdrawn numbers, cut the README; build one measured
-serving path for the W5 recipe (native-v2 and GGUF at W5/W6/W8 with an 8-bit
-scale layout and the packed vocabulary, a compiling llama.cpp patch workflow,
-same-engine provider comparison, memory and throughput on named hardware);
+serving path for the W5 recipe (an 8-bit scale layout, the packed tied
+vocabulary and model-level execution for native-v2, whose 1–8-bit blocks
+already exist; the GGUF exporter and llama.cpp patch extended beyond W4; a
+compiling patch workflow; a same-engine provider comparison; memory and
+throughput on named hardware);
 only then the research branches, starting with the 4B all-variant sweep.
 
 ## 15. Glossary

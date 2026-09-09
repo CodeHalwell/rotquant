@@ -24,6 +24,12 @@ software.
   archive locations, negative results and lessons, the defect register,
   evaluation protocol, operations cookbook, decisions log, open questions and
   a glossary. Linked from the README.
+- Corrections after Copilot's review of PR #19: native-v2 is described as a
+  per-matrix 1–8-bit runtime with fp16 scales rather than as W4-only; the
+  scale8 and W5 export rows record the lossy scale conversion (L5) instead of
+  a missing layout; README line references updated; the evidence levels of
+  the LoRA-QAT and vector arms preserved; the authored-task limitations stated
+  precisely; the stale changelog sentence fixed.
 - Recorded here because commit `5a98b99` had no changelog entry: the
   public-task release gate (`scripts/run_qwen35_public_tasks.py`,
   `scripts/public_task_suite.py`, the generated

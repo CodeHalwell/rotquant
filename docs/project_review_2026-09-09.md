@@ -13,7 +13,8 @@ repository records.
 
 ## 1. Verdict
 
-RotQuant now has one result worth defending and no way to serve it.
+RotQuant now has one result worth defending and no runtime for it beyond the
+Python reference path.
 
 - The fresh-quality run turned the vocabulary-budget hypothesis into a
   measured, three-seed, common-teacher result: a 5-bit backbone with a packed
@@ -22,14 +23,18 @@ RotQuant now has one result worth defending and no way to serve it.
   It improves every document in every seed. That is the first fair
   matched-size comparison the project has produced.
 - The same run showed that KL is not task accuracy: the 96 authored tasks
-  moved with the seed rather than the recipe, and two task families were
-  mis-scored by their own oracle. The public-task gate (GSM8K, CRUXEval-O,
-  IFEval) is prepared and is the right next run.
-- The recipe that wins runs only on the tiled Python reference path.
-  Native-v2, the GGUF exporter and the llama.cpp patch are still W4 with
-  fp16 scales, unchanged since 31 August. Until that changes there is no
-  memory, throughput or same-engine evidence, and every provider comparison
-  stays cross-engine.
+  moved with the seed rather than the recipe; the tool-lookup oracle is
+  overstrict, the conditional family never exercises its positive branch, and
+  the JSON failures are strict-format failures rather than wrong answers. The
+  public-task gate (GSM8K, CRUXEval-O, IFEval) is prepared and is the right
+  next run.
+- The recipe that wins runs only on the tiled Python reference path. The
+  native-v2 C++ runtime handles 1–8-bit blocks, but only per matrix and only
+  with fp16 scales; the GGUF exporter and the llama.cpp patch are W4 with
+  fp16 scales. None of them can consume the W5 artifacts' 8-bit scales or
+  packed vocabulary, and nothing on that side has changed since 31 August.
+  Until it does there is no memory, throughput or same-engine evidence, and
+  every provider comparison stays cross-engine.
 - The engineering baseline is sound at this revision: Python CI is green on
   `main` for Python 3.10–3.13, lint is clean, the native runtime builds
   warning-free and passes conformance, and the full suite passes locally
@@ -45,9 +50,9 @@ RotQuant now has one result worth defending and no way to serve it.
 | GPTQ improves W4 in every seed at zero inference bits | Three-seed ladder, 1 September | Claimed; raw records only on Drive |
 | The fp16 tied vocabulary, not the quantiser, explained the Unsloth gap | GGUF header decomposition, 6 September | Established |
 | W5 backbone + W6/W8 packed vocabulary beats `UD-Q4_K_XL` at matched bytes on fresh inputs, common FP16 teacher, three seeds | `research/results/raw/qwen35_fresh_quality_d4292d6fdec6` | Established on C4 KL; task outcome open |
-| Allocation at an fp16-vocabulary budget, learned signs, block recovery, LoRA-QAT, vector codebooks | Allocators v1–v4, sign replication, recovery arms | Refuted at the budgets tried |
+| Allocation at an fp16-vocabulary budget, learned signs, block recovery, LoRA-QAT, vector codebooks | Allocators v1–v4, sign replication, recovery arms | Not supported at the budgets tried; LoRA-QAT underpowered rather than disproved, vector codebooks research-only |
 | Any KV-cache quality number | Simulator defect, 1 September | All withdrawn; nothing re-measured |
-| The winning recipe can be served outside Python | Native/GGUF are W4 + fp16 scales | Not yet |
+| The winning recipe can be served outside Python | Native-v2 lacks an 8-bit scale layout, the packed vocabulary and model execution; GGUF/llama.cpp are W4 only | Not yet |
 
 The fresh-quality numbers, for reference (24 documents, 12,264 positions,
 common FP16 teacher):
@@ -113,12 +118,13 @@ Ranked by effect on the next decision.
    still carries the 3.25-bpv map; the paper keeps the joint weight-plus-KV
    framing.
 6. **Documentation volume.** 33 files under `docs/` (564 KB), five review
-   documents in ten days, and a 666-line README that still states a
-   Llama-2-7B/13B confirmation bar (`README.md:659`) no result has ever met.
-   The "four answers to what is next" problem from 8 September is fixed:
-   README, roadmap and the research README now agree. `CHANGELOG.md` has no
-   entry for the 9 September work and still has duplicated `### Added` and
-   `### Changed` headings.
+   documents in ten days, and a README of about 690 lines that still states a
+   Llama-2-7B/13B confirmation bar no result has ever met (`README.md:665`,
+   the sentence beginning "A finding is confirmed when"). The "four answers
+   to what is next" problem from 8 September is fixed: README, roadmap and
+   the research README now agree. `CHANGELOG.md` had no entry for the
+   9 September work until this review added one, and still has duplicated
+   `### Added` and `### Changed` headings.
 7. **Release engineering.** `__version__` is 0.1.0 with no tag, so provenance
    cannot separate pre-fix from post-fix runs; no PyPI release, no wheel
    build; the `baselines` extra is pinned to pre-Transformers-5 packages and
@@ -177,9 +183,11 @@ This is the largest gap and the deliverable that makes the project usable,
 and legible, outside the repository. A downloadable GGUF with one
 same-engine benchmark table is worth more than any further review document.
 
-1. Extend native-v2 and the GGUF exporter to W5/W6/W8 with an 8-bit scale
-   layout and the shared packed tied vocabulary; refuse
-   `scale_bits_main != 16` on export until that layout exists (L5).
+1. Add an 8-bit scale layout, the shared packed tied vocabulary and
+   model-level execution to native-v2 (its 1–8-bit blocks already exist), and
+   extend the GGUF exporter and patch beyond W4; until the scale layout
+   exists, refuse `scale_bits_main != 16` on export instead of silently
+   re-rounding (L5).
 2. Update the llama.cpp patch (CPU and Metal) and make the patch workflow
    compile and run a conformance prompt, not just `git apply --check`.
 3. Export the W5/W6 artifact as a GGUF and run the same-engine comparison
