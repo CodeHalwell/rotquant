@@ -2,6 +2,7 @@
 
 import ast
 import copy
+import os
 import subprocess
 from pathlib import Path
 from types import SimpleNamespace
@@ -108,7 +109,7 @@ def reusable(tmp_path, monkeypatch):
             path = directory / f"{item['id']}.json"
             value = {**item, "manifest": manifest["fingerprint"], "collection": runner.fingerprint(identity),
                      "tokens": 2, "mean_teacher_kl": 0., "top1_agreement": 1.,
-                     "task_success": True, "source_task_success": True, "json_valid": True,
+                     "source_nll": 1.5, "candidate_nll": 1.5, "task_success": True, "source_task_success": True, "json_valid": True,
                      "truncated": False, "trajectory_token_agreement": 1., "exact_trajectory": True}
             if label == "source_fp16":
                 runner._atomic_npz(path.with_suffix(".npz"), logits=np.zeros((2, 5), dtype=np.float32))
@@ -200,8 +201,22 @@ def test_reuse_cannot_import_provider_results_or_overlap_original(reusable):
         runner.reuse_completed(previous, evidence, previous, ["source_fp16"], "cpu")
 
 
+def _require_reviewed_commit(revision):
+    """Skip on a shallow clone, but fail where CI declares history mandatory."""
+    present = subprocess.run(["git", "cat-file", "-e", f"{revision}^{{commit}}"], cwd=runner.ROOT,
+                             capture_output=True, check=False).returncode == 0
+    if present:
+        return
+    message = (f"reviewed producer commit {revision[:12]} is not in this checkout (shallow "
+               "clone?); run `git fetch --unshallow origin` so this guard can run")
+    if os.environ.get("ROTQUANT_REQUIRE_GIT_HISTORY"):
+        pytest.fail(message)
+    pytest.skip(message)
+
+
 def test_reuse_compatibility_keeps_reviewed_hf_scoring_and_core_code_unchanged():
     revision = runner.REUSABLE_SOURCE["revision"]
+    _require_reviewed_commit(revision)
     old = subprocess.check_output(["git", "show", f"{revision}:scripts/run_qwen35_fresh_eval.py"],
                                   cwd=runner.ROOT, text=True)
     new = Path(runner.__file__).read_text()

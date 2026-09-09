@@ -1,14 +1,19 @@
 #!/usr/bin/env python3
 """Build the next Colab experiment with separate quality and replication phases."""
 
+import sys
 from pathlib import Path
 
 import nbformat
 
+ROOT = Path(__file__).resolve().parents[1]
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
+
 from scripts.build_qwen35_packed_validation_notebook import build_notebook as packed_notebook
 from scripts.build_qwen35_packed_validation_notebook import code, md
 
-OUTPUT = Path("notebooks/qwen35_4b_fresh_quality_colab.ipynb")
+OUTPUT = ROOT / "notebooks" / "qwen35_4b_fresh_quality_colab.ipynb"
 
 
 def build_notebook():
@@ -221,7 +226,7 @@ def build_notebook():
                 os.environ.update({"CMAKE_ARGS": "-DGGML_CUDA=on", "CMAKE_BUILD_PARALLEL_LEVEL": "2", "FORCE_CMAKE": "1"})
                 run_live([sys.executable, "-m", "pip", "install", "-v", "--force-reinstall", "--no-deps",
                           f"git+https://github.com/abetlen/llama-cpp-python.git@{LLAMA_CPP_PYTHON_REVISION}"],
-                         "llama-cuda-build", timeout_seconds=1800)
+                         "llama-cuda-build", timeout_seconds=3600)
             run_live([sys.executable, "-c", check_build], "llama-build-check")
             fresh("bridge", "gguf-bf16-bridge")
             fresh("unsloth", "unsloth-common-and-bf16")
