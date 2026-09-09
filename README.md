@@ -159,6 +159,12 @@ of this new protocol remains unvalidated locally. The
 the state of the evidence, the defects found in review, and the ordered next
 steps that follow that run.
 
+For a single reference that maps the repository, the formats, every recorded
+result with its canonical numbers, the negative results, the open defects and
+the Colab conventions, read the [project notes](docs/project_notes.md); the
+[9 September review](docs/project_review_2026-09-09.md) records the current
+verdict and the ordered next steps.
+
 ## Install
 
 ```bash

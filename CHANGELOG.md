@@ -17,6 +17,13 @@ software.
   build warning-free with both conformance suites passing, CPU smoke config
   end to end), confirms the 8 September library defect queue is unchanged,
   and orders the next steps. No code changed.
+- `docs/project_notes.md`: working reference notes covering which document
+  answers what, the method in plain terms, the day-by-day timeline, a map of
+  every module, script, config, notebook and test group, formats and the
+  runtime compatibility matrix, the results ledger with canonical numbers and
+  archive locations, negative results and lessons, the defect register,
+  evaluation protocol, operations cookbook, decisions log, open questions and
+  a glossary. Linked from the README.
 - Recorded here because commit `5a98b99` had no changelog entry: the
   public-task release gate (`scripts/run_qwen35_public_tasks.py`,
   `scripts/public_task_suite.py`, the generated
