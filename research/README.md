@@ -7,6 +7,16 @@ with `scripts/archive_fresh_quality.py`. See the
 [results and limitations](../docs/fresh_quality_results_2026-09-09.md) and
 [next public-task protocol and sources](../docs/public_tasks_run_2026-09-09.md).
 
+Future reading: [hybrid-attention quantisation and learned-rotation follow-up](../docs/hybrid_attention_quantization_research_2026-09-09.md)
+distinguishes external evidence from proposed 4B experiments and records the
+quality, byte-budget and bandwidth constraints. It contains no new run results.
+
+Comparison coverage: the [September 9 Unsloth inventory](unsloth_gguf_inventory_2026-09-09.json)
+pins all 21 current 4B and 24 current 27B language-model quant variants, their
+exact bytes and Hub-reported checksums. The
+[full-frontier plan](../docs/unsloth_full_frontier_plan_2026-09-09.md) defines
+the pending multi-artifact benchmark; the inventory contains no new scores.
+
 The earlier [packed revalidation evidence](results/raw/qwen35_packed_revalidation_89d25f3/evidence_index.json)
 still preserves both the failed and repaired W6 records. No old scores were replaced.
 

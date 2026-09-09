@@ -23,6 +23,65 @@ recipe. Broader models, genuine agent/code-execution benchmarks, and GPU kernel
 work remain subsequent gates. This entry supersedes the pending experiment
 status in the historical September 7/8 entries below.
 
+### September 9 serving requirement: minimize memory traffic
+
+User priority: compression must reduce avoidable inference memory traffic, not
+just checkpoint size. Reading weights and runtime state is unavoidable; a small
+artifact alone does not demonstrate lower bandwidth use or faster generation.
+Keep the public-task gate first, then apply these requirements to the retained
+W5 backbone and W6/W8 vocabulary recipe on one measured serving path:
+
+- [ ] Upload static weights, scales, codebooks and rotation tensors once per
+  device. Reuse device-local codebooks rather than copying centroids from the
+  CPU during each decode; preserve storage dtypes and shared ownership.
+- [ ] Fuse packed decoding, scale application and matrix multiplication for
+  both backbone projections and the vocabulary head. Decode bounded tiles
+  on-chip rather than materializing full dense weight matrices, or repeatedly
+  writing expanded vocabulary chunks to GPU global memory. Reuse small lookup
+  tables in registers/shared memory or caches where profiling justifies it.
+- [ ] Preserve the validated recipe's numerical behavior, including the
+  vocabulary head's `dense_equivalent` reconstruction/rounding. An algebraically
+  equivalent rotation rewrite is not sufficient evidence of numerical parity.
+- [ ] Profile warm inference separately from loading: static-model CPU-to-GPU
+  copies, GPU DRAM reads/writes, transient allocations, peak allocated/reserved
+  VRAM, latency and throughput. Report prefill and decode separately at pinned
+  batch sizes/context lengths, against the current packed reference and relevant
+  baseline. No repeated static-model host transfers in the accepted hot path;
+  any offload/reference path must be explicit. Do not infer DRAM traffic from
+  file size or claim a speedup without measurements.
+
+Current Qwen Python validation still copies CPU-owned codebook values on demand
+and transiently expands backbone weights/vocabulary chunks before matrix
+multiplication. No persistent dense fallback is present in the validated runs,
+but that does **not** establish a bandwidth-efficient fused GPU runtime. The
+3.44/3.60 GB artifacts already include codebooks, scales, rotations and auxiliary
+files; their file sizes are not total peak VRAM requirements. These serving
+requirements are pending engineering work, not newly measured improvements.
+
+### Future research: attention-type sensitivity and rotation interactions
+
+The [September 9 research note](hybrid_attention_quantization_research_2026-09-09.md)
+records the recent Gated DeltaNet/NVFP4 preprint, the contrasting Qwen3.5 GGUF
+observations, and why neither defines a universal precision map for our 4B model.
+After the current quality/serving gates, isolate W5-to-W4 changes in GDN versus
+full-attention projections with MLP, vocabulary and cache precision fixed; then
+test matched-byte allocation and learned-rotation interactions. These are
+proposed experiments, not evidence of gains or a change to the current Colab.
+
+### Full Unsloth baseline coverage
+
+The [full-frontier comparison plan](unsloth_full_frontier_plan_2026-09-09.md)
+expands the external target from one `UD-Q4_K_XL` checkpoint to every published
+quant variant: the pinned September 9 inventory contains 21 for Qwen3.5-4B and
+24 for Qwen3.8-27B, including standard and Dynamic formats. After the current
+public-task run, prepare a manifest-driven, sequential, resumable 4B sweep with
+common teacher/task inputs, complete-byte accounting and explicit coverage/
+failure records. Retain the measured serving work as a separate gate; transfer
+the validated benchmark machinery to 27B under a separate compute budget.
+The inventory and plan exist; the all-variant runner/notebook does not yet.
+
+### Historical stage updates
+
 September 8 review: the [project deep dive](project_deep_dive_2026-09-08.md)
 audits the evidence behind every item below, lists the defects found in the
 library, allocator, KV simulator, native runtime, CI and documentation, and

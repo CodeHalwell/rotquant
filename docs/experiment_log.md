@@ -6,6 +6,54 @@ learned, negative results, and the decision that followed. Results produced in
 external notebooks are recorded here even when their raw artifacts live on
 Google Drive.
 
+## 2026-09-09: every published Unsloth quant added to comparison scope
+
+The user requested the whole published size range, not only Dynamic Q4. Public
+repository metadata at pinned revisions lists 21 Qwen3.5-4B and 24 Qwen3.8-27B
+language-model quant variants. Saved the
+[exact file inventory](../research/unsloth_gguf_inventory_2026-09-09.json) with
+Hub-reported checksums and a [staged run plan](unsloth_full_frontier_plan_2026-09-09.md).
+Updated the competitive contract to retain all variants, distinguish whole-curve
+comparison from <=1% same-size pairs, and disallow interpolated quality claims.
+The plan includes shared evaluation inputs, sequential downloads, resume/progress,
+consistent auxiliary accounting and explicit unsupported/resource-blocked rows.
+No weights were downloaded, GPU experiments launched or active notebooks changed.
+The manifest-driven runner remains pending implementation; these are coverage
+requirements and metadata, not new benchmark results.
+
+## 2026-09-09: hybrid-attention sensitivity and rotation research recorded
+
+Saved a [source-linked research note](hybrid_attention_quantization_research_2026-09-09.md)
+on the September 3 Gated DeltaNet/NVFP4 preprint and Unsloth's Qwen3.5 GGUF
+sensitivity observations. The former does not prove full-attention projections
+must stay high precision; the latter flags a linear-attention output projection
+as sensitive. Formats/models differ, and neither validates a rule for our 4B.
+The note separates projection, activation, KV-cache and recurrent-state precision,
+maps our 24/8 hybrid stack, and specifies future isolation/matched-byte controls.
+It also records learned-rotation interaction hypotheses, quality/runtime gates,
+and the distinction between lossless weights and near-preserved task quality.
+No new experiment was executed; the current public-task/serving order is unchanged.
+
+## 2026-09-09: memory-bandwidth priority for the serving handoff
+
+The user explicitly wants to avoid unnecessary memory bandwidth use. Record
+this as a runtime acceptance requirement, not only an artifact-size objective.
+Codebooks/scales/rotation data are included in complete checkpoint accounting,
+but the current Qwen Python loader leaves codebook centroids CPU-owned and
+decode copies them to the GPU on demand. More significantly, packed inference
+still transiently reconstructs dense weights and vocabulary chunks before
+matrix multiplication. No persistent dense cache does not mean no expanded
+weight traffic.
+
+After the prepared public-task gate, the retained recipe's serving work must
+keep static model data device-local, fuse packed decode/scale/matmul with bounded
+on-chip tiles, preserve reload/logit/generation parity (including vocabulary
+rounding), and measure transfers, GPU DRAM traffic, peak memory and separate
+prefill/decode performance. See the
+[roadmap requirements](roadmap.md#september-9-serving-requirement-minimize-memory-traffic).
+This is a documented direction only: no kernel change or new GPU measurement
+was made, and 3.44/3.60 GB remains artifact size rather than a peak-VRAM claim.
+
 ## 2026-09-09: fresh-quality evidence complete; public-task gate prepared
 
 Imported `qwen35_fresh_quality_d4292d6fdec6` without changing original JSON bytes.

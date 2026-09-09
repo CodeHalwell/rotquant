@@ -39,7 +39,8 @@ deployed bytes:
 2. standard mixed-format quantization without RotQuant;
 3. uniform RotQuant with the frozen error-compensation recipe;
 4. mixed-format RotQuant with the same frozen quantizer; and
-5. the nearest-size released Unsloth artifact.
+5. the size-matched released Unsloth artifact(s), drawn from a benchmark of
+   **every published quant variant**, not just Dynamic Q4.
 
 This separates gains from allocation from gains within each allocated format.
 Uniform Gaussian W4+GPTQ remains the locked W4 control until a mixed recipe
@@ -55,7 +56,7 @@ three separate experiments and must not be conflated in one arm.
 |---|---|---|
 | Optimizer | A frozen recipe beats uniform RotQuant and random/matched-format allocation on held-out data. | The algorithm is not selected. |
 | Artifact | Exact deployed bytes, independently loadable shards, checksums, and no persistent dense fallback. | No storage or portability claim. |
-| Quality | Same source revision, tokenizer/chat template, prompt manifest, decoding policy, auxiliary-head policy, and <=1% byte mismatch against external artifacts. | No provider comparison. |
+| Quality | Same source revision, tokenizer/chat template, prompt manifest, decoding policy and auxiliary-head policy; <=1% byte mismatch for a same-size claim. | No controlled provider comparison; unequal sizes must be shown as distinct frontier points, not called size-matched. |
 | Runtime | Packed resident memory plus prefill/decode latency, throughput, and peak memory on named hardware. | Quality-only result; no speed claim. |
 
 Passing one gate never implies another. Results must label the implementation
@@ -103,9 +104,14 @@ Algorithm Lab is also only an early drift gate.
 
 For each target rate, compare the full source model, uniform RotQuant,
 calibrated RotQuant, the frozen dynamic RotQuant recipe, a standard llama.cpp
-GGUF, and the nearest-size Unsloth release. Use actual artifact bytes and pair
-artifacts only within 1%; interpolate a frontier rather than comparing visibly
-different sizes.
+GGUF, and the size-matched Unsloth release(s). The external coverage requirement
+is every published Unsloth quant variant for that model, including standard and
+Dynamic formats and multiple variants carrying the same nominal bit label.
+See the [full-frontier run plan and pinned inventory](unsloth_full_frontier_plan_2026-09-09.md).
+Use actual artifact bytes and label same-size pairs only within 1%. Plot every
+measured point; connecting lines or interpolation are visual aids, not measured
+quality at an untested size. A smaller-and-better result can establish a Pareto
+improvement without a 1% match, provided both measured sizes are reported.
 
 The first release matrix should cover approximate effective rates of 1.5, 2,
 2.5, 3, 4, 5, 6, and 8 bits per quantized weight. Integer RotQuant kernels may
@@ -187,9 +193,12 @@ The 4B stage is complete only when:
    host-RAM, and storage forecast.
 
 Qwen3.8-27B is then the locked flagship confirmation model. Start with the
-nearest-size W2/W3/W4 or mixed-rate anchors against standard GGUF and Unsloth,
-including source-normalized quality. Fill the complete 1.5/2/2.5/3/4/5/6/8-bit
-frontier only after the pipeline and comparison protocol pass those anchors.
+size-matched W2/W3/W4 or mixed-rate anchors against standard GGUF and Unsloth,
+including source-normalized quality. This is execution order, not a restricted
+baseline set: after those anchors pass the pipeline/protocol checks, benchmark
+every Unsloth variant in the frozen release inventory, including the smallest
+IQ formats and larger Q5/Q6/Q8 variants. RotQuant's rate ladder remains a
+separate engineering target; do not invent an Unsloth artifact for missing rates.
 Implementation bug fixes are allowed, but invalidate affected source and
 candidate results equally and must trigger a complete rerun under a new code
 revision.
