@@ -80,6 +80,13 @@ failure records. Retain the measured serving work as a separate gate; transfer
 the validated benchmark machinery to 27B under a separate compute budget.
 The inventory and plan exist; the all-variant runner/notebook does not yet.
 
+September 9 review: the [project review](project_review_2026-09-09.md)
+verifies the engineering baseline at `85e1254` (CI green, lint clean, full
+suite and native conformance passing), confirms that the 8 September library
+defect queue is still open behind the reuse freeze, and orders the work above:
+public-task gate first, then lift the freeze and land the queue, then one
+measured serving path before any research branch. It changes no code.
+
 ### Historical stage updates
 
 September 8 review: the [project deep dive](project_deep_dive_2026-09-08.md)
