@@ -1,0 +1,40 @@
+{
+  "id": "multilingual-addition-ja-3",
+  "domain": "multilingual",
+  "family": "multilingual-addition",
+  "input_hash": "ba4020100065a6b3190faf23bf20293292c8a7eadd4878b030dc83cabedc2db8",
+  "kind": "task",
+  "manifest": "76e00611d6bd45c3bb0892ad27eeb2b83c872e18870fd880cbab58babf185372",
+  "tokens": 9,
+  "continuation": [
+    4754,
+    8944,
+    763,
+    220,
+    16,
+    17,
+    23,
+    92,
+    248046
+  ],
+  "output_text": "{\"answer\": 128}",
+  "unmapped_generated_ids": [],
+  "truncated": false,
+  "mean_teacher_kl": 0.0005109994556025615,
+  "top1_agreement": 1.0,
+  "source_nll": 0.0010990737172404705,
+  "candidate_nll": 0.0015094817837153743,
+  "json_valid": true,
+  "task_success": true,
+  "trajectory_token_agreement": 1.0,
+  "exact_trajectory": true,
+  "source_task_success": true,
+  "same_engine_bf16": {
+    "mean_teacher_kl": 0.0005416618624217841,
+    "top1_agreement": 1.0,
+    "source_nll": 0.001121159808462835,
+    "candidate_nll": 0.0015094817837153743
+  },
+  "collection": "b27a77f5a7733a479460d2b53890df8bc06361c78204a4bae1d93e2c4d4d178e",
+  "seconds": 0.5567076530005579
+}

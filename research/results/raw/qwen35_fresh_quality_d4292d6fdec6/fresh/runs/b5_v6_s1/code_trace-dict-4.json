@@ -1,0 +1,33 @@
+{
+  "id": "code_trace-dict-4",
+  "domain": "code_trace",
+  "family": "code_trace-dict",
+  "input_hash": "290ea4398b650dedc91368d186ca69e44c4fc32fd6e608b1862c7db32a51e675",
+  "kind": "task",
+  "manifest": "76e00611d6bd45c3bb0892ad27eeb2b83c872e18870fd880cbab58babf185372",
+  "tokens": 8,
+  "continuation": [
+    4754,
+    8944,
+    763,
+    220,
+    19,
+    23,
+    92,
+    248046
+  ],
+  "output_text": "{\"answer\": 48}",
+  "unmapped_generated_ids": [],
+  "truncated": false,
+  "mean_teacher_kl": 0.0037990928014437486,
+  "top1_agreement": 1.0,
+  "source_nll": 0.04442682776414131,
+  "candidate_nll": 0.04400752707783795,
+  "json_valid": true,
+  "task_success": true,
+  "trajectory_token_agreement": 1.0,
+  "exact_trajectory": true,
+  "source_task_success": true,
+  "collection": "f4b6c83a9f35889ac6da664333a310c30d5d0b8a4921ef9f84f4da4ee18e5cc6",
+  "seconds": 12.079064944999118
+}

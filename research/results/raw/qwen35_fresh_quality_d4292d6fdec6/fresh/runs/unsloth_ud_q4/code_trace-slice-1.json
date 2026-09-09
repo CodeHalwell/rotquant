@@ -1,0 +1,43 @@
+{
+  "id": "code_trace-slice-1",
+  "domain": "code_trace",
+  "family": "code_trace-slice",
+  "input_hash": "94372eb5a5aca800a6b836d8a247448805b00e3ef46435378425f2489dbd4c97",
+  "kind": "task",
+  "manifest": "76e00611d6bd45c3bb0892ad27eeb2b83c872e18870fd880cbab58babf185372",
+  "tokens": 16,
+  "continuation": [
+    4754,
+    8944,
+    763,
+    498,
+    17,
+    20,
+    11,
+    220,
+    17,
+    18,
+    13587,
+    248046
+  ],
+  "output_text": "{\"answer\": [25, 23]}",
+  "unmapped_generated_ids": [],
+  "truncated": false,
+  "mean_teacher_kl": 0.04096204978310425,
+  "top1_agreement": 0.9375,
+  "source_nll": 0.0936879916537805,
+  "candidate_nll": 0.2132157731685993,
+  "json_valid": true,
+  "task_success": false,
+  "trajectory_token_agreement": 0.625,
+  "exact_trajectory": false,
+  "source_task_success": true,
+  "same_engine_bf16": {
+    "mean_teacher_kl": 0.04084069950732783,
+    "top1_agreement": 0.9375,
+    "source_nll": 0.0936314620560097,
+    "candidate_nll": 0.2132157731685993
+  },
+  "collection": "b27a77f5a7733a479460d2b53890df8bc06361c78204a4bae1d93e2c4d4d178e",
+  "seconds": 0.7274085360004392
+}

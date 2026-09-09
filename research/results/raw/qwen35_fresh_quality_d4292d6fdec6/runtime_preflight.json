@@ -1,0 +1,218 @@
+{
+  "protocol": "qwen35-packed-validation-preflight-v1",
+  "passed": true,
+  "device": "cuda",
+  "checks": [
+    {
+      "vocabulary_bits": 6,
+      "prototype_parity": {
+        "max_abs_error": 0.0,
+        "mean_abs_error": 0.0,
+        "mean_kl": 0.0,
+        "top1_agreement": 1.0,
+        "positions": 4,
+        "generation_probes": 1,
+        "exact_generation_probes": 1,
+        "thresholds": {
+          "max_abs_error": 0.125,
+          "mean_abs_error": 0.005,
+          "mean_kl": 0.0001,
+          "top1_agreement_min": 0.99
+        },
+        "guards": {
+          "max_abs_error": true,
+          "mean_abs_error": true,
+          "mean_kl": true,
+          "top1": true
+        },
+        "passed": true,
+        "comparison": "prototype",
+        "boundary": "Bounded numerical probes, not task accuracy or full-suite equivalence."
+      },
+      "fresh_process_reload": {
+        "passed": true,
+        "parity": {
+          "max_abs_error": 0.0,
+          "mean_abs_error": 0.0,
+          "mean_kl": 0.0,
+          "top1_agreement": 1.0,
+          "positions": 4,
+          "generation_probes": 1,
+          "exact_generation_probes": 1,
+          "thresholds": {
+            "max_abs_error": 0.002,
+            "mean_abs_error": 0.0002,
+            "mean_kl": 1e-06,
+            "top1_agreement_min": 1.0
+          },
+          "guards": {
+            "max_abs_error": true,
+            "mean_abs_error": true,
+            "mean_kl": true,
+            "top1": true,
+            "exact_generation": true
+          },
+          "passed": true,
+          "comparison": "reload",
+          "boundary": "Bounded numerical probes, not task accuracy or full-suite equivalence."
+        },
+        "rotary_buffers": {
+          "model.visual.rotary_pos_emb.inv_freq": "torch.float32",
+          "model.language_model.rotary_emb.inv_freq": "torch.float32",
+          "model.language_model.rotary_emb.original_inv_freq": "torch.float32"
+        },
+        "residency_before": {
+          "passed": true,
+          "one_shared_vocabulary_owner": true,
+          "dense_vocabulary_parameters": 0,
+          "backbone_fallback_cache_bytes": 0,
+          "quantized_layers": 13,
+          "vocabulary_payload_bytes": 13026,
+          "vocabulary_fingerprint": "2b5c1e7db71c2cb25c52c7d2b24fb5b5631d0174a9b477ca6f5eec2f89908d11",
+          "projection_mode": "dense_equivalent",
+          "execution_dtype": "torch.float16",
+          "boundary": "Model-owned persistent state only; transient dequantization still occurs."
+        },
+        "residency_after": {
+          "passed": true,
+          "one_shared_vocabulary_owner": true,
+          "dense_vocabulary_parameters": 0,
+          "backbone_fallback_cache_bytes": 0,
+          "quantized_layers": 13,
+          "vocabulary_payload_bytes": 13026,
+          "vocabulary_fingerprint": "2b5c1e7db71c2cb25c52c7d2b24fb5b5631d0174a9b477ca6f5eec2f89908d11",
+          "projection_mode": "dense_equivalent",
+          "execution_dtype": "torch.float16",
+          "boundary": "Model-owned persistent state only; transient dequantization still occurs."
+        },
+        "artifact": {
+          "passed": true,
+          "measured_artifact_bytes": 352043,
+          "files": {
+            "config.json": 1599,
+            "generation_config.json": 196,
+            "rotquant_config.json": 22738,
+            "rotquant_model.safetensors": 101984,
+            "rotquant_packed.safetensors": 225526
+          },
+          "tensor_counts": {
+            "rotquant_model.safetensors": 48,
+            "rotquant_packed.safetensors": 60
+          },
+          "tensor_payload_bytes": 317030,
+          "container_and_auxiliary_file_bytes": 35013,
+          "vocabulary_codes_scales_codebook_bytes": 12898,
+          "vocabulary_rotation_bytes": 128,
+          "dense_vocabulary_serialized": false,
+          "boundary": "All files in the self-contained checkpoint, including retained vision tensors and tokenizer/processor files; text-only execution is validated."
+        }
+      }
+    },
+    {
+      "vocabulary_bits": 8,
+      "prototype_parity": {
+        "max_abs_error": 0.0,
+        "mean_abs_error": 0.0,
+        "mean_kl": 0.0,
+        "top1_agreement": 1.0,
+        "positions": 4,
+        "generation_probes": 1,
+        "exact_generation_probes": 1,
+        "thresholds": {
+          "max_abs_error": 0.125,
+          "mean_abs_error": 0.005,
+          "mean_kl": 0.0001,
+          "top1_agreement_min": 0.99
+        },
+        "guards": {
+          "max_abs_error": true,
+          "mean_abs_error": true,
+          "mean_kl": true,
+          "top1": true
+        },
+        "passed": true,
+        "comparison": "prototype",
+        "boundary": "Bounded numerical probes, not task accuracy or full-suite equivalence."
+      },
+      "fresh_process_reload": {
+        "passed": true,
+        "parity": {
+          "max_abs_error": 0.0,
+          "mean_abs_error": 0.0,
+          "mean_kl": 0.0,
+          "top1_agreement": 1.0,
+          "positions": 4,
+          "generation_probes": 1,
+          "exact_generation_probes": 1,
+          "thresholds": {
+            "max_abs_error": 0.002,
+            "mean_abs_error": 0.0002,
+            "mean_kl": 1e-06,
+            "top1_agreement_min": 1.0
+          },
+          "guards": {
+            "max_abs_error": true,
+            "mean_abs_error": true,
+            "mean_kl": true,
+            "top1": true,
+            "exact_generation": true
+          },
+          "passed": true,
+          "comparison": "reload",
+          "boundary": "Bounded numerical probes, not task accuracy or full-suite equivalence."
+        },
+        "rotary_buffers": {
+          "model.visual.rotary_pos_emb.inv_freq": "torch.float32",
+          "model.language_model.rotary_emb.inv_freq": "torch.float32",
+          "model.language_model.rotary_emb.original_inv_freq": "torch.float32"
+        },
+        "residency_before": {
+          "passed": true,
+          "one_shared_vocabulary_owner": true,
+          "dense_vocabulary_parameters": 0,
+          "backbone_fallback_cache_bytes": 0,
+          "quantized_layers": 13,
+          "vocabulary_payload_bytes": 17922,
+          "vocabulary_fingerprint": "e90f3f227e8e0ee2c7fc822acf821cff7bfd7ba1ac42e061c1fa4e1695bbf166",
+          "projection_mode": "dense_equivalent",
+          "execution_dtype": "torch.float16",
+          "boundary": "Model-owned persistent state only; transient dequantization still occurs."
+        },
+        "residency_after": {
+          "passed": true,
+          "one_shared_vocabulary_owner": true,
+          "dense_vocabulary_parameters": 0,
+          "backbone_fallback_cache_bytes": 0,
+          "quantized_layers": 13,
+          "vocabulary_payload_bytes": 17922,
+          "vocabulary_fingerprint": "e90f3f227e8e0ee2c7fc822acf821cff7bfd7ba1ac42e061c1fa4e1695bbf166",
+          "projection_mode": "dense_equivalent",
+          "execution_dtype": "torch.float16",
+          "boundary": "Model-owned persistent state only; transient dequantization still occurs."
+        },
+        "artifact": {
+          "passed": true,
+          "measured_artifact_bytes": 356947,
+          "files": {
+            "config.json": 1599,
+            "generation_config.json": 196,
+            "rotquant_config.json": 22738,
+            "rotquant_model.safetensors": 101984,
+            "rotquant_packed.safetensors": 230430
+          },
+          "tensor_counts": {
+            "rotquant_model.safetensors": 48,
+            "rotquant_packed.safetensors": 60
+          },
+          "tensor_payload_bytes": 321926,
+          "container_and_auxiliary_file_bytes": 35021,
+          "vocabulary_codes_scales_codebook_bytes": 17794,
+          "vocabulary_rotation_bytes": 128,
+          "dense_vocabulary_serialized": false,
+          "boundary": "All files in the self-contained checkpoint, including retained vision tensors and tokenizer/processor files; text-only execution is validated."
+        }
+      }
+    }
+  ],
+  "boundary": "Tiny random model, text-path conformance only; no pretrained quality or vision accuracy result."
+}

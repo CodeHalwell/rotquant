@@ -6,6 +6,32 @@ learned, negative results, and the decision that followed. Results produced in
 external notebooks are recorded here even when their raw artifacts live on
 Google Drive.
 
+## 2026-09-09: fresh-quality evidence complete; public-task gate prepared
+
+Imported `qwen35_fresh_quality_d4292d6fdec6` without changing original JSON bytes.
+Nine completed collections contain 1,080 prompt records, 864 strict task outputs,
+45 domain summaries and 126 paired contrasts; 1,125 checksum pairs verify.
+All six saved-checkpoint reload probes passed. W5/W6 C4 KL is
+0.005939/0.005770/0.005633 versus 0.013379 for the pinned Unsloth artifact.
+W5/W8 is 0.005210/0.004959/0.004901. W6 is 3.989% smaller; W8 0.445% larger.
+These are 5-bit backbone recipes with 6/8-bit tied vocabulary, not uniform W4.
+
+Authored task results do not consistently favor the lower-KL recipe. Every
+invalid-JSON case was a correct object wrapped in Markdown fences. Every failed
+tool lookup used the right search tool but included the word "invoice" in the
+query, which an overstrict oracle rejected. The conditional-tool family never
+exercised its >50 branch. Preserve those scores, qualify their interpretation,
+and do not fix the old frozen protocol retroactively. See the
+[full result note](fresh_quality_results_2026-09-09.md).
+
+Prepared a new generation-only public-task runner and Colab: pinned GSM8K,
+CRUXEval-O, Google's IFEval checkers, both W5 recipes at seeds 0/1/2, source FP16,
+BF16-GGUF bridge and Unsloth. Each prompt is durable and checksummed, with live
+progress and fail-closed provenance/resume checks. No generated programs/tools
+are executed. Local tests/preflights are not a completed full-model CUDA run.
+The next step after task evidence is one measured packed serving implementation,
+not another broad algorithm search.
+
 ## 2026-09-08: four Hindi tokenizer mismatches; controlled bridge recovery
 
 The user-provided Colab build log shows llama-cpp-python 0.3.35 built in about

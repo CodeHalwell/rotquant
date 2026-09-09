@@ -8,6 +8,21 @@ postponed cleanup.
 
 ## Stage 2: canonical GPU serving
 
+September 9 update: **the nine-arm fresh-quality experiment completed**. See
+[results](fresh_quality_results_2026-09-09.md) and its byte-preserving archive.
+All six packed reload gates passed; both W5 recipes beat the pinned provider on
+fresh C4 KL, but the authored task suite does not justify an overall task win.
+W5/W6 remains the under-budget candidate; W5/W8 the fidelity alternative.
+
+Immediate next milestone: run the new [public-task release gate](public_tasks_run_2026-09-09.md)
+on saved checkpoints, with frozen public math/code-understanding/instruction
+inputs and the same provider/bridge controls. No new allocator/recovery sweep,
+re-quantization or promotion based on a lucky seed. Following that evidence,
+implement and profile one native/GGUF/llama.cpp serving path for the retained
+recipe. Broader models, genuine agent/code-execution benchmarks, and GPU kernel
+work remain subsequent gates. This entry supersedes the pending experiment
+status in the historical September 7/8 entries below.
+
 September 8 review: the [project deep dive](project_deep_dive_2026-09-08.md)
 audits the evidence behind every item below, lists the defects found in the
 library, allocator, KV simulator, native runtime, CI and documentation, and

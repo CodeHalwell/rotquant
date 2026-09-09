@@ -1,0 +1,40 @@
+{
+  "id": "code_trace-filter-1",
+  "domain": "code_trace",
+  "family": "code_trace-filter",
+  "input_hash": "2dd8f8f737df5c1dc2079ba1151d08d6dc94827cbf6fef58e0cf56de6aeb7a84",
+  "kind": "task",
+  "manifest": "76e00611d6bd45c3bb0892ad27eeb2b83c872e18870fd880cbab58babf185372",
+  "tokens": 9,
+  "continuation": [
+    4754,
+    8944,
+    763,
+    220,
+    16,
+    15,
+    15,
+    92,
+    248046
+  ],
+  "output_text": "{\"answer\": 100}",
+  "unmapped_generated_ids": [],
+  "truncated": false,
+  "mean_teacher_kl": 0.02158882168555465,
+  "top1_agreement": 0.8888888888888888,
+  "source_nll": 0.18068812938943463,
+  "candidate_nll": 0.2590351606910796,
+  "json_valid": true,
+  "task_success": false,
+  "trajectory_token_agreement": 0.8888888888888888,
+  "exact_trajectory": false,
+  "source_task_success": false,
+  "same_engine_bf16": {
+    "mean_teacher_kl": 0.021716016458021334,
+    "top1_agreement": 0.8888888888888888,
+    "source_nll": 0.18095258282634555,
+    "candidate_nll": 0.2590351606910796
+  },
+  "collection": "b27a77f5a7733a479460d2b53890df8bc06361c78204a4bae1d93e2c4d4d178e",
+  "seconds": 0.5901715489999333
+}

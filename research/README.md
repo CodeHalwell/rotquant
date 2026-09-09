@@ -1,8 +1,14 @@
 # Reproducible research records
 
-Latest: [packed revalidation evidence](results/raw/qwen35_packed_revalidation_89d25f3/evidence_index.json)
-preserves original JSON bytes/checksums, including the failed and repaired W6
-records. See [the next fresh-quality protocol](../docs/fresh_quality_run_2026-09-08.md).
+Latest: [completed fresh-quality evidence](results/raw/qwen35_fresh_quality_d4292d6fdec6/evidence_index.json)
+preserves 1,080 prompt records across nine arms and all 1,125 SHA-256 record
+pairs, byte-for-byte. Summary/oracle/paired-contrast reconciliation is repeatable
+with `scripts/archive_fresh_quality.py`. See the
+[results and limitations](../docs/fresh_quality_results_2026-09-09.md) and
+[next public-task protocol and sources](../docs/public_tasks_run_2026-09-09.md).
+
+The earlier [packed revalidation evidence](results/raw/qwen35_packed_revalidation_89d25f3/evidence_index.json)
+still preserves both the failed and repaired W6 records. No old scores were replaced.
 
 This directory contains compact, versioned records for completed external
 experiments. Recoverable Colab bundles are preserved under `results/raw/` as

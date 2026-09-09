@@ -1,0 +1,33 @@
+{
+  "id": "code_trace-filter-2",
+  "domain": "code_trace",
+  "family": "code_trace-filter",
+  "input_hash": "9056395555cdc0a638bb5b3c93139490e0df4a84a6e8286020e194977bb0d510",
+  "kind": "task",
+  "manifest": "76e00611d6bd45c3bb0892ad27eeb2b83c872e18870fd880cbab58babf185372",
+  "tokens": 8,
+  "continuation": [
+    4754,
+    8944,
+    763,
+    220,
+    20,
+    23,
+    92,
+    248046
+  ],
+  "output_text": "{\"answer\": 58}",
+  "unmapped_generated_ids": [],
+  "truncated": false,
+  "mean_teacher_kl": 0.0018589935009920566,
+  "top1_agreement": 1.0,
+  "source_nll": 0.12354508055835822,
+  "candidate_nll": 0.12753952139991043,
+  "json_valid": true,
+  "task_success": true,
+  "trajectory_token_agreement": 1.0,
+  "exact_trajectory": true,
+  "source_task_success": true,
+  "collection": "f27e21be1973a8183d0c59103be92142938d19874d4d725bbd5beba5ca7189f5",
+  "seconds": 11.481711091999841
+}

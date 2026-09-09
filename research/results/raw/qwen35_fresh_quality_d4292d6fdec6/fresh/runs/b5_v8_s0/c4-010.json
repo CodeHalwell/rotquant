@@ -1,0 +1,19 @@
+{
+  "id": "c4-010",
+  "domain": "c4",
+  "family": "c4-row-123108",
+  "input_hash": "4c859f70edafd7663db90fb6da5077ba5387bf410b0afb2d95d38b1026ca3946",
+  "kind": "text",
+  "manifest": "76e00611d6bd45c3bb0892ad27eeb2b83c872e18870fd880cbab58babf185372",
+  "tokens": 511,
+  "continuation": [],
+  "output_text": "",
+  "unmapped_generated_ids": [],
+  "truncated": false,
+  "mean_teacher_kl": 0.004056805020800062,
+  "top1_agreement": 0.9686888454011742,
+  "source_nll": 2.0957233344303954,
+  "candidate_nll": 2.096636074943716,
+  "collection": "366c0168480b4099a9c1503e0bb3617362d4cf2d901659859ad04e9bf863d67b",
+  "seconds": 5.577584884999851
+}

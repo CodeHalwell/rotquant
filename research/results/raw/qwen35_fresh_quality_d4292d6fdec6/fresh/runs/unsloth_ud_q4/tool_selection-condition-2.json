@@ -1,0 +1,41 @@
+{
+  "id": "tool_selection-condition-2",
+  "domain": "tool_selection",
+  "family": "tool_selection-condition",
+  "input_hash": "ce68df3fe8ab2e8865db74f357c6efd480143adce37bfd8090fecad6f74ba7a0",
+  "kind": "task",
+  "manifest": "76e00611d6bd45c3bb0892ad27eeb2b83c872e18870fd880cbab58babf185372",
+  "tokens": 10,
+  "continuation": [
+    4754,
+    591,
+    3147,
+    6487,
+    2129,
+    15889,
+    763,
+    90,
+    3307,
+    248046
+  ],
+  "output_text": "{\"name\":\"none\",\"arguments\":{}}",
+  "unmapped_generated_ids": [],
+  "truncated": false,
+  "mean_teacher_kl": 0.0014473846979853988,
+  "top1_agreement": 1.0,
+  "source_nll": 0.0070133142857230265,
+  "candidate_nll": 0.008475650722903082,
+  "json_valid": true,
+  "task_success": true,
+  "trajectory_token_agreement": 1.0,
+  "exact_trajectory": true,
+  "source_task_success": true,
+  "same_engine_bf16": {
+    "mean_teacher_kl": 0.0014348317202575345,
+    "top1_agreement": 1.0,
+    "source_nll": 0.007090322836120322,
+    "candidate_nll": 0.008475650722903082
+  },
+  "collection": "b27a77f5a7733a479460d2b53890df8bc06361c78204a4bae1d93e2c4d4d178e",
+  "seconds": 0.5830968469999789
+}

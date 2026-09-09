@@ -1,0 +1,61 @@
+{
+  "identity": {
+    "manifest": "76e00611d6bd45c3bb0892ad27eeb2b83c872e18870fd880cbab58babf185372",
+    "source": {
+      "revision": "d4292d6fdec688cdb896d6d2cfea81de1c310235",
+      "source_fingerprint": "98a54d5c17ef917d311d330bcdcb2ff96208134ec3613a903e578c04b5f82366"
+    },
+    "runtime": {
+      "versions": {
+        "torch": "2.11.0+cu128",
+        "transformers": "5.9.0",
+        "datasets": "4.8.5",
+        "safetensors": "0.7.0",
+        "fast-hadamard-transform": "1.1.0",
+        "numpy": "2.1.3",
+        "scipy": "1.15.3",
+        "huggingface-hub": "1.17.0",
+        "jinja2": "3.1.6",
+        "accelerate": "1.13.0"
+      },
+      "cuda": "12.8",
+      "python": "3.13.15",
+      "gpu": "NVIDIA A100-SXM4-40GB",
+      "disable_fast_hadamard": "",
+      "tf32": false
+    },
+    "stop_ids": [
+      248044,
+      248046
+    ],
+    "device": "cuda",
+    "label": "b5_v6_s2",
+    "prepared_sha256": "0f6a2fe498ccc3be996316007800ddd0a49533563213cfa65969a983449f9074",
+    "manifest_sha256": "a26f826e40457fce5758df7df7d81474d1c07eb8e28c64168f4031093a01c7f2"
+  },
+  "parity": {
+    "max_abs_error": 0.0,
+    "mean_abs_error": 0.0,
+    "mean_kl": 0.0,
+    "top1_agreement": 1.0,
+    "positions": 16,
+    "generation_probes": 4,
+    "exact_generation_probes": 4,
+    "thresholds": {
+      "max_abs_error": 0.002,
+      "mean_abs_error": 0.0002,
+      "mean_kl": 1e-06,
+      "top1_agreement_min": 1.0
+    },
+    "guards": {
+      "max_abs_error": true,
+      "mean_abs_error": true,
+      "mean_kl": true,
+      "top1": true,
+      "exact_generation": true
+    },
+    "passed": true,
+    "comparison": "reload",
+    "boundary": "Bounded numerical probes, not task accuracy or full-suite equivalence."
+  }
+}

@@ -1,0 +1,34 @@
+{
+  "manifest": "76e00611d6bd45c3bb0892ad27eeb2b83c872e18870fd880cbab58babf185372",
+  "source": {
+    "revision": "d4292d6fdec688cdb896d6d2cfea81de1c310235",
+    "source_fingerprint": "98a54d5c17ef917d311d330bcdcb2ff96208134ec3613a903e578c04b5f82366"
+  },
+  "runtime": {
+    "versions": {
+      "torch": "2.11.0+cu128",
+      "transformers": "5.9.0",
+      "datasets": "4.8.5",
+      "safetensors": "0.7.0",
+      "fast-hadamard-transform": "1.1.0",
+      "numpy": "2.1.3",
+      "scipy": "1.15.3",
+      "huggingface-hub": "1.17.0",
+      "jinja2": "3.1.6",
+      "accelerate": "1.13.0"
+    },
+    "cuda": "12.8",
+    "python": "3.13.15",
+    "gpu": "NVIDIA A100-SXM4-40GB",
+    "disable_fast_hadamard": "",
+    "tf32": false
+  },
+  "stop_ids": [
+    248044,
+    248046
+  ],
+  "device": "cuda",
+  "label": "b5_v6_s1",
+  "prepared_sha256": "35a82e5b4092e8b4f697f8bc4642bc1c05946e690e6b7efd6bc3441ec6a8081b",
+  "manifest_sha256": "69e4ec2527470eb84d24b885c11d5f2ca311d586d716342eacfacd3b2178fec0"
+}

@@ -1,5 +1,10 @@
 # Qwen3.5-4B: fresh quality and recipe replication
 
+September 9 status: this experiment has completed in Colab across all nine arms.
+See the [archived results and limitations](fresh_quality_results_2026-09-09.md).
+The next run is the [public-task gate](public_tasks_run_2026-09-09.md).
+The historical plan below is retained to document what was preregistered.
+
 Use [the new Colab notebook](../notebooks/qwen35_4b_fresh_quality_colab.ipynb).
 This follows successful packed revalidation, not another allocator/LoRA sweep.
 The notebook is published on `main`. The full pretrained CUDA notebook has not

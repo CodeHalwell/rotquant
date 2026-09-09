@@ -1,0 +1,76 @@
+{
+  "identity": {
+    "manifest": "76e00611d6bd45c3bb0892ad27eeb2b83c872e18870fd880cbab58babf185372",
+    "source": {
+      "revision": "d4292d6fdec688cdb896d6d2cfea81de1c310235",
+      "source_fingerprint": "98a54d5c17ef917d311d330bcdcb2ff96208134ec3613a903e578c04b5f82366"
+    },
+    "runtime": {
+      "versions": {
+        "torch": "2.11.0+cu128",
+        "transformers": "5.9.0",
+        "datasets": "4.8.5",
+        "safetensors": "0.7.0",
+        "fast-hadamard-transform": "1.1.0",
+        "numpy": "2.1.3",
+        "scipy": "1.15.3",
+        "huggingface-hub": "1.17.0",
+        "jinja2": "3.1.6",
+        "accelerate": "1.13.0"
+      },
+      "cuda": "12.8",
+      "python": "3.13.15",
+      "gpu": "NVIDIA A100-SXM4-40GB",
+      "disable_fast_hadamard": "",
+      "tf32": false
+    },
+    "stop_ids": [
+      248044,
+      248046
+    ],
+    "device": "cuda",
+    "label": "b5_v6_s1",
+    "prepared_sha256": "35a82e5b4092e8b4f697f8bc4642bc1c05946e690e6b7efd6bc3441ec6a8081b",
+    "manifest_sha256": "69e4ec2527470eb84d24b885c11d5f2ca311d586d716342eacfacd3b2178fec0"
+  },
+  "complete": true,
+  "ledger": {
+    "passed": true,
+    "measured_artifact_bytes": 3441544638,
+    "files": {
+      "chat_template.jinja": 7992,
+      "config.json": 2884,
+      "generation_config.json": 115,
+      "processor_config.json": 1296,
+      "rotquant_config.json": 520913,
+      "rotquant_model.safetensors": 677680128,
+      "rotquant_packed.safetensors": 2743340792,
+      "tokenizer.json": 19989325,
+      "tokenizer_config.json": 1193
+    },
+    "tensor_counts": {
+      "rotquant_model.safetensors": 723,
+      "rotquant_packed.safetensors": 1288
+    },
+    "tensor_payload_bytes": 3420812160,
+    "container_and_auxiliary_file_bytes": 20732478,
+    "vocabulary_codes_scales_codebook_bytes": 486707456,
+    "vocabulary_rotation_bytes": 2560,
+    "dense_vocabulary_serialized": false,
+    "boundary": "All files in the self-contained checkpoint, including retained vision tensors and tokenizer/processor files; text-only execution is validated."
+  },
+  "residency": {
+    "passed": true,
+    "one_shared_vocabulary_owner": true,
+    "dense_vocabulary_parameters": 0,
+    "backbone_fallback_cache_bytes": 0,
+    "quantized_layers": 200,
+    "vocabulary_payload_bytes": 486710016,
+    "vocabulary_fingerprint": "e4c55a7f71623e19f6c9fcbe7d03aa59e56746a86b663840683e324ac975de7b",
+    "projection_mode": "dense_equivalent",
+    "execution_dtype": "torch.float16",
+    "boundary": "Model-owned persistent state only; transient dequantization still occurs."
+  },
+  "manifest": "76e00611d6bd45c3bb0892ad27eeb2b83c872e18870fd880cbab58babf185372",
+  "boundary": "Quality diagnostics only. Timings are not a throughput benchmark."
+}

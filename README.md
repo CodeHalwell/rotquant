@@ -141,12 +141,20 @@ of the saved artifacts then passed with zero probe error for both recipes
 numbers are still seed 0 on development prompts, scored against a Transformers
 FP16 teacher, and the artifacts run only on a tiled Python reference path.
 
+The [fresh quality and recipe replication run](docs/fresh_quality_results_2026-09-09.md)
+is now complete across all nine arms. On 24 fresh C4 documents, W5/W6 reduced
+common-FP16 KL by 55.6–57.9% versus the pinned Unsloth UD-Q4_K_XL; W5/W8 by
+61.1–63.4%. All six packed reload gates passed. These are **W5 backbones**, not
+W4 models or evidence of general task/serving superiority. The authored tasks
+exposed seed sensitivity and two oracle/format interpretation limitations.
+
 **The next run** is the
-[fresh quality and recipe replication Colab](notebooks/qwen35_4b_fresh_quality_colab.ipynb):
-calibration-disjoint C4 and authored task inputs, one common FP16 teacher for
-every arm, a BF16-GGUF engine bridge, the pinned Unsloth artifact on the same
-frozen inputs, and seeds 1/2. Start with its
-[runbook](docs/fresh_quality_run_2026-09-08.md). The
+[public-task Colab](notebooks/qwen35_4b_public_tasks_colab.ipynb): GSM8K,
+CRUXEval-O and IFEval on the existing six checkpoints, with FP16/Unsloth/BF16
+bridge controls. No re-quantization or training. It starts with a separate
+eight-example-per-benchmark smoke scope; the standard run is 128 each.
+Read the [runbook](docs/public_tasks_run_2026-09-09.md). Full-model CUDA execution
+of this new protocol remains unvalidated locally. The
 [project deep dive of 8 September](docs/project_deep_dive_2026-09-08.md) records
 the state of the evidence, the defects found in review, and the ordered next
 steps that follow that run.

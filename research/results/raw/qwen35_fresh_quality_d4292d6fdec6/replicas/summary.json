@@ -1,0 +1,20 @@
+{
+  "protocol": "qwen35-packed-vocabulary-validation-v1",
+  "complete": false,
+  "missing": [
+    "b5_v6_s1",
+    "b5_v8_s1",
+    "b5_v6_s2",
+    "b5_v8_s2"
+  ],
+  "rows": [],
+  "revalidate_from": null,
+  "seeds": [
+    1,
+    2
+  ],
+  "artifact_validated_arms": [],
+  "provider_competitive": false,
+  "independent_confirmation": false,
+  "interpretation": "Packed artifact conformance on reused development inputs. No provider, speed, or independent-validation win is claimed."
+}

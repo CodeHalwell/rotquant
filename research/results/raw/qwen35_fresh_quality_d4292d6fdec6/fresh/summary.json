@@ -1,0 +1,3044 @@
+{
+  "protocol": "qwen35-fresh-packed-diagnostics-v1",
+  "manifest": "76e00611d6bd45c3bb0892ad27eeb2b83c872e18870fd880cbab58babf185372",
+  "complete": true,
+  "expected_labels": [
+    "source_fp16",
+    "b5_v6_s0",
+    "b5_v8_s0",
+    "gguf_bf16_bridge",
+    "unsloth_ud_q4",
+    "b5_v6_s1",
+    "b5_v8_s1",
+    "b5_v6_s2",
+    "b5_v8_s2"
+  ],
+  "missing": [],
+  "rows": [
+    {
+      "label": "source_fp16",
+      "domain": "c4",
+      "prompts": 24,
+      "tokens": 12264,
+      "mean_teacher_kl": 0.0,
+      "top1_agreement": 1.0,
+      "source_nll": 2.6952249017950223,
+      "candidate_nll": 2.6952249017950223,
+      "artifact_bytes": null,
+      "producer_source": {
+        "revision": "d4292d6fdec688cdb896d6d2cfea81de1c310235",
+        "source_fingerprint": "98a54d5c17ef917d311d330bcdcb2ff96208134ec3613a903e578c04b5f82366"
+      },
+      "gguf_input_policy": null,
+      "nll_delta": 0.0
+    },
+    {
+      "label": "source_fp16",
+      "domain": "code_trace",
+      "prompts": 24,
+      "tokens": 243,
+      "mean_teacher_kl": 0.0,
+      "top1_agreement": 1.0,
+      "source_nll": 0.1633437821230263,
+      "candidate_nll": 0.1633437821230263,
+      "artifact_bytes": null,
+      "producer_source": {
+        "revision": "d4292d6fdec688cdb896d6d2cfea81de1c310235",
+        "source_fingerprint": "98a54d5c17ef917d311d330bcdcb2ff96208134ec3613a903e578c04b5f82366"
+      },
+      "gguf_input_policy": null,
+      "nll_delta": 0.0,
+      "task_success": 0.5416666666666666,
+      "source_task_success": 0.5416666666666666,
+      "json_valid": 1.0,
+      "truncated": 0.0,
+      "trajectory_token_agreement": 1.0,
+      "exact_trajectory": 1.0,
+      "correct_to_wrong": 0,
+      "wrong_to_correct": 0
+    },
+    {
+      "label": "source_fp16",
+      "domain": "multilingual",
+      "prompts": 24,
+      "tokens": 204,
+      "mean_teacher_kl": 0.0,
+      "top1_agreement": 1.0,
+      "source_nll": 0.004501225685826329,
+      "candidate_nll": 0.004501225685826329,
+      "artifact_bytes": null,
+      "producer_source": {
+        "revision": "d4292d6fdec688cdb896d6d2cfea81de1c310235",
+        "source_fingerprint": "98a54d5c17ef917d311d330bcdcb2ff96208134ec3613a903e578c04b5f82366"
+      },
+      "gguf_input_policy": null,
+      "nll_delta": 0.0,
+      "task_success": 1.0,
+      "source_task_success": 1.0,
+      "json_valid": 1.0,
+      "truncated": 0.0,
+      "trajectory_token_agreement": 1.0,
+      "exact_trajectory": 1.0,
+      "correct_to_wrong": 0,
+      "wrong_to_correct": 0
+    },
+    {
+      "label": "source_fp16",
+      "domain": "structured",
+      "prompts": 24,
+      "tokens": 521,
+      "mean_teacher_kl": 0.0,
+      "top1_agreement": 1.0,
+      "source_nll": 0.02062150940124904,
+      "candidate_nll": 0.02062150940124904,
+      "artifact_bytes": null,
+      "producer_source": {
+        "revision": "d4292d6fdec688cdb896d6d2cfea81de1c310235",
+        "source_fingerprint": "98a54d5c17ef917d311d330bcdcb2ff96208134ec3613a903e578c04b5f82366"
+      },
+      "gguf_input_policy": null,
+      "nll_delta": 0.0,
+      "task_success": 0.9166666666666666,
+      "source_task_success": 0.9166666666666666,
+      "json_valid": 0.9166666666666666,
+      "truncated": 0.0,
+      "trajectory_token_agreement": 1.0,
+      "exact_trajectory": 1.0,
+      "correct_to_wrong": 0,
+      "wrong_to_correct": 0
+    },
+    {
+      "label": "source_fp16",
+      "domain": "tool_selection",
+      "prompts": 24,
+      "tokens": 312,
+      "mean_teacher_kl": 0.0,
+      "top1_agreement": 1.0,
+      "source_nll": 0.015200305928043433,
+      "candidate_nll": 0.015200305928043433,
+      "artifact_bytes": null,
+      "producer_source": {
+        "revision": "d4292d6fdec688cdb896d6d2cfea81de1c310235",
+        "source_fingerprint": "98a54d5c17ef917d311d330bcdcb2ff96208134ec3613a903e578c04b5f82366"
+      },
+      "gguf_input_policy": null,
+      "nll_delta": 0.0,
+      "task_success": 0.75,
+      "source_task_success": 0.75,
+      "json_valid": 1.0,
+      "truncated": 0.0,
+      "trajectory_token_agreement": 1.0,
+      "exact_trajectory": 1.0,
+      "correct_to_wrong": 0,
+      "wrong_to_correct": 0
+    },
+    {
+      "label": "b5_v6_s0",
+      "domain": "c4",
+      "prompts": 24,
+      "tokens": 12264,
+      "mean_teacher_kl": 0.005939187577476476,
+      "top1_agreement": 0.9602087410306588,
+      "source_nll": 2.6952249017950223,
+      "candidate_nll": 2.7012646561929676,
+      "artifact_bytes": 3441544638,
+      "producer_source": {
+        "revision": "d4292d6fdec688cdb896d6d2cfea81de1c310235",
+        "source_fingerprint": "98a54d5c17ef917d311d330bcdcb2ff96208134ec3613a903e578c04b5f82366"
+      },
+      "gguf_input_policy": null,
+      "nll_delta": 0.006039754397945352
+    },
+    {
+      "label": "b5_v6_s0",
+      "domain": "code_trace",
+      "prompts": 24,
+      "tokens": 243,
+      "mean_teacher_kl": 0.0063783417464980665,
+      "top1_agreement": 0.9794238683127572,
+      "source_nll": 0.1633437821230263,
+      "candidate_nll": 0.18676248029984344,
+      "artifact_bytes": 3441544638,
+      "producer_source": {
+        "revision": "d4292d6fdec688cdb896d6d2cfea81de1c310235",
+        "source_fingerprint": "98a54d5c17ef917d311d330bcdcb2ff96208134ec3613a903e578c04b5f82366"
+      },
+      "gguf_input_policy": null,
+      "nll_delta": 0.023418698176817132,
+      "task_success": 0.375,
+      "source_task_success": 0.5416666666666666,
+      "json_valid": 1.0,
+      "truncated": 0.0,
+      "trajectory_token_agreement": 0.921875,
+      "exact_trajectory": 0.7916666666666666,
+      "correct_to_wrong": 4,
+      "wrong_to_correct": 0
+    },
+    {
+      "label": "b5_v6_s0",
+      "domain": "multilingual",
+      "prompts": 24,
+      "tokens": 204,
+      "mean_teacher_kl": 0.0007356708609708227,
+      "top1_agreement": 1.0,
+      "source_nll": 0.004501225685826329,
+      "candidate_nll": 0.004644506130987606,
+      "artifact_bytes": 3441544638,
+      "producer_source": {
+        "revision": "d4292d6fdec688cdb896d6d2cfea81de1c310235",
+        "source_fingerprint": "98a54d5c17ef917d311d330bcdcb2ff96208134ec3613a903e578c04b5f82366"
+      },
+      "gguf_input_policy": null,
+      "nll_delta": 0.00014328044516127673,
+      "task_success": 1.0,
+      "source_task_success": 1.0,
+      "json_valid": 1.0,
+      "truncated": 0.0,
+      "trajectory_token_agreement": 1.0,
+      "exact_trajectory": 1.0,
+      "correct_to_wrong": 0,
+      "wrong_to_correct": 0
+    },
+    {
+      "label": "b5_v6_s0",
+      "domain": "structured",
+      "prompts": 24,
+      "tokens": 521,
+      "mean_teacher_kl": 0.002227317946043166,
+      "top1_agreement": 0.9942418426103646,
+      "source_nll": 0.02062150940124904,
+      "candidate_nll": 0.017330542285055966,
+      "artifact_bytes": 3441544638,
+      "producer_source": {
+        "revision": "d4292d6fdec688cdb896d6d2cfea81de1c310235",
+        "source_fingerprint": "98a54d5c17ef917d311d330bcdcb2ff96208134ec3613a903e578c04b5f82366"
+      },
+      "gguf_input_policy": null,
+      "nll_delta": -0.003290967116193075,
+      "task_success": 0.8333333333333334,
+      "source_task_success": 0.9166666666666666,
+      "json_valid": 0.8333333333333334,
+      "truncated": 0.0,
+      "trajectory_token_agreement": 0.875,
+      "exact_trajectory": 0.875,
+      "correct_to_wrong": 2,
+      "wrong_to_correct": 0
+    },
+    {
+      "label": "b5_v6_s0",
+      "domain": "tool_selection",
+      "prompts": 24,
+      "tokens": 312,
+      "mean_teacher_kl": 0.0021614600087282373,
+      "top1_agreement": 1.0,
+      "source_nll": 0.015200305928043433,
+      "candidate_nll": 0.01335099343288467,
+      "artifact_bytes": 3441544638,
+      "producer_source": {
+        "revision": "d4292d6fdec688cdb896d6d2cfea81de1c310235",
+        "source_fingerprint": "98a54d5c17ef917d311d330bcdcb2ff96208134ec3613a903e578c04b5f82366"
+      },
+      "gguf_input_policy": null,
+      "nll_delta": -0.0018493124951587635,
+      "task_success": 0.75,
+      "source_task_success": 0.75,
+      "json_valid": 1.0,
+      "truncated": 0.0,
+      "trajectory_token_agreement": 1.0,
+      "exact_trajectory": 1.0,
+      "correct_to_wrong": 0,
+      "wrong_to_correct": 0
+    },
+    {
+      "label": "b5_v8_s0",
+      "domain": "c4",
+      "prompts": 24,
+      "tokens": 12264,
+      "mean_teacher_kl": 0.0052095413411230975,
+      "top1_agreement": 0.963307240704501,
+      "source_nll": 2.6952249017950223,
+      "candidate_nll": 2.6999610338370372,
+      "artifact_bytes": 3600470206,
+      "producer_source": {
+        "revision": "d4292d6fdec688cdb896d6d2cfea81de1c310235",
+        "source_fingerprint": "98a54d5c17ef917d311d330bcdcb2ff96208134ec3613a903e578c04b5f82366"
+      },
+      "gguf_input_policy": null,
+      "nll_delta": 0.004736132042014951
+    },
+    {
+      "label": "b5_v8_s0",
+      "domain": "code_trace",
+      "prompts": 24,
+      "tokens": 243,
+      "mean_teacher_kl": 0.006828163790434234,
+      "top1_agreement": 0.9711934156378601,
+      "source_nll": 0.1633437821230263,
+      "candidate_nll": 0.1877269943555636,
+      "artifact_bytes": 3600470206,
+      "producer_source": {
+        "revision": "d4292d6fdec688cdb896d6d2cfea81de1c310235",
+        "source_fingerprint": "98a54d5c17ef917d311d330bcdcb2ff96208134ec3613a903e578c04b5f82366"
+      },
+      "gguf_input_policy": null,
+      "nll_delta": 0.024383212232537282,
+      "task_success": 0.375,
+      "source_task_success": 0.5416666666666666,
+      "json_valid": 1.0,
+      "truncated": 0.0,
+      "trajectory_token_agreement": 0.8990162037037037,
+      "exact_trajectory": 0.7083333333333334,
+      "correct_to_wrong": 4,
+      "wrong_to_correct": 0
+    },
+    {
+      "label": "b5_v8_s0",
+      "domain": "multilingual",
+      "prompts": 24,
+      "tokens": 204,
+      "mean_teacher_kl": 0.0006900557972774923,
+      "top1_agreement": 1.0,
+      "source_nll": 0.004501225685826329,
+      "candidate_nll": 0.004873749276625591,
+      "artifact_bytes": 3600470206,
+      "producer_source": {
+        "revision": "d4292d6fdec688cdb896d6d2cfea81de1c310235",
+        "source_fingerprint": "98a54d5c17ef917d311d330bcdcb2ff96208134ec3613a903e578c04b5f82366"
+      },
+      "gguf_input_policy": null,
+      "nll_delta": 0.00037252359079926155,
+      "task_success": 1.0,
+      "source_task_success": 1.0,
+      "json_valid": 1.0,
+      "truncated": 0.0,
+      "trajectory_token_agreement": 1.0,
+      "exact_trajectory": 1.0,
+      "correct_to_wrong": 0,
+      "wrong_to_correct": 0
+    },
+    {
+      "label": "b5_v8_s0",
+      "domain": "structured",
+      "prompts": 24,
+      "tokens": 521,
+      "mean_teacher_kl": 0.002080655147521066,
+      "top1_agreement": 0.9884836852207294,
+      "source_nll": 0.02062150940124904,
+      "candidate_nll": 0.018380724717107107,
+      "artifact_bytes": 3600470206,
+      "producer_source": {
+        "revision": "d4292d6fdec688cdb896d6d2cfea81de1c310235",
+        "source_fingerprint": "98a54d5c17ef917d311d330bcdcb2ff96208134ec3613a903e578c04b5f82366"
+      },
+      "gguf_input_policy": null,
+      "nll_delta": -0.002240784684141933,
+      "task_success": 0.75,
+      "source_task_success": 0.9166666666666666,
+      "json_valid": 0.75,
+      "truncated": 0.0,
+      "trajectory_token_agreement": 0.7916666666666666,
+      "exact_trajectory": 0.7916666666666666,
+      "correct_to_wrong": 4,
+      "wrong_to_correct": 0
+    },
+    {
+      "label": "b5_v8_s0",
+      "domain": "tool_selection",
+      "prompts": 24,
+      "tokens": 312,
+      "mean_teacher_kl": 0.0018073099777647956,
+      "top1_agreement": 1.0,
+      "source_nll": 0.015200305928043433,
+      "candidate_nll": 0.014086290926095138,
+      "artifact_bytes": 3600470206,
+      "producer_source": {
+        "revision": "d4292d6fdec688cdb896d6d2cfea81de1c310235",
+        "source_fingerprint": "98a54d5c17ef917d311d330bcdcb2ff96208134ec3613a903e578c04b5f82366"
+      },
+      "gguf_input_policy": null,
+      "nll_delta": -0.0011140150019482951,
+      "task_success": 0.75,
+      "source_task_success": 0.75,
+      "json_valid": 1.0,
+      "truncated": 0.0,
+      "trajectory_token_agreement": 1.0,
+      "exact_trajectory": 1.0,
+      "correct_to_wrong": 0,
+      "wrong_to_correct": 0
+    },
+    {
+      "label": "gguf_bf16_bridge",
+      "domain": "c4",
+      "prompts": 24,
+      "tokens": 12264,
+      "mean_teacher_kl": 2.7121081328965735e-05,
+      "top1_agreement": 0.9957599478147423,
+      "source_nll": 2.6952249017950223,
+      "candidate_nll": 2.695368624411585,
+      "artifact_bytes": null,
+      "producer_source": {
+        "revision": "d4292d6fdec688cdb896d6d2cfea81de1c310235",
+        "source_fingerprint": "98a54d5c17ef917d311d330bcdcb2ff96208134ec3613a903e578c04b5f82366"
+      },
+      "gguf_input_policy": "frozen-hf",
+      "nll_delta": 0.00014372261656259155
+    },
+    {
+      "label": "gguf_bf16_bridge",
+      "domain": "code_trace",
+      "prompts": 24,
+      "tokens": 243,
+      "mean_teacher_kl": 1.2481875442900328e-05,
+      "top1_agreement": 1.0,
+      "source_nll": 0.1633437821230263,
+      "candidate_nll": 0.16319259284128326,
+      "artifact_bytes": null,
+      "producer_source": {
+        "revision": "d4292d6fdec688cdb896d6d2cfea81de1c310235",
+        "source_fingerprint": "98a54d5c17ef917d311d330bcdcb2ff96208134ec3613a903e578c04b5f82366"
+      },
+      "gguf_input_policy": "frozen-hf",
+      "nll_delta": -0.00015118928174304158,
+      "task_success": 0.5416666666666666,
+      "source_task_success": 0.5416666666666666,
+      "json_valid": 1.0,
+      "truncated": 0.0,
+      "trajectory_token_agreement": 1.0,
+      "exact_trajectory": 1.0,
+      "correct_to_wrong": 0,
+      "wrong_to_correct": 0
+    },
+    {
+      "label": "gguf_bf16_bridge",
+      "domain": "multilingual",
+      "prompts": 24,
+      "tokens": 204,
+      "mean_teacher_kl": 3.3052949332872306e-06,
+      "top1_agreement": 1.0,
+      "source_nll": 0.004501225685826329,
+      "candidate_nll": 0.004548122049089006,
+      "artifact_bytes": null,
+      "producer_source": {
+        "revision": "d4292d6fdec688cdb896d6d2cfea81de1c310235",
+        "source_fingerprint": "98a54d5c17ef917d311d330bcdcb2ff96208134ec3613a903e578c04b5f82366"
+      },
+      "gguf_input_policy": "frozen-hf",
+      "nll_delta": 4.689636326267715e-05,
+      "task_success": 1.0,
+      "source_task_success": 1.0,
+      "json_valid": 1.0,
+      "truncated": 0.0,
+      "trajectory_token_agreement": 1.0,
+      "exact_trajectory": 1.0,
+      "correct_to_wrong": 0,
+      "wrong_to_correct": 0
+    },
+    {
+      "label": "gguf_bf16_bridge",
+      "domain": "structured",
+      "prompts": 24,
+      "tokens": 521,
+      "mean_teacher_kl": 9.72735266550205e-06,
+      "top1_agreement": 1.0,
+      "source_nll": 0.02062150940124904,
+      "candidate_nll": 0.020480064110575073,
+      "artifact_bytes": null,
+      "producer_source": {
+        "revision": "d4292d6fdec688cdb896d6d2cfea81de1c310235",
+        "source_fingerprint": "98a54d5c17ef917d311d330bcdcb2ff96208134ec3613a903e578c04b5f82366"
+      },
+      "gguf_input_policy": "frozen-hf",
+      "nll_delta": -0.000141445290673968,
+      "task_success": 0.9166666666666666,
+      "source_task_success": 0.9166666666666666,
+      "json_valid": 0.9166666666666666,
+      "truncated": 0.0,
+      "trajectory_token_agreement": 1.0,
+      "exact_trajectory": 1.0,
+      "correct_to_wrong": 0,
+      "wrong_to_correct": 0
+    },
+    {
+      "label": "gguf_bf16_bridge",
+      "domain": "tool_selection",
+      "prompts": 24,
+      "tokens": 312,
+      "mean_teacher_kl": 6.223300181928105e-06,
+      "top1_agreement": 1.0,
+      "source_nll": 0.015200305928043433,
+      "candidate_nll": 0.015387340857469595,
+      "artifact_bytes": null,
+      "producer_source": {
+        "revision": "d4292d6fdec688cdb896d6d2cfea81de1c310235",
+        "source_fingerprint": "98a54d5c17ef917d311d330bcdcb2ff96208134ec3613a903e578c04b5f82366"
+      },
+      "gguf_input_policy": "frozen-hf",
+      "nll_delta": 0.00018703492942616189,
+      "task_success": 0.75,
+      "source_task_success": 0.75,
+      "json_valid": 1.0,
+      "truncated": 0.0,
+      "trajectory_token_agreement": 1.0,
+      "exact_trajectory": 1.0,
+      "correct_to_wrong": 0,
+      "wrong_to_correct": 0
+    },
+    {
+      "label": "unsloth_ud_q4",
+      "domain": "c4",
+      "prompts": 24,
+      "tokens": 12264,
+      "mean_teacher_kl": 0.013379022603090082,
+      "top1_agreement": 0.9403946510110893,
+      "source_nll": 2.6952249017950223,
+      "candidate_nll": 2.706683818957136,
+      "artifact_bytes": 3584533344,
+      "producer_source": {
+        "revision": "d4292d6fdec688cdb896d6d2cfea81de1c310235",
+        "source_fingerprint": "98a54d5c17ef917d311d330bcdcb2ff96208134ec3613a903e578c04b5f82366"
+      },
+      "gguf_input_policy": "frozen-hf",
+      "nll_delta": 0.011458917162113558,
+      "same_engine_bf16_kl": 0.013397015753299293
+    },
+    {
+      "label": "unsloth_ud_q4",
+      "domain": "code_trace",
+      "prompts": 24,
+      "tokens": 243,
+      "mean_teacher_kl": 0.02313395557919095,
+      "top1_agreement": 0.9547325102880658,
+      "source_nll": 0.1633437821230263,
+      "candidate_nll": 0.21251600927381434,
+      "artifact_bytes": 3584533344,
+      "producer_source": {
+        "revision": "d4292d6fdec688cdb896d6d2cfea81de1c310235",
+        "source_fingerprint": "98a54d5c17ef917d311d330bcdcb2ff96208134ec3613a903e578c04b5f82366"
+      },
+      "gguf_input_policy": "frozen-hf",
+      "nll_delta": 0.049172227150788034,
+      "task_success": 0.3333333333333333,
+      "source_task_success": 0.5416666666666666,
+      "json_valid": 1.0,
+      "truncated": 0.0,
+      "trajectory_token_agreement": 0.8356481481481483,
+      "exact_trajectory": 0.5,
+      "correct_to_wrong": 6,
+      "wrong_to_correct": 1,
+      "same_engine_bf16_kl": 0.023257342715615775
+    },
+    {
+      "label": "unsloth_ud_q4",
+      "domain": "multilingual",
+      "prompts": 24,
+      "tokens": 204,
+      "mean_teacher_kl": 0.001400877846166175,
+      "top1_agreement": 1.0,
+      "source_nll": 0.004501225685826329,
+      "candidate_nll": 0.003976626299151696,
+      "artifact_bytes": 3584533344,
+      "producer_source": {
+        "revision": "d4292d6fdec688cdb896d6d2cfea81de1c310235",
+        "source_fingerprint": "98a54d5c17ef917d311d330bcdcb2ff96208134ec3613a903e578c04b5f82366"
+      },
+      "gguf_input_policy": "frozen-hf",
+      "nll_delta": -0.000524599386674633,
+      "task_success": 1.0,
+      "source_task_success": 1.0,
+      "json_valid": 1.0,
+      "truncated": 0.0,
+      "trajectory_token_agreement": 1.0,
+      "exact_trajectory": 1.0,
+      "correct_to_wrong": 0,
+      "wrong_to_correct": 0,
+      "same_engine_bf16_kl": 0.0014312207232900062
+    },
+    {
+      "label": "unsloth_ud_q4",
+      "domain": "structured",
+      "prompts": 24,
+      "tokens": 521,
+      "mean_teacher_kl": 0.005232377978389327,
+      "top1_agreement": 0.9961612284069098,
+      "source_nll": 0.02062150940124904,
+      "candidate_nll": 0.01837983873620644,
+      "artifact_bytes": 3584533344,
+      "producer_source": {
+        "revision": "d4292d6fdec688cdb896d6d2cfea81de1c310235",
+        "source_fingerprint": "98a54d5c17ef917d311d330bcdcb2ff96208134ec3613a903e578c04b5f82366"
+      },
+      "gguf_input_policy": "frozen-hf",
+      "nll_delta": -0.002241670665042602,
+      "task_success": 1.0,
+      "source_task_success": 0.9166666666666666,
+      "json_valid": 1.0,
+      "truncated": 0.0,
+      "trajectory_token_agreement": 0.875,
+      "exact_trajectory": 0.875,
+      "correct_to_wrong": 0,
+      "wrong_to_correct": 2,
+      "same_engine_bf16_kl": 0.005329255758092927
+    },
+    {
+      "label": "unsloth_ud_q4",
+      "domain": "tool_selection",
+      "prompts": 24,
+      "tokens": 312,
+      "mean_teacher_kl": 0.0011695570504969305,
+      "top1_agreement": 1.0,
+      "source_nll": 0.015200305928043433,
+      "candidate_nll": 0.015092122329264157,
+      "artifact_bytes": 3584533344,
+      "producer_source": {
+        "revision": "d4292d6fdec688cdb896d6d2cfea81de1c310235",
+        "source_fingerprint": "98a54d5c17ef917d311d330bcdcb2ff96208134ec3613a903e578c04b5f82366"
+      },
+      "gguf_input_policy": "frozen-hf",
+      "nll_delta": -0.0001081835987792757,
+      "task_success": 0.75,
+      "source_task_success": 0.75,
+      "json_valid": 1.0,
+      "truncated": 0.0,
+      "trajectory_token_agreement": 1.0,
+      "exact_trajectory": 1.0,
+      "correct_to_wrong": 0,
+      "wrong_to_correct": 0,
+      "same_engine_bf16_kl": 0.0011900669222551863
+    },
+    {
+      "label": "b5_v6_s1",
+      "domain": "c4",
+      "prompts": 24,
+      "tokens": 12264,
+      "mean_teacher_kl": 0.005770173217053123,
+      "top1_agreement": 0.9590671885192433,
+      "source_nll": 2.6952249017950223,
+      "candidate_nll": 2.697533946470415,
+      "artifact_bytes": 3441544638,
+      "producer_source": {
+        "revision": "d4292d6fdec688cdb896d6d2cfea81de1c310235",
+        "source_fingerprint": "98a54d5c17ef917d311d330bcdcb2ff96208134ec3613a903e578c04b5f82366"
+      },
+      "gguf_input_policy": null,
+      "nll_delta": 0.002309044675392613
+    },
+    {
+      "label": "b5_v6_s1",
+      "domain": "code_trace",
+      "prompts": 24,
+      "tokens": 243,
+      "mean_teacher_kl": 0.007727167499066022,
+      "top1_agreement": 0.9711934156378601,
+      "source_nll": 0.1633437821230263,
+      "candidate_nll": 0.16159121020546494,
+      "artifact_bytes": 3441544638,
+      "producer_source": {
+        "revision": "d4292d6fdec688cdb896d6d2cfea81de1c310235",
+        "source_fingerprint": "98a54d5c17ef917d311d330bcdcb2ff96208134ec3613a903e578c04b5f82366"
+      },
+      "gguf_input_policy": null,
+      "nll_delta": -0.0017525719175613685,
+      "task_success": 0.5833333333333334,
+      "source_task_success": 0.5416666666666666,
+      "json_valid": 1.0,
+      "truncated": 0.0,
+      "trajectory_token_agreement": 0.9456018518518517,
+      "exact_trajectory": 0.75,
+      "correct_to_wrong": 0,
+      "wrong_to_correct": 1
+    },
+    {
+      "label": "b5_v6_s1",
+      "domain": "multilingual",
+      "prompts": 24,
+      "tokens": 204,
+      "mean_teacher_kl": 0.0013008366852435462,
+      "top1_agreement": 1.0,
+      "source_nll": 0.004501225685826329,
+      "candidate_nll": 0.008467785079415972,
+      "artifact_bytes": 3441544638,
+      "producer_source": {
+        "revision": "d4292d6fdec688cdb896d6d2cfea81de1c310235",
+        "source_fingerprint": "98a54d5c17ef917d311d330bcdcb2ff96208134ec3613a903e578c04b5f82366"
+      },
+      "gguf_input_policy": null,
+      "nll_delta": 0.003966559393589643,
+      "task_success": 1.0,
+      "source_task_success": 1.0,
+      "json_valid": 1.0,
+      "truncated": 0.0,
+      "trajectory_token_agreement": 1.0,
+      "exact_trajectory": 1.0,
+      "correct_to_wrong": 0,
+      "wrong_to_correct": 0
+    },
+    {
+      "label": "b5_v6_s1",
+      "domain": "structured",
+      "prompts": 24,
+      "tokens": 521,
+      "mean_teacher_kl": 0.00608999248548711,
+      "top1_agreement": 0.9961612284069098,
+      "source_nll": 0.02062150940124904,
+      "candidate_nll": 0.015172638127379033,
+      "artifact_bytes": 3441544638,
+      "producer_source": {
+        "revision": "d4292d6fdec688cdb896d6d2cfea81de1c310235",
+        "source_fingerprint": "98a54d5c17ef917d311d330bcdcb2ff96208134ec3613a903e578c04b5f82366"
+      },
+      "gguf_input_policy": null,
+      "nll_delta": -0.0054488712738700075,
+      "task_success": 1.0,
+      "source_task_success": 0.9166666666666666,
+      "json_valid": 1.0,
+      "truncated": 0.0,
+      "trajectory_token_agreement": 0.875,
+      "exact_trajectory": 0.875,
+      "correct_to_wrong": 0,
+      "wrong_to_correct": 2
+    },
+    {
+      "label": "b5_v6_s1",
+      "domain": "tool_selection",
+      "prompts": 24,
+      "tokens": 312,
+      "mean_teacher_kl": 0.004173747408507858,
+      "top1_agreement": 1.0,
+      "source_nll": 0.015200305928043433,
+      "candidate_nll": 0.020560631322840896,
+      "artifact_bytes": 3441544638,
+      "producer_source": {
+        "revision": "d4292d6fdec688cdb896d6d2cfea81de1c310235",
+        "source_fingerprint": "98a54d5c17ef917d311d330bcdcb2ff96208134ec3613a903e578c04b5f82366"
+      },
+      "gguf_input_policy": null,
+      "nll_delta": 0.005360325394797463,
+      "task_success": 0.75,
+      "source_task_success": 0.75,
+      "json_valid": 1.0,
+      "truncated": 0.0,
+      "trajectory_token_agreement": 1.0,
+      "exact_trajectory": 1.0,
+      "correct_to_wrong": 0,
+      "wrong_to_correct": 0
+    },
+    {
+      "label": "b5_v8_s1",
+      "domain": "c4",
+      "prompts": 24,
+      "tokens": 12264,
+      "mean_teacher_kl": 0.004958623130467881,
+      "top1_agreement": 0.9632257012393999,
+      "source_nll": 2.6952249017950223,
+      "candidate_nll": 2.696503005326842,
+      "artifact_bytes": 3600470206,
+      "producer_source": {
+        "revision": "d4292d6fdec688cdb896d6d2cfea81de1c310235",
+        "source_fingerprint": "98a54d5c17ef917d311d330bcdcb2ff96208134ec3613a903e578c04b5f82366"
+      },
+      "gguf_input_policy": null,
+      "nll_delta": 0.0012781035318196743
+    },
+    {
+      "label": "b5_v8_s1",
+      "domain": "code_trace",
+      "prompts": 24,
+      "tokens": 243,
+      "mean_teacher_kl": 0.007598502514065693,
+      "top1_agreement": 0.9670781893004116,
+      "source_nll": 0.1633437821230263,
+      "candidate_nll": 0.16040069053670541,
+      "artifact_bytes": 3600470206,
+      "producer_source": {
+        "revision": "d4292d6fdec688cdb896d6d2cfea81de1c310235",
+        "source_fingerprint": "98a54d5c17ef917d311d330bcdcb2ff96208134ec3613a903e578c04b5f82366"
+      },
+      "gguf_input_policy": null,
+      "nll_delta": -0.0029430915863208895,
+      "task_success": 0.625,
+      "source_task_success": 0.5416666666666666,
+      "json_valid": 1.0,
+      "truncated": 0.0,
+      "trajectory_token_agreement": 0.9363425925925926,
+      "exact_trajectory": 0.7083333333333334,
+      "correct_to_wrong": 0,
+      "wrong_to_correct": 2
+    },
+    {
+      "label": "b5_v8_s1",
+      "domain": "multilingual",
+      "prompts": 24,
+      "tokens": 204,
+      "mean_teacher_kl": 0.0013974901878833746,
+      "top1_agreement": 1.0,
+      "source_nll": 0.004501225685826329,
+      "candidate_nll": 0.008650724204217648,
+      "artifact_bytes": 3600470206,
+      "producer_source": {
+        "revision": "d4292d6fdec688cdb896d6d2cfea81de1c310235",
+        "source_fingerprint": "98a54d5c17ef917d311d330bcdcb2ff96208134ec3613a903e578c04b5f82366"
+      },
+      "gguf_input_policy": null,
+      "nll_delta": 0.004149498518391319,
+      "task_success": 1.0,
+      "source_task_success": 1.0,
+      "json_valid": 1.0,
+      "truncated": 0.0,
+      "trajectory_token_agreement": 1.0,
+      "exact_trajectory": 1.0,
+      "correct_to_wrong": 0,
+      "wrong_to_correct": 0
+    },
+    {
+      "label": "b5_v8_s1",
+      "domain": "structured",
+      "prompts": 24,
+      "tokens": 521,
+      "mean_teacher_kl": 0.005742779833114612,
+      "top1_agreement": 0.9961612284069098,
+      "source_nll": 0.02062150940124904,
+      "candidate_nll": 0.015076703177848405,
+      "artifact_bytes": 3600470206,
+      "producer_source": {
+        "revision": "d4292d6fdec688cdb896d6d2cfea81de1c310235",
+        "source_fingerprint": "98a54d5c17ef917d311d330bcdcb2ff96208134ec3613a903e578c04b5f82366"
+      },
+      "gguf_input_policy": null,
+      "nll_delta": -0.005544806223400636,
+      "task_success": 1.0,
+      "source_task_success": 0.9166666666666666,
+      "json_valid": 1.0,
+      "truncated": 0.0,
+      "trajectory_token_agreement": 0.875,
+      "exact_trajectory": 0.875,
+      "correct_to_wrong": 0,
+      "wrong_to_correct": 2
+    },
+    {
+      "label": "b5_v8_s1",
+      "domain": "tool_selection",
+      "prompts": 24,
+      "tokens": 312,
+      "mean_teacher_kl": 0.0035524681205656495,
+      "top1_agreement": 1.0,
+      "source_nll": 0.015200305928043433,
+      "candidate_nll": 0.019837309548654283,
+      "artifact_bytes": 3600470206,
+      "producer_source": {
+        "revision": "d4292d6fdec688cdb896d6d2cfea81de1c310235",
+        "source_fingerprint": "98a54d5c17ef917d311d330bcdcb2ff96208134ec3613a903e578c04b5f82366"
+      },
+      "gguf_input_policy": null,
+      "nll_delta": 0.00463700362061085,
+      "task_success": 0.75,
+      "source_task_success": 0.75,
+      "json_valid": 1.0,
+      "truncated": 0.0,
+      "trajectory_token_agreement": 1.0,
+      "exact_trajectory": 1.0,
+      "correct_to_wrong": 0,
+      "wrong_to_correct": 0
+    },
+    {
+      "label": "b5_v6_s2",
+      "domain": "c4",
+      "prompts": 24,
+      "tokens": 12264,
+      "mean_teacher_kl": 0.005632880067113252,
+      "top1_agreement": 0.9594748858447488,
+      "source_nll": 2.6952249017950223,
+      "candidate_nll": 2.699310570689065,
+      "artifact_bytes": 3441544638,
+      "producer_source": {
+        "revision": "d4292d6fdec688cdb896d6d2cfea81de1c310235",
+        "source_fingerprint": "98a54d5c17ef917d311d330bcdcb2ff96208134ec3613a903e578c04b5f82366"
+      },
+      "gguf_input_policy": null,
+      "nll_delta": 0.0040856688940427155
+    },
+    {
+      "label": "b5_v6_s2",
+      "domain": "code_trace",
+      "prompts": 24,
+      "tokens": 243,
+      "mean_teacher_kl": 0.006261472857555238,
+      "top1_agreement": 0.9711934156378601,
+      "source_nll": 0.1633437821230263,
+      "candidate_nll": 0.17237540714446356,
+      "artifact_bytes": 3441544638,
+      "producer_source": {
+        "revision": "d4292d6fdec688cdb896d6d2cfea81de1c310235",
+        "source_fingerprint": "98a54d5c17ef917d311d330bcdcb2ff96208134ec3613a903e578c04b5f82366"
+      },
+      "gguf_input_policy": null,
+      "nll_delta": 0.009031625021437256,
+      "task_success": 0.5416666666666666,
+      "source_task_success": 0.5416666666666666,
+      "json_valid": 1.0,
+      "truncated": 0.0,
+      "trajectory_token_agreement": 0.9380787037037037,
+      "exact_trajectory": 0.75,
+      "correct_to_wrong": 1,
+      "wrong_to_correct": 1
+    },
+    {
+      "label": "b5_v6_s2",
+      "domain": "multilingual",
+      "prompts": 24,
+      "tokens": 204,
+      "mean_teacher_kl": 0.002118016349003814,
+      "top1_agreement": 1.0,
+      "source_nll": 0.004501225685826329,
+      "candidate_nll": 0.010081950974857395,
+      "artifact_bytes": 3441544638,
+      "producer_source": {
+        "revision": "d4292d6fdec688cdb896d6d2cfea81de1c310235",
+        "source_fingerprint": "98a54d5c17ef917d311d330bcdcb2ff96208134ec3613a903e578c04b5f82366"
+      },
+      "gguf_input_policy": null,
+      "nll_delta": 0.005580725289031066,
+      "task_success": 1.0,
+      "source_task_success": 1.0,
+      "json_valid": 1.0,
+      "truncated": 0.0,
+      "trajectory_token_agreement": 1.0,
+      "exact_trajectory": 1.0,
+      "correct_to_wrong": 0,
+      "wrong_to_correct": 0
+    },
+    {
+      "label": "b5_v6_s2",
+      "domain": "structured",
+      "prompts": 24,
+      "tokens": 521,
+      "mean_teacher_kl": 0.007019360374261864,
+      "top1_agreement": 0.9904030710172744,
+      "source_nll": 0.02062150940124904,
+      "candidate_nll": 0.03390173471228125,
+      "artifact_bytes": 3441544638,
+      "producer_source": {
+        "revision": "d4292d6fdec688cdb896d6d2cfea81de1c310235",
+        "source_fingerprint": "98a54d5c17ef917d311d330bcdcb2ff96208134ec3613a903e578c04b5f82366"
+      },
+      "gguf_input_policy": null,
+      "nll_delta": 0.01328022531103221,
+      "task_success": 0.75,
+      "source_task_success": 0.9166666666666666,
+      "json_valid": 0.75,
+      "truncated": 0.0,
+      "trajectory_token_agreement": 0.8333333333333334,
+      "exact_trajectory": 0.8333333333333334,
+      "correct_to_wrong": 4,
+      "wrong_to_correct": 0
+    },
+    {
+      "label": "b5_v6_s2",
+      "domain": "tool_selection",
+      "prompts": 24,
+      "tokens": 312,
+      "mean_teacher_kl": 0.0009862362062660278,
+      "top1_agreement": 1.0,
+      "source_nll": 0.015200305928043433,
+      "candidate_nll": 0.0184553176368179,
+      "artifact_bytes": 3441544638,
+      "producer_source": {
+        "revision": "d4292d6fdec688cdb896d6d2cfea81de1c310235",
+        "source_fingerprint": "98a54d5c17ef917d311d330bcdcb2ff96208134ec3613a903e578c04b5f82366"
+      },
+      "gguf_input_policy": null,
+      "nll_delta": 0.0032550117087744666,
+      "task_success": 0.75,
+      "source_task_success": 0.75,
+      "json_valid": 1.0,
+      "truncated": 0.0,
+      "trajectory_token_agreement": 1.0,
+      "exact_trajectory": 1.0,
+      "correct_to_wrong": 0,
+      "wrong_to_correct": 0
+    },
+    {
+      "label": "b5_v8_s2",
+      "domain": "c4",
+      "prompts": 24,
+      "tokens": 12264,
+      "mean_teacher_kl": 0.0049006827046135385,
+      "top1_agreement": 0.9651011089367254,
+      "source_nll": 2.6952249017950223,
+      "candidate_nll": 2.6981980842222186,
+      "artifact_bytes": 3600470206,
+      "producer_source": {
+        "revision": "d4292d6fdec688cdb896d6d2cfea81de1c310235",
+        "source_fingerprint": "98a54d5c17ef917d311d330bcdcb2ff96208134ec3613a903e578c04b5f82366"
+      },
+      "gguf_input_policy": null,
+      "nll_delta": 0.0029731824271963525
+    },
+    {
+      "label": "b5_v8_s2",
+      "domain": "code_trace",
+      "prompts": 24,
+      "tokens": 243,
+      "mean_teacher_kl": 0.0060298928409014746,
+      "top1_agreement": 0.9753086419753086,
+      "source_nll": 0.1633437821230263,
+      "candidate_nll": 0.17272865739615167,
+      "artifact_bytes": 3600470206,
+      "producer_source": {
+        "revision": "d4292d6fdec688cdb896d6d2cfea81de1c310235",
+        "source_fingerprint": "98a54d5c17ef917d311d330bcdcb2ff96208134ec3613a903e578c04b5f82366"
+      },
+      "gguf_input_policy": null,
+      "nll_delta": 0.00938487527312537,
+      "task_success": 0.5416666666666666,
+      "source_task_success": 0.5416666666666666,
+      "json_valid": 1.0,
+      "truncated": 0.0,
+      "trajectory_token_agreement": 0.9432870370370371,
+      "exact_trajectory": 0.7916666666666666,
+      "correct_to_wrong": 1,
+      "wrong_to_correct": 1
+    },
+    {
+      "label": "b5_v8_s2",
+      "domain": "multilingual",
+      "prompts": 24,
+      "tokens": 204,
+      "mean_teacher_kl": 0.0023034363019275588,
+      "top1_agreement": 1.0,
+      "source_nll": 0.004501225685826329,
+      "candidate_nll": 0.0104094237272612,
+      "artifact_bytes": 3600470206,
+      "producer_source": {
+        "revision": "d4292d6fdec688cdb896d6d2cfea81de1c310235",
+        "source_fingerprint": "98a54d5c17ef917d311d330bcdcb2ff96208134ec3613a903e578c04b5f82366"
+      },
+      "gguf_input_policy": null,
+      "nll_delta": 0.005908198041434871,
+      "task_success": 1.0,
+      "source_task_success": 1.0,
+      "json_valid": 1.0,
+      "truncated": 0.0,
+      "trajectory_token_agreement": 1.0,
+      "exact_trajectory": 1.0,
+      "correct_to_wrong": 0,
+      "wrong_to_correct": 0
+    },
+    {
+      "label": "b5_v8_s2",
+      "domain": "structured",
+      "prompts": 24,
+      "tokens": 521,
+      "mean_teacher_kl": 0.007651750566383921,
+      "top1_agreement": 0.9904030710172744,
+      "source_nll": 0.02062150940124904,
+      "candidate_nll": 0.03457045017340238,
+      "artifact_bytes": 3600470206,
+      "producer_source": {
+        "revision": "d4292d6fdec688cdb896d6d2cfea81de1c310235",
+        "source_fingerprint": "98a54d5c17ef917d311d330bcdcb2ff96208134ec3613a903e578c04b5f82366"
+      },
+      "gguf_input_policy": null,
+      "nll_delta": 0.013948940772153338,
+      "task_success": 0.75,
+      "source_task_success": 0.9166666666666666,
+      "json_valid": 0.75,
+      "truncated": 0.0,
+      "trajectory_token_agreement": 0.8333333333333334,
+      "exact_trajectory": 0.8333333333333334,
+      "correct_to_wrong": 4,
+      "wrong_to_correct": 0
+    },
+    {
+      "label": "b5_v8_s2",
+      "domain": "tool_selection",
+      "prompts": 24,
+      "tokens": 312,
+      "mean_teacher_kl": 0.0011520072056469643,
+      "top1_agreement": 1.0,
+      "source_nll": 0.015200305928043433,
+      "candidate_nll": 0.019080756337326824,
+      "artifact_bytes": 3600470206,
+      "producer_source": {
+        "revision": "d4292d6fdec688cdb896d6d2cfea81de1c310235",
+        "source_fingerprint": "98a54d5c17ef917d311d330bcdcb2ff96208134ec3613a903e578c04b5f82366"
+      },
+      "gguf_input_policy": null,
+      "nll_delta": 0.0038804504092833907,
+      "task_success": 0.75,
+      "source_task_success": 0.75,
+      "json_valid": 1.0,
+      "truncated": 0.0,
+      "trajectory_token_agreement": 1.0,
+      "exact_trajectory": 1.0,
+      "correct_to_wrong": 0,
+      "wrong_to_correct": 0
+    }
+  ],
+  "paired_contrasts": [
+    {
+      "left": "b5_v6_s0",
+      "right": "b5_v8_s0",
+      "domain": "c4",
+      "field": "mean_teacher_kl",
+      "delta": -0.0007296462363533778,
+      "families": 24,
+      "prompts": 24,
+      "weighting": "equal family means",
+      "conditional_on": "one frozen diagnostic set; not a seed CI",
+      "ci95": [
+        -0.0008096413636559675,
+        -0.0006427232850236033
+      ],
+      "draws": 4000
+    },
+    {
+      "left": "b5_v6_s0",
+      "right": "b5_v8_s0",
+      "domain": "c4",
+      "field": "top1_agreement",
+      "delta": 0.003098499673842144,
+      "families": 24,
+      "prompts": 24,
+      "weighting": "equal family means",
+      "conditional_on": "one frozen diagnostic set; not a seed CI",
+      "ci95": [
+        0.0011415525114155066,
+        0.005136986301369874
+      ],
+      "draws": 4000
+    },
+    {
+      "left": "b5_v6_s0",
+      "right": "b5_v8_s0",
+      "domain": "code_trace",
+      "field": "mean_teacher_kl",
+      "delta": 0.00029848373057899205,
+      "families": 4,
+      "prompts": 24,
+      "weighting": "equal family means",
+      "conditional_on": "one frozen diagnostic set; not a seed CI",
+      "ci95": [
+        -0.00016722469489971055,
+        0.0008021266560421587
+      ],
+      "draws": 4000
+    },
+    {
+      "left": "b5_v6_s0",
+      "right": "b5_v8_s0",
+      "domain": "code_trace",
+      "field": "task_success",
+      "delta": 0.0,
+      "families": 4,
+      "prompts": 24,
+      "weighting": "equal family means",
+      "conditional_on": "one frozen diagnostic set; not a seed CI",
+      "ci95": [
+        0.0,
+        0.0
+      ],
+      "draws": 4000
+    },
+    {
+      "left": "b5_v6_s0",
+      "right": "b5_v8_s0",
+      "domain": "code_trace",
+      "field": "trajectory_token_agreement",
+      "delta": -0.0228587962962963,
+      "families": 4,
+      "prompts": 24,
+      "weighting": "equal family means",
+      "conditional_on": "one frozen diagnostic set; not a seed CI",
+      "ci95": [
+        -0.043692129629629636,
+        -0.005208333333333333
+      ],
+      "draws": 4000
+    },
+    {
+      "left": "b5_v6_s0",
+      "right": "b5_v8_s0",
+      "domain": "multilingual",
+      "field": "mean_teacher_kl",
+      "delta": -4.541555870738622e-05,
+      "families": 1,
+      "prompts": 24,
+      "weighting": "equal family means",
+      "conditional_on": "one frozen diagnostic set; not a seed CI",
+      "ci95": null,
+      "reason": "fewer than two independent authored families"
+    },
+    {
+      "left": "b5_v6_s0",
+      "right": "b5_v8_s0",
+      "domain": "multilingual",
+      "field": "task_success",
+      "delta": 0.0,
+      "families": 1,
+      "prompts": 24,
+      "weighting": "equal family means",
+      "conditional_on": "one frozen diagnostic set; not a seed CI",
+      "ci95": null,
+      "reason": "fewer than two independent authored families"
+    },
+    {
+      "left": "b5_v6_s0",
+      "right": "b5_v8_s0",
+      "domain": "multilingual",
+      "field": "trajectory_token_agreement",
+      "delta": 0.0,
+      "families": 1,
+      "prompts": 24,
+      "weighting": "equal family means",
+      "conditional_on": "one frozen diagnostic set; not a seed CI",
+      "ci95": null,
+      "reason": "fewer than two independent authored families"
+    },
+    {
+      "left": "b5_v6_s0",
+      "right": "b5_v8_s0",
+      "domain": "structured",
+      "field": "mean_teacher_kl",
+      "delta": -0.00014108447006088074,
+      "families": 4,
+      "prompts": 24,
+      "weighting": "equal family means",
+      "conditional_on": "one frozen diagnostic set; not a seed CI",
+      "ci95": [
+        -0.0006014469824034852,
+        0.0003282239335116319
+      ],
+      "draws": 4000
+    },
+    {
+      "left": "b5_v6_s0",
+      "right": "b5_v8_s0",
+      "domain": "structured",
+      "field": "task_success",
+      "delta": -0.08333333333333333,
+      "families": 4,
+      "prompts": 24,
+      "weighting": "equal family means",
+      "conditional_on": "one frozen diagnostic set; not a seed CI",
+      "ci95": [
+        -0.25,
+        0.0
+      ],
+      "draws": 4000
+    },
+    {
+      "left": "b5_v6_s0",
+      "right": "b5_v8_s0",
+      "domain": "structured",
+      "field": "trajectory_token_agreement",
+      "delta": -0.08333333333333333,
+      "families": 4,
+      "prompts": 24,
+      "weighting": "equal family means",
+      "conditional_on": "one frozen diagnostic set; not a seed CI",
+      "ci95": [
+        -0.25,
+        0.0
+      ],
+      "draws": 4000
+    },
+    {
+      "left": "b5_v6_s0",
+      "right": "b5_v8_s0",
+      "domain": "tool_selection",
+      "field": "mean_teacher_kl",
+      "delta": -0.00024920148448341156,
+      "families": 4,
+      "prompts": 24,
+      "weighting": "equal family means",
+      "conditional_on": "one frozen diagnostic set; not a seed CI",
+      "ci95": [
+        -0.0008147097510423122,
+        0.00020557555026338528
+      ],
+      "draws": 4000
+    },
+    {
+      "left": "b5_v6_s0",
+      "right": "b5_v8_s0",
+      "domain": "tool_selection",
+      "field": "task_success",
+      "delta": 0.0,
+      "families": 4,
+      "prompts": 24,
+      "weighting": "equal family means",
+      "conditional_on": "one frozen diagnostic set; not a seed CI",
+      "ci95": [
+        0.0,
+        0.0
+      ],
+      "draws": 4000
+    },
+    {
+      "left": "b5_v6_s0",
+      "right": "b5_v8_s0",
+      "domain": "tool_selection",
+      "field": "trajectory_token_agreement",
+      "delta": 0.0,
+      "families": 4,
+      "prompts": 24,
+      "weighting": "equal family means",
+      "conditional_on": "one frozen diagnostic set; not a seed CI",
+      "ci95": [
+        0.0,
+        0.0
+      ],
+      "draws": 4000
+    },
+    {
+      "left": "b5_v6_s1",
+      "right": "b5_v8_s1",
+      "domain": "c4",
+      "field": "mean_teacher_kl",
+      "delta": -0.0008115500865852426,
+      "families": 24,
+      "prompts": 24,
+      "weighting": "equal family means",
+      "conditional_on": "one frozen diagnostic set; not a seed CI",
+      "ci95": [
+        -0.0009052119587610652,
+        -0.0007210063769284528
+      ],
+      "draws": 4000
+    },
+    {
+      "left": "b5_v6_s1",
+      "right": "b5_v8_s1",
+      "domain": "c4",
+      "field": "top1_agreement",
+      "delta": 0.004158512720156544,
+      "families": 24,
+      "prompts": 24,
+      "weighting": "equal family means",
+      "conditional_on": "one frozen diagnostic set; not a seed CI",
+      "ci95": [
+        0.0015492498369210582,
+        0.006851353555120689
+      ],
+      "draws": 4000
+    },
+    {
+      "left": "b5_v6_s1",
+      "right": "b5_v8_s1",
+      "domain": "code_trace",
+      "field": "mean_teacher_kl",
+      "delta": -0.00023028996288081512,
+      "families": 4,
+      "prompts": 24,
+      "weighting": "equal family means",
+      "conditional_on": "one frozen diagnostic set; not a seed CI",
+      "ci95": [
+        -0.0005403273557695056,
+        0.00013892180863081
+      ],
+      "draws": 4000
+    },
+    {
+      "left": "b5_v6_s1",
+      "right": "b5_v8_s1",
+      "domain": "code_trace",
+      "field": "task_success",
+      "delta": 0.041666666666666664,
+      "families": 4,
+      "prompts": 24,
+      "weighting": "equal family means",
+      "conditional_on": "one frozen diagnostic set; not a seed CI",
+      "ci95": [
+        0.0,
+        0.125
+      ],
+      "draws": 4000
+    },
+    {
+      "left": "b5_v6_s1",
+      "right": "b5_v8_s1",
+      "domain": "code_trace",
+      "field": "trajectory_token_agreement",
+      "delta": -0.009259259259259259,
+      "families": 4,
+      "prompts": 24,
+      "weighting": "equal family means",
+      "conditional_on": "one frozen diagnostic set; not a seed CI",
+      "ci95": [
+        -0.027777777777777776,
+        0.0
+      ],
+      "draws": 4000
+    },
+    {
+      "left": "b5_v6_s1",
+      "right": "b5_v8_s1",
+      "domain": "multilingual",
+      "field": "mean_teacher_kl",
+      "delta": 9.397376020564356e-05,
+      "families": 1,
+      "prompts": 24,
+      "weighting": "equal family means",
+      "conditional_on": "one frozen diagnostic set; not a seed CI",
+      "ci95": null,
+      "reason": "fewer than two independent authored families"
+    },
+    {
+      "left": "b5_v6_s1",
+      "right": "b5_v8_s1",
+      "domain": "multilingual",
+      "field": "task_success",
+      "delta": 0.0,
+      "families": 1,
+      "prompts": 24,
+      "weighting": "equal family means",
+      "conditional_on": "one frozen diagnostic set; not a seed CI",
+      "ci95": null,
+      "reason": "fewer than two independent authored families"
+    },
+    {
+      "left": "b5_v6_s1",
+      "right": "b5_v8_s1",
+      "domain": "multilingual",
+      "field": "trajectory_token_agreement",
+      "delta": 0.0,
+      "families": 1,
+      "prompts": 24,
+      "weighting": "equal family means",
+      "conditional_on": "one frozen diagnostic set; not a seed CI",
+      "ci95": null,
+      "reason": "fewer than two independent authored families"
+    },
+    {
+      "left": "b5_v6_s1",
+      "right": "b5_v8_s1",
+      "domain": "structured",
+      "field": "mean_teacher_kl",
+      "delta": -0.0003793376616341273,
+      "families": 4,
+      "prompts": 24,
+      "weighting": "equal family means",
+      "conditional_on": "one frozen diagnostic set; not a seed CI",
+      "ci95": [
+        -0.0009522365564329852,
+        0.00010160314485879386
+      ],
+      "draws": 4000
+    },
+    {
+      "left": "b5_v6_s1",
+      "right": "b5_v8_s1",
+      "domain": "structured",
+      "field": "task_success",
+      "delta": 0.0,
+      "families": 4,
+      "prompts": 24,
+      "weighting": "equal family means",
+      "conditional_on": "one frozen diagnostic set; not a seed CI",
+      "ci95": [
+        0.0,
+        0.0
+      ],
+      "draws": 4000
+    },
+    {
+      "left": "b5_v6_s1",
+      "right": "b5_v8_s1",
+      "domain": "structured",
+      "field": "trajectory_token_agreement",
+      "delta": 0.0,
+      "families": 4,
+      "prompts": 24,
+      "weighting": "equal family means",
+      "conditional_on": "one frozen diagnostic set; not a seed CI",
+      "ci95": [
+        0.0,
+        0.0
+      ],
+      "draws": 4000
+    },
+    {
+      "left": "b5_v6_s1",
+      "right": "b5_v8_s1",
+      "domain": "tool_selection",
+      "field": "mean_teacher_kl",
+      "delta": -0.000792181967843608,
+      "families": 4,
+      "prompts": 24,
+      "weighting": "equal family means",
+      "conditional_on": "one frozen diagnostic set; not a seed CI",
+      "ci95": [
+        -0.002300585090806824,
+        2.9686328440862543e-05
+      ],
+      "draws": 4000
+    },
+    {
+      "left": "b5_v6_s1",
+      "right": "b5_v8_s1",
+      "domain": "tool_selection",
+      "field": "task_success",
+      "delta": 0.0,
+      "families": 4,
+      "prompts": 24,
+      "weighting": "equal family means",
+      "conditional_on": "one frozen diagnostic set; not a seed CI",
+      "ci95": [
+        0.0,
+        0.0
+      ],
+      "draws": 4000
+    },
+    {
+      "left": "b5_v6_s1",
+      "right": "b5_v8_s1",
+      "domain": "tool_selection",
+      "field": "trajectory_token_agreement",
+      "delta": 0.0,
+      "families": 4,
+      "prompts": 24,
+      "weighting": "equal family means",
+      "conditional_on": "one frozen diagnostic set; not a seed CI",
+      "ci95": [
+        0.0,
+        0.0
+      ],
+      "draws": 4000
+    },
+    {
+      "left": "b5_v6_s2",
+      "right": "b5_v8_s2",
+      "domain": "c4",
+      "field": "mean_teacher_kl",
+      "delta": -0.0007321973624997133,
+      "families": 24,
+      "prompts": 24,
+      "weighting": "equal family means",
+      "conditional_on": "one frozen diagnostic set; not a seed CI",
+      "ci95": [
+        -0.0008513369320726403,
+        -0.0006465766677835005
+      ],
+      "draws": 4000
+    },
+    {
+      "left": "b5_v6_s2",
+      "right": "b5_v8_s2",
+      "domain": "c4",
+      "field": "top1_agreement",
+      "delta": 0.005626223091976514,
+      "families": 24,
+      "prompts": 24,
+      "weighting": "equal family means",
+      "conditional_on": "one frozen diagnostic set; not a seed CI",
+      "ci95": [
+        0.0027723418134377085,
+        0.008480104370515306
+      ],
+      "draws": 4000
+    },
+    {
+      "left": "b5_v6_s2",
+      "right": "b5_v8_s2",
+      "domain": "code_trace",
+      "field": "mean_teacher_kl",
+      "delta": -0.00012105544459734623,
+      "families": 4,
+      "prompts": 24,
+      "weighting": "equal family means",
+      "conditional_on": "one frozen diagnostic set; not a seed CI",
+      "ci95": [
+        -0.0005462718281212809,
+        0.00028583077185611526
+      ],
+      "draws": 4000
+    },
+    {
+      "left": "b5_v6_s2",
+      "right": "b5_v8_s2",
+      "domain": "code_trace",
+      "field": "task_success",
+      "delta": 0.0,
+      "families": 4,
+      "prompts": 24,
+      "weighting": "equal family means",
+      "conditional_on": "one frozen diagnostic set; not a seed CI",
+      "ci95": [
+        0.0,
+        0.0
+      ],
+      "draws": 4000
+    },
+    {
+      "left": "b5_v6_s2",
+      "right": "b5_v8_s2",
+      "domain": "code_trace",
+      "field": "trajectory_token_agreement",
+      "delta": 0.005208333333333333,
+      "families": 4,
+      "prompts": 24,
+      "weighting": "equal family means",
+      "conditional_on": "one frozen diagnostic set; not a seed CI",
+      "ci95": [
+        0.0,
+        0.015625
+      ],
+      "draws": 4000
+    },
+    {
+      "left": "b5_v6_s2",
+      "right": "b5_v8_s2",
+      "domain": "multilingual",
+      "field": "mean_teacher_kl",
+      "delta": 0.00018876514127198196,
+      "families": 1,
+      "prompts": 24,
+      "weighting": "equal family means",
+      "conditional_on": "one frozen diagnostic set; not a seed CI",
+      "ci95": null,
+      "reason": "fewer than two independent authored families"
+    },
+    {
+      "left": "b5_v6_s2",
+      "right": "b5_v8_s2",
+      "domain": "multilingual",
+      "field": "task_success",
+      "delta": 0.0,
+      "families": 1,
+      "prompts": 24,
+      "weighting": "equal family means",
+      "conditional_on": "one frozen diagnostic set; not a seed CI",
+      "ci95": null,
+      "reason": "fewer than two independent authored families"
+    },
+    {
+      "left": "b5_v6_s2",
+      "right": "b5_v8_s2",
+      "domain": "multilingual",
+      "field": "trajectory_token_agreement",
+      "delta": 0.0,
+      "families": 1,
+      "prompts": 24,
+      "weighting": "equal family means",
+      "conditional_on": "one frozen diagnostic set; not a seed CI",
+      "ci95": null,
+      "reason": "fewer than two independent authored families"
+    },
+    {
+      "left": "b5_v6_s2",
+      "right": "b5_v8_s2",
+      "domain": "structured",
+      "field": "mean_teacher_kl",
+      "delta": 0.0006040247082084223,
+      "families": 4,
+      "prompts": 24,
+      "weighting": "equal family means",
+      "conditional_on": "one frozen diagnostic set; not a seed CI",
+      "ci95": [
+        0.00016513926956186452,
+        0.0009044609905015913
+      ],
+      "draws": 4000
+    },
+    {
+      "left": "b5_v6_s2",
+      "right": "b5_v8_s2",
+      "domain": "structured",
+      "field": "task_success",
+      "delta": 0.0,
+      "families": 4,
+      "prompts": 24,
+      "weighting": "equal family means",
+      "conditional_on": "one frozen diagnostic set; not a seed CI",
+      "ci95": [
+        0.0,
+        0.0
+      ],
+      "draws": 4000
+    },
+    {
+      "left": "b5_v6_s2",
+      "right": "b5_v8_s2",
+      "domain": "structured",
+      "field": "trajectory_token_agreement",
+      "delta": 0.0,
+      "families": 4,
+      "prompts": 24,
+      "weighting": "equal family means",
+      "conditional_on": "one frozen diagnostic set; not a seed CI",
+      "ci95": [
+        0.0,
+        0.0
+      ],
+      "draws": 4000
+    },
+    {
+      "left": "b5_v6_s2",
+      "right": "b5_v8_s2",
+      "domain": "tool_selection",
+      "field": "mean_teacher_kl",
+      "delta": 0.0002021556404448714,
+      "families": 4,
+      "prompts": 24,
+      "weighting": "equal family means",
+      "conditional_on": "one frozen diagnostic set; not a seed CI",
+      "ci95": [
+        3.134575499218102e-05,
+        0.0004997536564444201
+      ],
+      "draws": 4000
+    },
+    {
+      "left": "b5_v6_s2",
+      "right": "b5_v8_s2",
+      "domain": "tool_selection",
+      "field": "task_success",
+      "delta": 0.0,
+      "families": 4,
+      "prompts": 24,
+      "weighting": "equal family means",
+      "conditional_on": "one frozen diagnostic set; not a seed CI",
+      "ci95": [
+        0.0,
+        0.0
+      ],
+      "draws": 4000
+    },
+    {
+      "left": "b5_v6_s2",
+      "right": "b5_v8_s2",
+      "domain": "tool_selection",
+      "field": "trajectory_token_agreement",
+      "delta": 0.0,
+      "families": 4,
+      "prompts": 24,
+      "weighting": "equal family means",
+      "conditional_on": "one frozen diagnostic set; not a seed CI",
+      "ci95": [
+        0.0,
+        0.0
+      ],
+      "draws": 4000
+    },
+    {
+      "left": "b5_v6_s0",
+      "right": "unsloth_ud_q4",
+      "domain": "c4",
+      "field": "mean_teacher_kl",
+      "delta": 0.007439835025613607,
+      "families": 24,
+      "prompts": 24,
+      "weighting": "equal family means",
+      "conditional_on": "one frozen diagnostic set; not a seed CI",
+      "ci95": [
+        0.006448686348915709,
+        0.008596521464644812
+      ],
+      "draws": 4000
+    },
+    {
+      "left": "b5_v6_s0",
+      "right": "unsloth_ud_q4",
+      "domain": "c4",
+      "field": "top1_agreement",
+      "delta": -0.019814090019569477,
+      "families": 24,
+      "prompts": 24,
+      "weighting": "equal family means",
+      "conditional_on": "one frozen diagnostic set; not a seed CI",
+      "ci95": [
+        -0.024624918460534898,
+        -0.014758643183300738
+      ],
+      "draws": 4000
+    },
+    {
+      "left": "b5_v6_s0",
+      "right": "unsloth_ud_q4",
+      "domain": "code_trace",
+      "field": "mean_teacher_kl",
+      "delta": 0.014764386605818077,
+      "families": 4,
+      "prompts": 24,
+      "weighting": "equal family means",
+      "conditional_on": "one frozen diagnostic set; not a seed CI",
+      "ci95": [
+        0.005943201668751599,
+        0.023583310649764475
+      ],
+      "draws": 4000
+    },
+    {
+      "left": "b5_v6_s0",
+      "right": "unsloth_ud_q4",
+      "domain": "code_trace",
+      "field": "task_success",
+      "delta": -0.041666666666666664,
+      "families": 4,
+      "prompts": 24,
+      "weighting": "equal family means",
+      "conditional_on": "one frozen diagnostic set; not a seed CI",
+      "ci95": [
+        -0.16666666666666666,
+        0.08333333333333334
+      ],
+      "draws": 4000
+    },
+    {
+      "left": "b5_v6_s0",
+      "right": "unsloth_ud_q4",
+      "domain": "code_trace",
+      "field": "trajectory_token_agreement",
+      "delta": -0.08622685185185186,
+      "families": 4,
+      "prompts": 24,
+      "weighting": "equal family means",
+      "conditional_on": "one frozen diagnostic set; not a seed CI",
+      "ci95": [
+        -0.14120370370370372,
+        -0.03125
+      ],
+      "draws": 4000
+    },
+    {
+      "left": "b5_v6_s0",
+      "right": "unsloth_ud_q4",
+      "domain": "multilingual",
+      "field": "mean_teacher_kl",
+      "delta": 0.0006791454777329769,
+      "families": 1,
+      "prompts": 24,
+      "weighting": "equal family means",
+      "conditional_on": "one frozen diagnostic set; not a seed CI",
+      "ci95": null,
+      "reason": "fewer than two independent authored families"
+    },
+    {
+      "left": "b5_v6_s0",
+      "right": "unsloth_ud_q4",
+      "domain": "multilingual",
+      "field": "task_success",
+      "delta": 0.0,
+      "families": 1,
+      "prompts": 24,
+      "weighting": "equal family means",
+      "conditional_on": "one frozen diagnostic set; not a seed CI",
+      "ci95": null,
+      "reason": "fewer than two independent authored families"
+    },
+    {
+      "left": "b5_v6_s0",
+      "right": "unsloth_ud_q4",
+      "domain": "multilingual",
+      "field": "trajectory_token_agreement",
+      "delta": 0.0,
+      "families": 1,
+      "prompts": 24,
+      "weighting": "equal family means",
+      "conditional_on": "one frozen diagnostic set; not a seed CI",
+      "ci95": null,
+      "reason": "fewer than two independent authored families"
+    },
+    {
+      "left": "b5_v6_s0",
+      "right": "unsloth_ud_q4",
+      "domain": "structured",
+      "field": "mean_teacher_kl",
+      "delta": 0.0030186520403386267,
+      "families": 4,
+      "prompts": 24,
+      "weighting": "equal family means",
+      "conditional_on": "one frozen diagnostic set; not a seed CI",
+      "ci95": [
+        -0.0004672843655791572,
+        0.0069876712320704835
+      ],
+      "draws": 4000
+    },
+    {
+      "left": "b5_v6_s0",
+      "right": "unsloth_ud_q4",
+      "domain": "structured",
+      "field": "task_success",
+      "delta": 0.16666666666666666,
+      "families": 4,
+      "prompts": 24,
+      "weighting": "equal family means",
+      "conditional_on": "one frozen diagnostic set; not a seed CI",
+      "ci95": [
+        0.0,
+        0.5
+      ],
+      "draws": 4000
+    },
+    {
+      "left": "b5_v6_s0",
+      "right": "unsloth_ud_q4",
+      "domain": "structured",
+      "field": "trajectory_token_agreement",
+      "delta": 0.0,
+      "families": 4,
+      "prompts": 24,
+      "weighting": "equal family means",
+      "conditional_on": "one frozen diagnostic set; not a seed CI",
+      "ci95": [
+        0.0,
+        0.0
+      ],
+      "draws": 4000
+    },
+    {
+      "left": "b5_v6_s0",
+      "right": "unsloth_ud_q4",
+      "domain": "tool_selection",
+      "field": "mean_teacher_kl",
+      "delta": -0.0007560525987454362,
+      "families": 4,
+      "prompts": 24,
+      "weighting": "equal family means",
+      "conditional_on": "one frozen diagnostic set; not a seed CI",
+      "ci95": [
+        -0.002250428761069273,
+        0.0002659656256933355
+      ],
+      "draws": 4000
+    },
+    {
+      "left": "b5_v6_s0",
+      "right": "unsloth_ud_q4",
+      "domain": "tool_selection",
+      "field": "task_success",
+      "delta": 0.0,
+      "families": 4,
+      "prompts": 24,
+      "weighting": "equal family means",
+      "conditional_on": "one frozen diagnostic set; not a seed CI",
+      "ci95": [
+        0.0,
+        0.0
+      ],
+      "draws": 4000
+    },
+    {
+      "left": "b5_v6_s0",
+      "right": "unsloth_ud_q4",
+      "domain": "tool_selection",
+      "field": "trajectory_token_agreement",
+      "delta": 0.0,
+      "families": 4,
+      "prompts": 24,
+      "weighting": "equal family means",
+      "conditional_on": "one frozen diagnostic set; not a seed CI",
+      "ci95": [
+        0.0,
+        0.0
+      ],
+      "draws": 4000
+    },
+    {
+      "left": "b5_v8_s0",
+      "right": "unsloth_ud_q4",
+      "domain": "c4",
+      "field": "mean_teacher_kl",
+      "delta": 0.008169481261966986,
+      "families": 24,
+      "prompts": 24,
+      "weighting": "equal family means",
+      "conditional_on": "one frozen diagnostic set; not a seed CI",
+      "ci95": [
+        0.007130858785430601,
+        0.00936240131221714
+      ],
+      "draws": 4000
+    },
+    {
+      "left": "b5_v8_s0",
+      "right": "unsloth_ud_q4",
+      "domain": "c4",
+      "field": "top1_agreement",
+      "delta": -0.02291258969341162,
+      "families": 24,
+      "prompts": 24,
+      "weighting": "equal family means",
+      "conditional_on": "one frozen diagnostic set; not a seed CI",
+      "ci95": [
+        -0.028049575994781487,
+        -0.01753098499673843
+      ],
+      "draws": 4000
+    },
+    {
+      "left": "b5_v8_s0",
+      "right": "unsloth_ud_q4",
+      "domain": "code_trace",
+      "field": "mean_teacher_kl",
+      "delta": 0.014465902875239084,
+      "families": 4,
+      "prompts": 24,
+      "weighting": "equal family means",
+      "conditional_on": "one frozen diagnostic set; not a seed CI",
+      "ci95": [
+        0.006096518551089436,
+        0.02283528719938873
+      ],
+      "draws": 4000
+    },
+    {
+      "left": "b5_v8_s0",
+      "right": "unsloth_ud_q4",
+      "domain": "code_trace",
+      "field": "task_success",
+      "delta": -0.041666666666666664,
+      "families": 4,
+      "prompts": 24,
+      "weighting": "equal family means",
+      "conditional_on": "one frozen diagnostic set; not a seed CI",
+      "ci95": [
+        -0.16666666666666666,
+        0.08333333333333334
+      ],
+      "draws": 4000
+    },
+    {
+      "left": "b5_v8_s0",
+      "right": "unsloth_ud_q4",
+      "domain": "code_trace",
+      "field": "trajectory_token_agreement",
+      "delta": -0.06336805555555555,
+      "families": 4,
+      "prompts": 24,
+      "weighting": "equal family means",
+      "conditional_on": "one frozen diagnostic set; not a seed CI",
+      "ci95": [
+        -0.12152777777777779,
+        -0.005208333333333333
+      ],
+      "draws": 4000
+    },
+    {
+      "left": "b5_v8_s0",
+      "right": "unsloth_ud_q4",
+      "domain": "multilingual",
+      "field": "mean_teacher_kl",
+      "delta": 0.0007245610364403632,
+      "families": 1,
+      "prompts": 24,
+      "weighting": "equal family means",
+      "conditional_on": "one frozen diagnostic set; not a seed CI",
+      "ci95": null,
+      "reason": "fewer than two independent authored families"
+    },
+    {
+      "left": "b5_v8_s0",
+      "right": "unsloth_ud_q4",
+      "domain": "multilingual",
+      "field": "task_success",
+      "delta": 0.0,
+      "families": 1,
+      "prompts": 24,
+      "weighting": "equal family means",
+      "conditional_on": "one frozen diagnostic set; not a seed CI",
+      "ci95": null,
+      "reason": "fewer than two independent authored families"
+    },
+    {
+      "left": "b5_v8_s0",
+      "right": "unsloth_ud_q4",
+      "domain": "multilingual",
+      "field": "trajectory_token_agreement",
+      "delta": 0.0,
+      "families": 1,
+      "prompts": 24,
+      "weighting": "equal family means",
+      "conditional_on": "one frozen diagnostic set; not a seed CI",
+      "ci95": null,
+      "reason": "fewer than two independent authored families"
+    },
+    {
+      "left": "b5_v8_s0",
+      "right": "unsloth_ud_q4",
+      "domain": "structured",
+      "field": "mean_teacher_kl",
+      "delta": 0.003159736510399507,
+      "families": 4,
+      "prompts": 24,
+      "weighting": "equal family means",
+      "conditional_on": "one frozen diagnostic set; not a seed CI",
+      "ci95": [
+        -0.00031725400428836805,
+        0.006636727025087383
+      ],
+      "draws": 4000
+    },
+    {
+      "left": "b5_v8_s0",
+      "right": "unsloth_ud_q4",
+      "domain": "structured",
+      "field": "task_success",
+      "delta": 0.25,
+      "families": 4,
+      "prompts": 24,
+      "weighting": "equal family means",
+      "conditional_on": "one frozen diagnostic set; not a seed CI",
+      "ci95": [
+        0.0,
+        0.75
+      ],
+      "draws": 4000
+    },
+    {
+      "left": "b5_v8_s0",
+      "right": "unsloth_ud_q4",
+      "domain": "structured",
+      "field": "trajectory_token_agreement",
+      "delta": 0.08333333333333333,
+      "families": 4,
+      "prompts": 24,
+      "weighting": "equal family means",
+      "conditional_on": "one frozen diagnostic set; not a seed CI",
+      "ci95": [
+        0.0,
+        0.25
+      ],
+      "draws": 4000
+    },
+    {
+      "left": "b5_v8_s0",
+      "right": "unsloth_ud_q4",
+      "domain": "tool_selection",
+      "field": "mean_teacher_kl",
+      "delta": -0.0005068511142620248,
+      "families": 4,
+      "prompts": 24,
+      "weighting": "equal family means",
+      "conditional_on": "one frozen diagnostic set; not a seed CI",
+      "ci95": [
+        -0.0014394455173851795,
+        0.00012412278053734277
+      ],
+      "draws": 4000
+    },
+    {
+      "left": "b5_v8_s0",
+      "right": "unsloth_ud_q4",
+      "domain": "tool_selection",
+      "field": "task_success",
+      "delta": 0.0,
+      "families": 4,
+      "prompts": 24,
+      "weighting": "equal family means",
+      "conditional_on": "one frozen diagnostic set; not a seed CI",
+      "ci95": [
+        0.0,
+        0.0
+      ],
+      "draws": 4000
+    },
+    {
+      "left": "b5_v8_s0",
+      "right": "unsloth_ud_q4",
+      "domain": "tool_selection",
+      "field": "trajectory_token_agreement",
+      "delta": 0.0,
+      "families": 4,
+      "prompts": 24,
+      "weighting": "equal family means",
+      "conditional_on": "one frozen diagnostic set; not a seed CI",
+      "ci95": [
+        0.0,
+        0.0
+      ],
+      "draws": 4000
+    },
+    {
+      "left": "b5_v6_s1",
+      "right": "unsloth_ud_q4",
+      "domain": "c4",
+      "field": "mean_teacher_kl",
+      "delta": 0.00760884938603696,
+      "families": 24,
+      "prompts": 24,
+      "weighting": "equal family means",
+      "conditional_on": "one frozen diagnostic set; not a seed CI",
+      "ci95": [
+        0.006504410555025406,
+        0.00885495908642365
+      ],
+      "draws": 4000
+    },
+    {
+      "left": "b5_v6_s1",
+      "right": "unsloth_ud_q4",
+      "domain": "c4",
+      "field": "top1_agreement",
+      "delta": -0.018672537508153956,
+      "families": 24,
+      "prompts": 24,
+      "weighting": "equal family means",
+      "conditional_on": "one frozen diagnostic set; not a seed CI",
+      "ci95": [
+        -0.022667971298108287,
+        -0.014350945857795186
+      ],
+      "draws": 4000
+    },
+    {
+      "left": "b5_v6_s1",
+      "right": "unsloth_ud_q4",
+      "domain": "code_trace",
+      "field": "mean_teacher_kl",
+      "delta": 0.013295735278881912,
+      "families": 4,
+      "prompts": 24,
+      "weighting": "equal family means",
+      "conditional_on": "one frozen diagnostic set; not a seed CI",
+      "ci95": [
+        0.0033670226829156905,
+        0.023224447874848134
+      ],
+      "draws": 4000
+    },
+    {
+      "left": "b5_v6_s1",
+      "right": "unsloth_ud_q4",
+      "domain": "code_trace",
+      "field": "task_success",
+      "delta": -0.25,
+      "families": 4,
+      "prompts": 24,
+      "weighting": "equal family means",
+      "conditional_on": "one frozen diagnostic set; not a seed CI",
+      "ci95": [
+        -0.75,
+        0.08333333333333333
+      ],
+      "draws": 4000
+    },
+    {
+      "left": "b5_v6_s1",
+      "right": "unsloth_ud_q4",
+      "domain": "code_trace",
+      "field": "trajectory_token_agreement",
+      "delta": -0.10995370370370372,
+      "families": 4,
+      "prompts": 24,
+      "weighting": "equal family means",
+      "conditional_on": "one frozen diagnostic set; not a seed CI",
+      "ci95": [
+        -0.22743055555555558,
+        -0.017361111111111115
+      ],
+      "draws": 4000
+    },
+    {
+      "left": "b5_v6_s1",
+      "right": "unsloth_ud_q4",
+      "domain": "multilingual",
+      "field": "mean_teacher_kl",
+      "delta": 0.00012026022587760841,
+      "families": 1,
+      "prompts": 24,
+      "weighting": "equal family means",
+      "conditional_on": "one frozen diagnostic set; not a seed CI",
+      "ci95": null,
+      "reason": "fewer than two independent authored families"
+    },
+    {
+      "left": "b5_v6_s1",
+      "right": "unsloth_ud_q4",
+      "domain": "multilingual",
+      "field": "task_success",
+      "delta": 0.0,
+      "families": 1,
+      "prompts": 24,
+      "weighting": "equal family means",
+      "conditional_on": "one frozen diagnostic set; not a seed CI",
+      "ci95": null,
+      "reason": "fewer than two independent authored families"
+    },
+    {
+      "left": "b5_v6_s1",
+      "right": "unsloth_ud_q4",
+      "domain": "multilingual",
+      "field": "trajectory_token_agreement",
+      "delta": 0.0,
+      "families": 1,
+      "prompts": 24,
+      "weighting": "equal family means",
+      "conditional_on": "one frozen diagnostic set; not a seed CI",
+      "ci95": null,
+      "reason": "fewer than two independent authored families"
+    },
+    {
+      "left": "b5_v6_s1",
+      "right": "unsloth_ud_q4",
+      "domain": "structured",
+      "field": "mean_teacher_kl",
+      "delta": -0.0008373234449052213,
+      "families": 4,
+      "prompts": 24,
+      "weighting": "equal family means",
+      "conditional_on": "one frozen diagnostic set; not a seed CI",
+      "ci95": [
+        -0.002482492075588669,
+        0.0008078451857782263
+      ],
+      "draws": 4000
+    },
+    {
+      "left": "b5_v6_s1",
+      "right": "unsloth_ud_q4",
+      "domain": "structured",
+      "field": "task_success",
+      "delta": 0.0,
+      "families": 4,
+      "prompts": 24,
+      "weighting": "equal family means",
+      "conditional_on": "one frozen diagnostic set; not a seed CI",
+      "ci95": [
+        0.0,
+        0.0
+      ],
+      "draws": 4000
+    },
+    {
+      "left": "b5_v6_s1",
+      "right": "unsloth_ud_q4",
+      "domain": "structured",
+      "field": "trajectory_token_agreement",
+      "delta": 0.0,
+      "families": 4,
+      "prompts": 24,
+      "weighting": "equal family means",
+      "conditional_on": "one frozen diagnostic set; not a seed CI",
+      "ci95": [
+        0.0,
+        0.0
+      ],
+      "draws": 4000
+    },
+    {
+      "left": "b5_v6_s1",
+      "right": "unsloth_ud_q4",
+      "domain": "tool_selection",
+      "field": "mean_teacher_kl",
+      "delta": -0.004001321568348168,
+      "families": 4,
+      "prompts": 24,
+      "weighting": "equal family means",
+      "conditional_on": "one frozen diagnostic set; not a seed CI",
+      "ci95": [
+        -0.012623327533545135,
+        0.000540269039197433
+      ],
+      "draws": 4000
+    },
+    {
+      "left": "b5_v6_s1",
+      "right": "unsloth_ud_q4",
+      "domain": "tool_selection",
+      "field": "task_success",
+      "delta": 0.0,
+      "families": 4,
+      "prompts": 24,
+      "weighting": "equal family means",
+      "conditional_on": "one frozen diagnostic set; not a seed CI",
+      "ci95": [
+        0.0,
+        0.0
+      ],
+      "draws": 4000
+    },
+    {
+      "left": "b5_v6_s1",
+      "right": "unsloth_ud_q4",
+      "domain": "tool_selection",
+      "field": "trajectory_token_agreement",
+      "delta": 0.0,
+      "families": 4,
+      "prompts": 24,
+      "weighting": "equal family means",
+      "conditional_on": "one frozen diagnostic set; not a seed CI",
+      "ci95": [
+        0.0,
+        0.0
+      ],
+      "draws": 4000
+    },
+    {
+      "left": "b5_v8_s1",
+      "right": "unsloth_ud_q4",
+      "domain": "c4",
+      "field": "mean_teacher_kl",
+      "delta": 0.008420399472622202,
+      "families": 24,
+      "prompts": 24,
+      "weighting": "equal family means",
+      "conditional_on": "one frozen diagnostic set; not a seed CI",
+      "ci95": [
+        0.0073096803512008824,
+        0.0096796864450737
+      ],
+      "draws": 4000
+    },
+    {
+      "left": "b5_v8_s1",
+      "right": "unsloth_ud_q4",
+      "domain": "c4",
+      "field": "top1_agreement",
+      "delta": -0.0228310502283105,
+      "families": 24,
+      "prompts": 24,
+      "weighting": "equal family means",
+      "conditional_on": "one frozen diagnostic set; not a seed CI",
+      "ci95": [
+        -0.027397260273972598,
+        -0.01826484018264841
+      ],
+      "draws": 4000
+    },
+    {
+      "left": "b5_v8_s1",
+      "right": "unsloth_ud_q4",
+      "domain": "code_trace",
+      "field": "mean_teacher_kl",
+      "delta": 0.013526025241762728,
+      "families": 4,
+      "prompts": 24,
+      "weighting": "equal family means",
+      "conditional_on": "one frozen diagnostic set; not a seed CI",
+      "ci95": [
+        0.003772380022811501,
+        0.023279670460713955
+      ],
+      "draws": 4000
+    },
+    {
+      "left": "b5_v8_s1",
+      "right": "unsloth_ud_q4",
+      "domain": "code_trace",
+      "field": "task_success",
+      "delta": -0.2916666666666667,
+      "families": 4,
+      "prompts": 24,
+      "weighting": "equal family means",
+      "conditional_on": "one frozen diagnostic set; not a seed CI",
+      "ci95": [
+        -0.75,
+        0.0
+      ],
+      "draws": 4000
+    },
+    {
+      "left": "b5_v8_s1",
+      "right": "unsloth_ud_q4",
+      "domain": "code_trace",
+      "field": "trajectory_token_agreement",
+      "delta": -0.10069444444444445,
+      "families": 4,
+      "prompts": 24,
+      "weighting": "equal family means",
+      "conditional_on": "one frozen diagnostic set; not a seed CI",
+      "ci95": [
+        -0.21875,
+        0.0011574074074074032
+      ],
+      "draws": 4000
+    },
+    {
+      "left": "b5_v8_s1",
+      "right": "unsloth_ud_q4",
+      "domain": "multilingual",
+      "field": "mean_teacher_kl",
+      "delta": 2.628646567196483e-05,
+      "families": 1,
+      "prompts": 24,
+      "weighting": "equal family means",
+      "conditional_on": "one frozen diagnostic set; not a seed CI",
+      "ci95": null,
+      "reason": "fewer than two independent authored families"
+    },
+    {
+      "left": "b5_v8_s1",
+      "right": "unsloth_ud_q4",
+      "domain": "multilingual",
+      "field": "task_success",
+      "delta": 0.0,
+      "families": 1,
+      "prompts": 24,
+      "weighting": "equal family means",
+      "conditional_on": "one frozen diagnostic set; not a seed CI",
+      "ci95": null,
+      "reason": "fewer than two independent authored families"
+    },
+    {
+      "left": "b5_v8_s1",
+      "right": "unsloth_ud_q4",
+      "domain": "multilingual",
+      "field": "trajectory_token_agreement",
+      "delta": 0.0,
+      "families": 1,
+      "prompts": 24,
+      "weighting": "equal family means",
+      "conditional_on": "one frozen diagnostic set; not a seed CI",
+      "ci95": null,
+      "reason": "fewer than two independent authored families"
+    },
+    {
+      "left": "b5_v8_s1",
+      "right": "unsloth_ud_q4",
+      "domain": "structured",
+      "field": "mean_teacher_kl",
+      "delta": -0.0004579857832710936,
+      "families": 4,
+      "prompts": 24,
+      "weighting": "equal family means",
+      "conditional_on": "one frozen diagnostic set; not a seed CI",
+      "ci95": [
+        -0.0019514519954583124,
+        0.0010354804289161251
+      ],
+      "draws": 4000
+    },
+    {
+      "left": "b5_v8_s1",
+      "right": "unsloth_ud_q4",
+      "domain": "structured",
+      "field": "task_success",
+      "delta": 0.0,
+      "families": 4,
+      "prompts": 24,
+      "weighting": "equal family means",
+      "conditional_on": "one frozen diagnostic set; not a seed CI",
+      "ci95": [
+        0.0,
+        0.0
+      ],
+      "draws": 4000
+    },
+    {
+      "left": "b5_v8_s1",
+      "right": "unsloth_ud_q4",
+      "domain": "structured",
+      "field": "trajectory_token_agreement",
+      "delta": 0.0,
+      "families": 4,
+      "prompts": 24,
+      "weighting": "equal family means",
+      "conditional_on": "one frozen diagnostic set; not a seed CI",
+      "ci95": [
+        0.0,
+        0.0
+      ],
+      "draws": 4000
+    },
+    {
+      "left": "b5_v8_s1",
+      "right": "unsloth_ud_q4",
+      "domain": "tool_selection",
+      "field": "mean_teacher_kl",
+      "delta": -0.003209139600504561,
+      "families": 4,
+      "prompts": 24,
+      "weighting": "equal family means",
+      "conditional_on": "one frozen diagnostic set; not a seed CI",
+      "ci95": [
+        -0.010322742442738314,
+        0.0005378292745743252
+      ],
+      "draws": 4000
+    },
+    {
+      "left": "b5_v8_s1",
+      "right": "unsloth_ud_q4",
+      "domain": "tool_selection",
+      "field": "task_success",
+      "delta": 0.0,
+      "families": 4,
+      "prompts": 24,
+      "weighting": "equal family means",
+      "conditional_on": "one frozen diagnostic set; not a seed CI",
+      "ci95": [
+        0.0,
+        0.0
+      ],
+      "draws": 4000
+    },
+    {
+      "left": "b5_v8_s1",
+      "right": "unsloth_ud_q4",
+      "domain": "tool_selection",
+      "field": "trajectory_token_agreement",
+      "delta": 0.0,
+      "families": 4,
+      "prompts": 24,
+      "weighting": "equal family means",
+      "conditional_on": "one frozen diagnostic set; not a seed CI",
+      "ci95": [
+        0.0,
+        0.0
+      ],
+      "draws": 4000
+    },
+    {
+      "left": "b5_v6_s2",
+      "right": "unsloth_ud_q4",
+      "domain": "c4",
+      "field": "mean_teacher_kl",
+      "delta": 0.0077461425359768325,
+      "families": 24,
+      "prompts": 24,
+      "weighting": "equal family means",
+      "conditional_on": "one frozen diagnostic set; not a seed CI",
+      "ci95": [
+        0.006826351631487722,
+        0.008668507072656833
+      ],
+      "draws": 4000
+    },
+    {
+      "left": "b5_v6_s2",
+      "right": "unsloth_ud_q4",
+      "domain": "c4",
+      "field": "top1_agreement",
+      "delta": -0.019080234833659494,
+      "families": 24,
+      "prompts": 24,
+      "weighting": "equal family means",
+      "conditional_on": "one frozen diagnostic set; not a seed CI",
+      "ci95": [
+        -0.023320287018917158,
+        -0.014758643183300715
+      ],
+      "draws": 4000
+    },
+    {
+      "left": "b5_v6_s2",
+      "right": "unsloth_ud_q4",
+      "domain": "code_trace",
+      "field": "mean_teacher_kl",
+      "delta": 0.014954511881381869,
+      "families": 4,
+      "prompts": 24,
+      "weighting": "equal family means",
+      "conditional_on": "one frozen diagnostic set; not a seed CI",
+      "ci95": [
+        0.0058855515828248875,
+        0.023412429665112318
+      ],
+      "draws": 4000
+    },
+    {
+      "left": "b5_v6_s2",
+      "right": "unsloth_ud_q4",
+      "domain": "code_trace",
+      "field": "task_success",
+      "delta": -0.20833333333333334,
+      "families": 4,
+      "prompts": 24,
+      "weighting": "equal family means",
+      "conditional_on": "one frozen diagnostic set; not a seed CI",
+      "ci95": [
+        -0.625,
+        0.08333333333333333
+      ],
+      "draws": 4000
+    },
+    {
+      "left": "b5_v6_s2",
+      "right": "unsloth_ud_q4",
+      "domain": "code_trace",
+      "field": "trajectory_token_agreement",
+      "delta": -0.10243055555555555,
+      "families": 4,
+      "prompts": 24,
+      "weighting": "equal family means",
+      "conditional_on": "one frozen diagnostic set; not a seed CI",
+      "ci95": [
+        -0.16782407407407407,
+        -0.028356481481481483
+      ],
+      "draws": 4000
+    },
+    {
+      "left": "b5_v6_s2",
+      "right": "unsloth_ud_q4",
+      "domain": "multilingual",
+      "field": "mean_teacher_kl",
+      "delta": -0.0006991690380376754,
+      "families": 1,
+      "prompts": 24,
+      "weighting": "equal family means",
+      "conditional_on": "one frozen diagnostic set; not a seed CI",
+      "ci95": null,
+      "reason": "fewer than two independent authored families"
+    },
+    {
+      "left": "b5_v6_s2",
+      "right": "unsloth_ud_q4",
+      "domain": "multilingual",
+      "field": "task_success",
+      "delta": 0.0,
+      "families": 1,
+      "prompts": 24,
+      "weighting": "equal family means",
+      "conditional_on": "one frozen diagnostic set; not a seed CI",
+      "ci95": null,
+      "reason": "fewer than two independent authored families"
+    },
+    {
+      "left": "b5_v6_s2",
+      "right": "unsloth_ud_q4",
+      "domain": "multilingual",
+      "field": "trajectory_token_agreement",
+      "delta": 0.0,
+      "families": 1,
+      "prompts": 24,
+      "weighting": "equal family means",
+      "conditional_on": "one frozen diagnostic set; not a seed CI",
+      "ci95": null,
+      "reason": "fewer than two independent authored families"
+    },
+    {
+      "left": "b5_v6_s2",
+      "right": "unsloth_ud_q4",
+      "domain": "structured",
+      "field": "mean_teacher_kl",
+      "delta": -0.0017929203235752822,
+      "families": 4,
+      "prompts": 24,
+      "weighting": "equal family means",
+      "conditional_on": "one frozen diagnostic set; not a seed CI",
+      "ci95": [
+        -0.005961057362640113,
+        0.0018938128168657902
+      ],
+      "draws": 4000
+    },
+    {
+      "left": "b5_v6_s2",
+      "right": "unsloth_ud_q4",
+      "domain": "structured",
+      "field": "task_success",
+      "delta": 0.25,
+      "families": 4,
+      "prompts": 24,
+      "weighting": "equal family means",
+      "conditional_on": "one frozen diagnostic set; not a seed CI",
+      "ci95": [
+        0.0,
+        0.75
+      ],
+      "draws": 4000
+    },
+    {
+      "left": "b5_v6_s2",
+      "right": "unsloth_ud_q4",
+      "domain": "structured",
+      "field": "trajectory_token_agreement",
+      "delta": 0.041666666666666664,
+      "families": 4,
+      "prompts": 24,
+      "weighting": "equal family means",
+      "conditional_on": "one frozen diagnostic set; not a seed CI",
+      "ci95": [
+        -0.125,
+        0.25
+      ],
+      "draws": 4000
+    },
+    {
+      "left": "b5_v6_s2",
+      "right": "unsloth_ud_q4",
+      "domain": "tool_selection",
+      "field": "mean_teacher_kl",
+      "delta": 0.00022195091504769178,
+      "families": 4,
+      "prompts": 24,
+      "weighting": "equal family means",
+      "conditional_on": "one frozen diagnostic set; not a seed CI",
+      "ci95": [
+        -0.0004919170179383443,
+        0.0011032158215731468
+      ],
+      "draws": 4000
+    },
+    {
+      "left": "b5_v6_s2",
+      "right": "unsloth_ud_q4",
+      "domain": "tool_selection",
+      "field": "task_success",
+      "delta": 0.0,
+      "families": 4,
+      "prompts": 24,
+      "weighting": "equal family means",
+      "conditional_on": "one frozen diagnostic set; not a seed CI",
+      "ci95": [
+        0.0,
+        0.0
+      ],
+      "draws": 4000
+    },
+    {
+      "left": "b5_v6_s2",
+      "right": "unsloth_ud_q4",
+      "domain": "tool_selection",
+      "field": "trajectory_token_agreement",
+      "delta": 0.0,
+      "families": 4,
+      "prompts": 24,
+      "weighting": "equal family means",
+      "conditional_on": "one frozen diagnostic set; not a seed CI",
+      "ci95": [
+        0.0,
+        0.0
+      ],
+      "draws": 4000
+    },
+    {
+      "left": "b5_v8_s2",
+      "right": "unsloth_ud_q4",
+      "domain": "c4",
+      "field": "mean_teacher_kl",
+      "delta": 0.008478339898476545,
+      "families": 24,
+      "prompts": 24,
+      "weighting": "equal family means",
+      "conditional_on": "one frozen diagnostic set; not a seed CI",
+      "ci95": [
+        0.007506308827768531,
+        0.009466534507190903
+      ],
+      "draws": 4000
+    },
+    {
+      "left": "b5_v8_s2",
+      "right": "unsloth_ud_q4",
+      "domain": "c4",
+      "field": "top1_agreement",
+      "delta": -0.02470645792563601,
+      "families": 24,
+      "prompts": 24,
+      "weighting": "equal family means",
+      "conditional_on": "one frozen diagnostic set; not a seed CI",
+      "ci95": [
+        -0.02902804957599478,
+        -0.02022178734507502
+      ],
+      "draws": 4000
+    },
+    {
+      "left": "b5_v8_s2",
+      "right": "unsloth_ud_q4",
+      "domain": "code_trace",
+      "field": "mean_teacher_kl",
+      "delta": 0.015075567325979216,
+      "families": 4,
+      "prompts": 24,
+      "weighting": "equal family means",
+      "conditional_on": "one frozen diagnostic set; not a seed CI",
+      "ci95": [
+        0.005833299254087661,
+        0.023940371326163126
+      ],
+      "draws": 4000
+    },
+    {
+      "left": "b5_v8_s2",
+      "right": "unsloth_ud_q4",
+      "domain": "code_trace",
+      "field": "task_success",
+      "delta": -0.20833333333333334,
+      "families": 4,
+      "prompts": 24,
+      "weighting": "equal family means",
+      "conditional_on": "one frozen diagnostic set; not a seed CI",
+      "ci95": [
+        -0.625,
+        0.08333333333333333
+      ],
+      "draws": 4000
+    },
+    {
+      "left": "b5_v8_s2",
+      "right": "unsloth_ud_q4",
+      "domain": "code_trace",
+      "field": "trajectory_token_agreement",
+      "delta": -0.1076388888888889,
+      "families": 4,
+      "prompts": 24,
+      "weighting": "equal family means",
+      "conditional_on": "one frozen diagnostic set; not a seed CI",
+      "ci95": [
+        -0.16898148148148148,
+        -0.032407407407407406
+      ],
+      "draws": 4000
+    },
+    {
+      "left": "b5_v8_s2",
+      "right": "unsloth_ud_q4",
+      "domain": "multilingual",
+      "field": "mean_teacher_kl",
+      "delta": -0.0008879341793096572,
+      "families": 1,
+      "prompts": 24,
+      "weighting": "equal family means",
+      "conditional_on": "one frozen diagnostic set; not a seed CI",
+      "ci95": null,
+      "reason": "fewer than two independent authored families"
+    },
+    {
+      "left": "b5_v8_s2",
+      "right": "unsloth_ud_q4",
+      "domain": "multilingual",
+      "field": "task_success",
+      "delta": 0.0,
+      "families": 1,
+      "prompts": 24,
+      "weighting": "equal family means",
+      "conditional_on": "one frozen diagnostic set; not a seed CI",
+      "ci95": null,
+      "reason": "fewer than two independent authored families"
+    },
+    {
+      "left": "b5_v8_s2",
+      "right": "unsloth_ud_q4",
+      "domain": "multilingual",
+      "field": "trajectory_token_agreement",
+      "delta": 0.0,
+      "families": 1,
+      "prompts": 24,
+      "weighting": "equal family means",
+      "conditional_on": "one frozen diagnostic set; not a seed CI",
+      "ci95": null,
+      "reason": "fewer than two independent authored families"
+    },
+    {
+      "left": "b5_v8_s2",
+      "right": "unsloth_ud_q4",
+      "domain": "structured",
+      "field": "mean_teacher_kl",
+      "delta": -0.002396945031783704,
+      "families": 4,
+      "prompts": 24,
+      "weighting": "equal family means",
+      "conditional_on": "one frozen diagnostic set; not a seed CI",
+      "ci95": [
+        -0.006679479181054401,
+        0.001132121873565936
+      ],
+      "draws": 4000
+    },
+    {
+      "left": "b5_v8_s2",
+      "right": "unsloth_ud_q4",
+      "domain": "structured",
+      "field": "task_success",
+      "delta": 0.25,
+      "families": 4,
+      "prompts": 24,
+      "weighting": "equal family means",
+      "conditional_on": "one frozen diagnostic set; not a seed CI",
+      "ci95": [
+        0.0,
+        0.75
+      ],
+      "draws": 4000
+    },
+    {
+      "left": "b5_v8_s2",
+      "right": "unsloth_ud_q4",
+      "domain": "structured",
+      "field": "trajectory_token_agreement",
+      "delta": 0.041666666666666664,
+      "families": 4,
+      "prompts": 24,
+      "weighting": "equal family means",
+      "conditional_on": "one frozen diagnostic set; not a seed CI",
+      "ci95": [
+        -0.125,
+        0.25
+      ],
+      "draws": 4000
+    },
+    {
+      "left": "b5_v8_s2",
+      "right": "unsloth_ud_q4",
+      "domain": "tool_selection",
+      "field": "mean_teacher_kl",
+      "delta": 1.979527460282034e-05,
+      "families": 4,
+      "prompts": 24,
+      "weighting": "equal family means",
+      "conditional_on": "one frozen diagnostic set; not a seed CI",
+      "ci95": [
+        -0.0009773794587790634,
+        0.001026700203580405
+      ],
+      "draws": 4000
+    },
+    {
+      "left": "b5_v8_s2",
+      "right": "unsloth_ud_q4",
+      "domain": "tool_selection",
+      "field": "task_success",
+      "delta": 0.0,
+      "families": 4,
+      "prompts": 24,
+      "weighting": "equal family means",
+      "conditional_on": "one frozen diagnostic set; not a seed CI",
+      "ci95": [
+        0.0,
+        0.0
+      ],
+      "draws": 4000
+    },
+    {
+      "left": "b5_v8_s2",
+      "right": "unsloth_ud_q4",
+      "domain": "tool_selection",
+      "field": "trajectory_token_agreement",
+      "delta": 0.0,
+      "families": 4,
+      "prompts": 24,
+      "weighting": "equal family means",
+      "conditional_on": "one frozen diagnostic set; not a seed CI",
+      "ci95": [
+        0.0,
+        0.0
+      ],
+      "draws": 4000
+    }
+  ],
+  "tokenizer_audits": {
+    "gguf_bf16_bridge": {
+      "policy": "frozen-hf",
+      "prompts": 96,
+      "native_mismatches": [
+        "multilingual-addition-hi-0",
+        "multilingual-addition-hi-1",
+        "multilingual-addition-hi-2",
+        "multilingual-addition-hi-3"
+      ],
+      "passed": true,
+      "boundary": "Scoring/generation consume frozen HF IDs directly, after full output-axis validation. Native text-tokenizer equivalence is measured separately, not asserted."
+    },
+    "unsloth_ud_q4": {
+      "policy": "frozen-hf",
+      "prompts": 96,
+      "native_mismatches": [
+        "multilingual-addition-hi-0",
+        "multilingual-addition-hi-1",
+        "multilingual-addition-hi-2",
+        "multilingual-addition-hi-3"
+      ],
+      "passed": true,
+      "boundary": "Scoring/generation consume frozen HF IDs directly, after full output-axis validation. Native text-tokenizer equivalence is measured separately, not asserted."
+    }
+  },
+  "reuse": null,
+  "provider_competitive": false,
+  "independent_confirmation": false,
+  "interpretation": "Fresh C4 plus authored diagnostic families on frozen HF token IDs, not native tokenizer/end-to-end serving parity. Cross-engine/common-FP16 scores include engine and precision differences; inspect the BF16 bridge and tokenizer audits. Seeds replicate rotation/quantization on the fixed calibration selection, not independent calibration corpora. No automatic promotion."
+}

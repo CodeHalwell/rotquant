@@ -1,0 +1,66 @@
+{
+  "manifest": "76e00611d6bd45c3bb0892ad27eeb2b83c872e18870fd880cbab58babf185372",
+  "source": {
+    "revision": "d4292d6fdec688cdb896d6d2cfea81de1c310235",
+    "source_fingerprint": "98a54d5c17ef917d311d330bcdcb2ff96208134ec3613a903e578c04b5f82366"
+  },
+  "runtime": {
+    "versions": {
+      "torch": "2.11.0+cu128",
+      "transformers": "5.9.0",
+      "datasets": "4.8.5",
+      "safetensors": "0.7.0",
+      "fast-hadamard-transform": "1.1.0",
+      "numpy": "2.1.3",
+      "scipy": "1.15.3",
+      "huggingface-hub": "1.17.0",
+      "jinja2": "3.1.6",
+      "accelerate": "1.13.0"
+    },
+    "cuda": "12.8",
+    "python": "3.13.15",
+    "gpu": "NVIDIA A100-SXM4-40GB",
+    "disable_fast_hadamard": "",
+    "tf32": false
+  },
+  "stop_ids": [
+    248044,
+    248046
+  ],
+  "device": "cuda",
+  "label": "unsloth_ud_q4",
+  "gguf_input_policy": "frozen-hf",
+  "llama_build": {
+    "commit": "3691546f1c9e0c1bf93323dff02230bd959cf562",
+    "direct_url": {
+      "url": "https://github.com/abetlen/llama-cpp-python.git",
+      "vcs_info": {
+        "commit_id": "3691546f1c9e0c1bf93323dff02230bd959cf562",
+        "requested_revision": "3691546f1c9e0c1bf93323dff02230bd959cf562",
+        "vcs": "git"
+      }
+    },
+    "libraries": {
+      "lib/libggml-base.so": "e4addaa6ebb9583a3b577ec742cab7bedb6d220f864c1ccc3dcb6cf221036612",
+      "lib/libggml-cpu.so": "434de151097c69268ad8eed15c6668f66a020b2ee021176d274c68819913eed5",
+      "lib/libggml-cuda.so": "48cd60d47bb1c216ff95b25cc69f4dc07ececce502fbbda03322bee850ceaa9e",
+      "lib/libggml.so": "fcf5ac8f22ee3d742a30ff0eeb513cdee6793c0afbbf6361932c3caa9d6e3c3b",
+      "lib/libllama-common.so": "95d509ce3355b92eb785a8570f7aab9824dc09b169e233cafa13bd9e3f602ec2",
+      "lib/libllama.so": "f00efa25a5aec7877c3eef6efe4cb6845c0cd79e1190412eadf511768872354e",
+      "lib/libmtmd.so": "81780554f2c27e843a74a206936a76dbecc8c55dfe5c0df3469bc4e14c15df14",
+      "llama_cpp/lib/libggml-base.so": "e4addaa6ebb9583a3b577ec742cab7bedb6d220f864c1ccc3dcb6cf221036612",
+      "llama_cpp/lib/libggml-cpu.so": "434de151097c69268ad8eed15c6668f66a020b2ee021176d274c68819913eed5",
+      "llama_cpp/lib/libggml-cuda.so": "48cd60d47bb1c216ff95b25cc69f4dc07ececce502fbbda03322bee850ceaa9e",
+      "llama_cpp/lib/libggml.so": "fcf5ac8f22ee3d742a30ff0eeb513cdee6793c0afbbf6361932c3caa9d6e3c3b",
+      "llama_cpp/lib/libllama.so": "f00efa25a5aec7877c3eef6efe4cb6845c0cd79e1190412eadf511768872354e",
+      "llama_cpp/lib/libmtmd.so": "81780554f2c27e843a74a206936a76dbecc8c55dfe5c0df3469bc4e14c15df14"
+    },
+    "version": "0.3.35"
+  },
+  "gguf_revision": "e87f176479d0855a907a41277aca2f8ee7a09523",
+  "gguf": {
+    "name": "Qwen3.5-4B-UD-Q4_K_XL.gguf",
+    "bytes": 2912109728,
+    "sha256": "b252c5610a42ca82d20fe2a12813e9d069eed89292907e26c783eeb0bc961bc7"
+  }
+}
