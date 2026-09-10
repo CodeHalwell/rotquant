@@ -1,0 +1,32 @@
+{
+  "protocol": "rq3-e2e-handoff-validation-v1",
+  "date": "2026-09-10",
+  "root_revision": "dd87da217593e39e8a8d5bd380578671d8640e4d",
+  "root_dirty": true,
+  "pytest": {
+    "command": "env ROTQUANT_REQUIRE_GIT_HISTORY=1 .venv/bin/pytest tests/ -q",
+    "passed": 840,
+    "skipped": 17,
+    "skip_reason": "AVX2 native kernels unavailable on arm64",
+    "warnings": 2,
+    "warning_reason": "existing SWIG type deprecations",
+    "elapsed_seconds": 89.54,
+    "exit_code": 0
+  },
+  "ruff": {"command": ".venv/bin/ruff check .", "exit_code": 0},
+  "native_ctest": {
+    "command": "ctest --test-dir build/native --output-on-failure",
+    "passed": 3,
+    "failed": 0,
+    "exit_code": 0
+  },
+  "clean_pinned_patch_apply_check": true,
+  "notebook_format_and_generated_source_checked": true,
+  "notebook_cells_executed_with_mock_colab_gpu_git_and_driver": true,
+  "actual_managed_colab_environment_executed": false,
+  "actual_cuda_numerical_execution": false,
+  "actual_retained_4b_execution": false,
+  "rendered_notebook_inspected": false,
+  "inspection_gap": "HTML generated; file-URL browser inspection blocked by tool policy. Inspect rendered notebook in Colab.",
+  "boundary": "Local engineering regression evidence; not a Colab end-to-end success receipt or model-quality result."
+}

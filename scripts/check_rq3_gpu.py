@@ -2,7 +2,6 @@
 from __future__ import annotations
 
 import argparse
-import hashlib
 import json
 import sys
 from pathlib import Path
@@ -16,6 +15,7 @@ from rotquant.native_v3 import decode_native_v3_rows, encode_native_v3
 from rotquant.quantize import QuantConfig, Quantizer
 from rotquant.rotate import RandomizedHadamard
 from scripts.check_rq3_model import execution_settings, runtime_identity
+from scripts.native_hashing import digest
 from scripts.rq3_test_runtime import NativeTests
 
 
@@ -52,10 +52,8 @@ def check(library, backend):
                           "max_abs": float(np.max(np.abs(actual - expected))), "passed": True}
                 print(json.dumps(report), flush=True)
                 reports.append(report)
-    with Path(library).open("rb") as handle:
-        digest = hashlib.file_digest(handle, "sha256").hexdigest()
     return {"protocol": "rq3-packed-operator-check-v1", "backend": backend,
-            "library_sha256": digest, "runtime_files": runtime_identity(library),
+            "library_sha256": digest(library), "runtime_files": runtime_identity(library),
             "settings": execution_settings(), "cases": reports, "passed": True,
             "scope": "synthetic operators; not retained-model quality or serving performance"}
 

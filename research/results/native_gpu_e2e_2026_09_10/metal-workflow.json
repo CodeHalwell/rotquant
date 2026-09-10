@@ -1,0 +1,1072 @@
+{
+  "protocol": "rq3-gpu-e2e-v2",
+  "controls": {
+    "revision": "dd87da217593e39e8a8d5bd380578671d8640e4d",
+    "dirty_local_test": true,
+    "workflow_sources": {
+      "scripts/run_native_gpu_validation.py": "4fc377341b9f6098c692df6bef274aa6b1c712ea96e36e6627569247e159b3f9",
+      "scripts/native_gpu_workflow.py": "2b903b14157a5181b543829c0a9bcd5d82102c51d5ea707eeb16f13013cb2a84",
+      "scripts/native_hashing.py": "2ed2831b7eb793f33aa6da078e616851d224e28927f17e641b5a1a990a8ff0e2",
+      "scripts/preflight_native_gpu.py": "523967cdbb8e83ad01c7a65033f433686382b8f549e81f2e6b8a421dc8921e47",
+      "scripts/build_rq3_runtime.py": "afd58ea157fb01382957b082ac3995301502c72f8247c27cdab80388235032d3",
+      "requirements/native-gpu.txt": "276c74d5220268aaf05076c3c0a678926a524aa7c8a32b0bd71e13d2b90dc890",
+      "integrations/llama.cpp/rotquant-native-v2.patch": "29d176717dc7ee1d0aa5cc211a9f1538aebf28388633297e9ccd66edf52de0eb"
+    },
+    "source_root": "/Users/danielhalwell/PythonProjects/rotquant/build/no-retained-source",
+    "arms": [
+      "b5_v6_s0"
+    ],
+    "backend": "Metal",
+    "synthetic_only": true,
+    "timing": false,
+    "work_dir": "/Users/danielhalwell/PythonProjects/rotquant/build/rq3-e2e-local",
+    "current_environment_local_test": true,
+    "build_jobs": 4,
+    "metal_tensor_disable": "1",
+    "active_budget_minutes": 90
+  },
+  "active_seconds": 55.362839958965196,
+  "attempts": [
+    {
+      "name": "environment",
+      "status": "passed",
+      "signature": "74234e98afe7498fb5daf1f36ac2d78acc339464f950703b8c019892f982b90b",
+      "directory": "/Users/danielhalwell/PythonProjects/rotquant/build/rq3-e2e-handoff/stages/environment/attempt-001",
+      "started_utc_epoch": 1789056913.9322581,
+      "limit_seconds": 720,
+      "value": {
+        "python": "3.12.14 (main, Aug 12 2026, 13:57:54) [Clang 21.0.0 (clang-2100.1.1.101)]",
+        "platform": "macOS-26.6.2-arm64-arm-64bit",
+        "packages": {
+          "transformers": "5.9.0",
+          "safetensors": "0.8.0",
+          "sentencepiece": "0.2.1",
+          "scipy": "1.15.3",
+          "pyyaml": "6.0.3",
+          "ninja": "1.13.0",
+          "cmake": "3.31.10"
+        },
+        "torch": "2.12.0",
+        "torch_file": "/Users/danielhalwell/PythonProjects/rotquant/.venv/lib/python3.12/site-packages/torch/__init__.py",
+        "cuda": null,
+        "backend": "Metal",
+        "device": "Metal",
+        "total_vram_bytes": null,
+        "passed": true
+      },
+      "artifacts": {
+        "/Users/danielhalwell/PythonProjects/rotquant/build/rq3-e2e-handoff/stages/environment/attempt-001/environment.json": {
+          "bytes": 581,
+          "sha256": "53724194a261e05df79b85362088122b72af812b435d5df22b22d3f91aeae321"
+        }
+      },
+      "elapsed_seconds": 4.028595374998986
+    },
+    {
+      "name": "native-build-and-load",
+      "status": "passed",
+      "signature": "fdc348031855cf227fe6f60289255933f99fa7da16aa7c4c6fb7919f56137fd3",
+      "directory": "/Users/danielhalwell/PythonProjects/rotquant/build/rq3-e2e-handoff/stages/native-build-and-load/attempt-001",
+      "started_utc_epoch": 1789056917.961748,
+      "limit_seconds": 2700,
+      "value": {
+        "library": "/Users/danielhalwell/PythonProjects/rotquant/build/llama-rqv3-metal/bin/librotquant_ggml_test.dylib",
+        "receipt": "/Users/danielhalwell/PythonProjects/rotquant/build/rq3-e2e-handoff/stages/native-build-and-load/attempt-001/build-receipt.json"
+      },
+      "artifacts": {
+        "/Users/danielhalwell/PythonProjects/rotquant/build/rq3-e2e-handoff/stages/native-build-and-load/attempt-001/build-receipt.json": {
+          "bytes": 2541,
+          "sha256": "8b10d0856ec487ed066fbaa0c20bcdd5a94c57f32cb9a289c83a022fbe9966c8"
+        },
+        "/Users/danielhalwell/PythonProjects/rotquant/build/llama-rqv3-metal/bin/default.metallib": {
+          "bytes": 12835938,
+          "sha256": "bc516546d7664f9c99a6d80972885666ae33969fa99cb967619ed627b5efe060"
+        },
+        "/Users/danielhalwell/PythonProjects/rotquant/build/llama-rqv3-metal/bin/libggml-base.0.22.0.dylib": {
+          "bytes": 730984,
+          "sha256": "07bcbc6a1657c304cc3e9237bc7052ade0afe1e64c9255738b805b2a1e040022"
+        },
+        "/Users/danielhalwell/PythonProjects/rotquant/build/llama-rqv3-metal/bin/libggml-blas.0.22.0.dylib": {
+          "bytes": 58776,
+          "sha256": "550854a98644a77b681f6f4d3563fcb810d893088d510b34428742c097527301"
+        },
+        "/Users/danielhalwell/PythonProjects/rotquant/build/llama-rqv3-metal/bin/libggml-cpu.0.22.0.dylib": {
+          "bytes": 934576,
+          "sha256": "c6694f684a8ef123229e95ec4152b61e521dd040eddc2683fd316b72dbb4a9d6"
+        },
+        "/Users/danielhalwell/PythonProjects/rotquant/build/llama-rqv3-metal/bin/libggml-metal.0.22.0.dylib": {
+          "bytes": 278616,
+          "sha256": "f4dbda07598edc0c81686ffbac5af885abc569a37451df8da14b74f85479d349"
+        },
+        "/Users/danielhalwell/PythonProjects/rotquant/build/llama-rqv3-metal/bin/libggml.0.22.0.dylib": {
+          "bytes": 59808,
+          "sha256": "0b2a610a98009a766487bf2056df1cb42680109602697f89f6276fe4997579c5"
+        },
+        "/Users/danielhalwell/PythonProjects/rotquant/build/llama-rqv3-metal/bin/libllama.0.3.0.dylib": {
+          "bytes": 3120400,
+          "sha256": "c3d5906e3f37d79d9ea8e0ef4dfb3f7dbb71d302d6b4f3dfc8cebdcc3ab045e4"
+        },
+        "/Users/danielhalwell/PythonProjects/rotquant/build/llama-rqv3-metal/bin/librotquant_ggml_test.dylib": {
+          "bytes": 73864,
+          "sha256": "e782a5a502582ca5eaf0cc85a13bbdac27de4f82ef209b82389fdc627cb46ce4"
+        },
+        "/Users/danielhalwell/PythonProjects/rotquant/build/llama-rqv3-metal/bin/librotquant_native.dylib": {
+          "bytes": 96920,
+          "sha256": "465567d58bbf079df84db3d58eb13f978bbe48896471d8d3ba5711a2cf0c6b72"
+        },
+        "/Users/danielhalwell/PythonProjects/rotquant/build/llama-rqv3-source/ggml/src/ggml-backend.cpp": {
+          "bytes": 97614,
+          "sha256": "8197d695b87077912739324f414859f6db7e606ac12798e84924e94844addfd0"
+        },
+        "/Users/danielhalwell/PythonProjects/rotquant/build/llama-rqv3-source/ggml/src/ggml-cuda/CMakeLists.txt": {
+          "bytes": 11371,
+          "sha256": "029b62d2189ea25962fdd1a2064aa699c010481081c7d68ec9f3aeaab5198939"
+        },
+        "/Users/danielhalwell/PythonProjects/rotquant/build/llama-rqv3-source/ggml/src/ggml-cuda/ggml-cuda.cu": {
+          "bytes": 228282,
+          "sha256": "2d90d7a946f8931d6e2806f2a3180977bccdef553cfe93578599a71dc41c0c73"
+        },
+        "/Users/danielhalwell/PythonProjects/rotquant/build/llama-rqv3-source/ggml/src/ggml-cuda/rq3.cu": {
+          "bytes": 5488,
+          "sha256": "20b6da667f8028db336884e4e88387463b00ee97de3c5b5aa2eca42f8b74e7bf"
+        },
+        "/Users/danielhalwell/PythonProjects/rotquant/build/llama-rqv3-source/ggml/src/ggml-metal/CMakeLists.txt": {
+          "bytes": 8780,
+          "sha256": "ef65986ed9f4d318c29ed49ad419066b9f4cf7d977cdbb62c8602ce6d32305b2"
+        },
+        "/Users/danielhalwell/PythonProjects/rotquant/build/llama-rqv3-source/ggml/src/ggml-metal/ggml-metal-device.cpp": {
+          "bytes": 78500,
+          "sha256": "bd550f5a0c0ac24f1ad1165bd9665cdee9c3b9466155aa577d4c1bf724c459ef"
+        },
+        "/Users/danielhalwell/PythonProjects/rotquant/build/llama-rqv3-source/ggml/src/ggml-metal/ggml-metal-device.h": {
+          "bytes": 19714,
+          "sha256": "7b792f7593738cc6282ee3348ecb26b73143f8400f4a510b458d6e3129352c07"
+        },
+        "/Users/danielhalwell/PythonProjects/rotquant/build/llama-rqv3-source/ggml/src/ggml-metal/ggml-metal-device.m": {
+          "bytes": 93414,
+          "sha256": "1f2e42b9e1bd5ea8836be0813cef0bc01b5cd128c455aa017f63cc6e01ecabb7"
+        },
+        "/Users/danielhalwell/PythonProjects/rotquant/build/llama-rqv3-source/ggml/src/ggml-metal/ggml-metal-impl.h": {
+          "bytes": 27442,
+          "sha256": "2223c48db11bcf5ef4a3a8ec6300e732a7da5a78dc573dcc184665087753e31f"
+        },
+        "/Users/danielhalwell/PythonProjects/rotquant/build/llama-rqv3-source/ggml/src/ggml-metal/ggml-metal-ops.cpp": {
+          "bytes": 198452,
+          "sha256": "675dd8ae7782f1ac0eaa623e01255cc8da49365be562e89971d0bef1d8446c90"
+        },
+        "/Users/danielhalwell/PythonProjects/rotquant/build/llama-rqv3-source/ggml/src/ggml-metal/ggml-metal-ops.h": {
+          "bytes": 5130,
+          "sha256": "5177812b085d932c050cece67f8388244a15a29019e270ac0f2383eaa55577cc"
+        },
+        "/Users/danielhalwell/PythonProjects/rotquant/build/llama-rqv3-source/ggml/src/ggml-metal/kernels/rotquant.metal": {
+          "bytes": 16074,
+          "sha256": "5ef5d27182ab3cdad464341236e11010a265854c18076ec1efaf99f350d7939e"
+        },
+        "/Users/danielhalwell/PythonProjects/rotquant/build/llama-rqv3-source/ggml/src/ggml-metal/kernels/rq3.metal": {
+          "bytes": 4716,
+          "sha256": "080e3216b31408b10fa4ff12edfa0bec610ec560abb87b6b18775036f0652963"
+        },
+        "/Users/danielhalwell/PythonProjects/rotquant/build/llama-rqv3-source/ggml/src/rotquant-v3.h": {
+          "bytes": 1455,
+          "sha256": "28b349090c04b2422c4791fd92cf3ca74c7d160a426883874d51f3a9f4973795"
+        },
+        "/Users/danielhalwell/PythonProjects/rotquant/build/llama-rqv3-source/src/CMakeLists.txt": {
+          "bytes": 2859,
+          "sha256": "bc74933edfa389496ccea0c00f822b1b5e7ece4e3b1f9dbe16d35afcba7ad2cd"
+        },
+        "/Users/danielhalwell/PythonProjects/rotquant/build/llama-rqv3-source/src/llama-graph.cpp": {
+          "bytes": 137000,
+          "sha256": "5defcb350af6f0397c7b2090af85d4766622855469b420d9b25773ab2bd8c23b"
+        },
+        "/Users/danielhalwell/PythonProjects/rotquant/build/llama-rqv3-source/src/llama-graph.h": {
+          "bytes": 48331,
+          "sha256": "17e8f7f6b01e9ab500dc545e9cfbdedc2eddb8a89f98e63906c48825ddf01b2a"
+        },
+        "/Users/danielhalwell/PythonProjects/rotquant/build/llama-rqv3-source/src/llama-hparams.h": {
+          "bytes": 17306,
+          "sha256": "ce9420f02951e8c84ae63160ef53c2dfaed0ee5a76cef96bbf0da26d78f1950b"
+        },
+        "/Users/danielhalwell/PythonProjects/rotquant/build/llama-rqv3-source/src/llama-kv-cache.cpp": {
+          "bytes": 96671,
+          "sha256": "b02a3ae356a261ebb02942978405a2adea69aec6b6b0d022249e7bf6bb5f415e"
+        },
+        "/Users/danielhalwell/PythonProjects/rotquant/build/llama-rqv3-source/src/llama-kv-cache.h": {
+          "bytes": 16359,
+          "sha256": "7c1c02082f79e87ea201e1e5bb2aafc4f96abb097b027bbf06ead57b28f88fe5"
+        },
+        "/Users/danielhalwell/PythonProjects/rotquant/build/llama-rqv3-source/src/llama-model-loader.cpp": {
+          "bytes": 77697,
+          "sha256": "011e1113ed864d30e754818d702dc470ccc7abf07c752da1272d8deec4d6bb79"
+        },
+        "/Users/danielhalwell/PythonProjects/rotquant/build/llama-rqv3-source/src/llama-model.cpp": {
+          "bytes": 148839,
+          "sha256": "768f5cb06bb97d883c8e5e264e7d895648f32ba2103ba4d9aa0001779fa69b7d"
+        },
+        "/Users/danielhalwell/PythonProjects/rotquant/build/llama-rqv3-source/src/llama-rotquant.cpp": {
+          "bytes": 22672,
+          "sha256": "575b9f120b8692f630300c6fabbfc6d7fe1bef5187e369859235fc36a3ce47b8"
+        },
+        "/Users/danielhalwell/PythonProjects/rotquant/build/llama-rqv3-source/src/llama-rotquant.h": {
+          "bytes": 1274,
+          "sha256": "08b234a1a52dbd3379a4d0935f950585a81c29158cdc491828573fd4849d72d9"
+        },
+        "/Users/danielhalwell/PythonProjects/rotquant/build/llama-rqv3-source/src/llama-rq3.cpp": {
+          "bytes": 6405,
+          "sha256": "84f9f07d9b4f6cf9ddd4521109c742b7b3df51965c38b1b7ab086ff08f6e513e"
+        },
+        "/Users/danielhalwell/PythonProjects/rotquant/build/llama-rqv3-source/src/llama-rq3.h": {
+          "bytes": 446,
+          "sha256": "41b4e4479076a7837213aebb932da0a4f96fd29beadd905e9189e28490b2ca8b"
+        },
+        "/Users/danielhalwell/PythonProjects/rotquant/build/llama-rqv3-source/src/models/models.h": {
+          "bytes": 100678,
+          "sha256": "7cfd965a1d8504e521a25c5f5f79a480bdb2d7cfafe511e3af336801af7d3f41"
+        },
+        "/Users/danielhalwell/PythonProjects/rotquant/build/llama-rqv3-source/src/models/qwen35.cpp": {
+          "bytes": 37343,
+          "sha256": "1044212c7526f179d1435b90bac16cafe1191648fbf015e811c6988c648babcf"
+        }
+      },
+      "elapsed_seconds": 4.051568540991866
+    },
+    {
+      "name": "binding-load",
+      "status": "passed",
+      "signature": "74234e98afe7498fb5daf1f36ac2d78acc339464f950703b8c019892f982b90b",
+      "directory": "/Users/danielhalwell/PythonProjects/rotquant/build/rq3-e2e-handoff/stages/binding-load/attempt-001",
+      "started_utc_epoch": 1789056922.02607,
+      "limit_seconds": 120,
+      "value": {
+        "passed": true,
+        "runtime_files": {
+          "default.metallib": "bc516546d7664f9c99a6d80972885666ae33969fa99cb967619ed627b5efe060",
+          "libggml-base.0.22.0.dylib": "07bcbc6a1657c304cc3e9237bc7052ade0afe1e64c9255738b805b2a1e040022",
+          "libggml-base.0.dylib": "07bcbc6a1657c304cc3e9237bc7052ade0afe1e64c9255738b805b2a1e040022",
+          "libggml-base.dylib": "07bcbc6a1657c304cc3e9237bc7052ade0afe1e64c9255738b805b2a1e040022",
+          "libggml-blas.0.22.0.dylib": "550854a98644a77b681f6f4d3563fcb810d893088d510b34428742c097527301",
+          "libggml-blas.0.dylib": "550854a98644a77b681f6f4d3563fcb810d893088d510b34428742c097527301",
+          "libggml-blas.dylib": "550854a98644a77b681f6f4d3563fcb810d893088d510b34428742c097527301",
+          "libggml-cpu.0.22.0.dylib": "c6694f684a8ef123229e95ec4152b61e521dd040eddc2683fd316b72dbb4a9d6",
+          "libggml-cpu.0.dylib": "c6694f684a8ef123229e95ec4152b61e521dd040eddc2683fd316b72dbb4a9d6",
+          "libggml-cpu.dylib": "c6694f684a8ef123229e95ec4152b61e521dd040eddc2683fd316b72dbb4a9d6",
+          "libggml-metal.0.22.0.dylib": "f4dbda07598edc0c81686ffbac5af885abc569a37451df8da14b74f85479d349",
+          "libggml-metal.0.dylib": "f4dbda07598edc0c81686ffbac5af885abc569a37451df8da14b74f85479d349",
+          "libggml-metal.dylib": "f4dbda07598edc0c81686ffbac5af885abc569a37451df8da14b74f85479d349",
+          "libggml.0.22.0.dylib": "0b2a610a98009a766487bf2056df1cb42680109602697f89f6276fe4997579c5",
+          "libggml.0.dylib": "0b2a610a98009a766487bf2056df1cb42680109602697f89f6276fe4997579c5",
+          "libggml.dylib": "0b2a610a98009a766487bf2056df1cb42680109602697f89f6276fe4997579c5",
+          "libllama.0.3.0.dylib": "c3d5906e3f37d79d9ea8e0ef4dfb3f7dbb71d302d6b4f3dfc8cebdcc3ab045e4",
+          "libllama.0.dylib": "c3d5906e3f37d79d9ea8e0ef4dfb3f7dbb71d302d6b4f3dfc8cebdcc3ab045e4",
+          "libllama.dylib": "c3d5906e3f37d79d9ea8e0ef4dfb3f7dbb71d302d6b4f3dfc8cebdcc3ab045e4",
+          "librotquant_ggml_test.dylib": "e782a5a502582ca5eaf0cc85a13bbdac27de4f82ef209b82389fdc627cb46ce4",
+          "librotquant_native.dylib": "465567d58bbf079df84db3d58eb13f978bbe48896471d8d3ba5711a2cf0c6b72"
+        }
+      },
+      "artifacts": {
+        "/Users/danielhalwell/PythonProjects/rotquant/build/rq3-e2e-handoff/stages/binding-load/attempt-001/load.json": {
+          "bytes": 2059,
+          "sha256": "f4ea86facecad044e88ce6d82a9619f2d76394f6b3414feb7c85dc43d78f85d3"
+        }
+      },
+      "elapsed_seconds": 1.00458933399932
+    },
+    {
+      "name": "operators-CPU",
+      "status": "passed",
+      "signature": "2796c55b1e2c51ad9b9cc5089cf9793c4e851040bdd5dc8c7541e39a90168734",
+      "directory": "/Users/danielhalwell/PythonProjects/rotquant/build/rq3-e2e-handoff/stages/operators-CPU/attempt-001",
+      "started_utc_epoch": 1789056923.033074,
+      "limit_seconds": 300,
+      "value": {
+        "protocol": "rq3-packed-operator-check-v1",
+        "backend": "CPU",
+        "library_sha256": "e782a5a502582ca5eaf0cc85a13bbdac27de4f82ef209b82389fdc627cb46ce4",
+        "runtime_files": {
+          "default.metallib": "bc516546d7664f9c99a6d80972885666ae33969fa99cb967619ed627b5efe060",
+          "libggml-base.0.22.0.dylib": "07bcbc6a1657c304cc3e9237bc7052ade0afe1e64c9255738b805b2a1e040022",
+          "libggml-base.0.dylib": "07bcbc6a1657c304cc3e9237bc7052ade0afe1e64c9255738b805b2a1e040022",
+          "libggml-base.dylib": "07bcbc6a1657c304cc3e9237bc7052ade0afe1e64c9255738b805b2a1e040022",
+          "libggml-blas.0.22.0.dylib": "550854a98644a77b681f6f4d3563fcb810d893088d510b34428742c097527301",
+          "libggml-blas.0.dylib": "550854a98644a77b681f6f4d3563fcb810d893088d510b34428742c097527301",
+          "libggml-blas.dylib": "550854a98644a77b681f6f4d3563fcb810d893088d510b34428742c097527301",
+          "libggml-cpu.0.22.0.dylib": "c6694f684a8ef123229e95ec4152b61e521dd040eddc2683fd316b72dbb4a9d6",
+          "libggml-cpu.0.dylib": "c6694f684a8ef123229e95ec4152b61e521dd040eddc2683fd316b72dbb4a9d6",
+          "libggml-cpu.dylib": "c6694f684a8ef123229e95ec4152b61e521dd040eddc2683fd316b72dbb4a9d6",
+          "libggml-metal.0.22.0.dylib": "f4dbda07598edc0c81686ffbac5af885abc569a37451df8da14b74f85479d349",
+          "libggml-metal.0.dylib": "f4dbda07598edc0c81686ffbac5af885abc569a37451df8da14b74f85479d349",
+          "libggml-metal.dylib": "f4dbda07598edc0c81686ffbac5af885abc569a37451df8da14b74f85479d349",
+          "libggml.0.22.0.dylib": "0b2a610a98009a766487bf2056df1cb42680109602697f89f6276fe4997579c5",
+          "libggml.0.dylib": "0b2a610a98009a766487bf2056df1cb42680109602697f89f6276fe4997579c5",
+          "libggml.dylib": "0b2a610a98009a766487bf2056df1cb42680109602697f89f6276fe4997579c5",
+          "libllama.0.3.0.dylib": "c3d5906e3f37d79d9ea8e0ef4dfb3f7dbb71d302d6b4f3dfc8cebdcc3ab045e4",
+          "libllama.0.dylib": "c3d5906e3f37d79d9ea8e0ef4dfb3f7dbb71d302d6b4f3dfc8cebdcc3ab045e4",
+          "libllama.dylib": "c3d5906e3f37d79d9ea8e0ef4dfb3f7dbb71d302d6b4f3dfc8cebdcc3ab045e4",
+          "librotquant_ggml_test.dylib": "e782a5a502582ca5eaf0cc85a13bbdac27de4f82ef209b82389fdc627cb46ce4",
+          "librotquant_native.dylib": "465567d58bbf079df84db3d58eb13f978bbe48896471d8d3ba5711a2cf0c6b72"
+        },
+        "settings": {
+          "kv_dtype": "float16",
+          "flash_attention": "auto",
+          "batch": 1,
+          "GGML_METAL_TENSOR_DISABLE": "1",
+          "GGML_METAL_TENSOR_ENABLE": null
+        },
+        "cases": [
+          {
+            "bits": 5,
+            "scale_bits": 8,
+            "width": 256,
+            "tokens": 1,
+            "max_abs": 0.0,
+            "passed": true
+          },
+          {
+            "bits": 5,
+            "scale_bits": 8,
+            "width": 256,
+            "tokens": 7,
+            "max_abs": 0.000244140625,
+            "passed": true
+          },
+          {
+            "bits": 5,
+            "scale_bits": 8,
+            "width": 256,
+            "tokens": 33,
+            "max_abs": 0.00048828125,
+            "passed": true
+          },
+          {
+            "bits": 5,
+            "scale_bits": 8,
+            "width": 512,
+            "tokens": 1,
+            "max_abs": 0.000244140625,
+            "passed": true
+          },
+          {
+            "bits": 5,
+            "scale_bits": 8,
+            "width": 512,
+            "tokens": 7,
+            "max_abs": 0.000244140625,
+            "passed": true
+          },
+          {
+            "bits": 5,
+            "scale_bits": 8,
+            "width": 512,
+            "tokens": 33,
+            "max_abs": 0.00048828125,
+            "passed": true
+          },
+          {
+            "bits": 6,
+            "scale_bits": 16,
+            "width": 256,
+            "tokens": 1,
+            "max_abs": 0.0001220703125,
+            "passed": true
+          },
+          {
+            "bits": 6,
+            "scale_bits": 16,
+            "width": 256,
+            "tokens": 7,
+            "max_abs": 1.52587890625e-05,
+            "passed": true
+          },
+          {
+            "bits": 6,
+            "scale_bits": 16,
+            "width": 256,
+            "tokens": 33,
+            "max_abs": 0.000244140625,
+            "passed": true
+          },
+          {
+            "bits": 6,
+            "scale_bits": 16,
+            "width": 512,
+            "tokens": 1,
+            "max_abs": 0.0,
+            "passed": true
+          },
+          {
+            "bits": 6,
+            "scale_bits": 16,
+            "width": 512,
+            "tokens": 7,
+            "max_abs": 3.0517578125e-05,
+            "passed": true
+          },
+          {
+            "bits": 6,
+            "scale_bits": 16,
+            "width": 512,
+            "tokens": 33,
+            "max_abs": 0.00048828125,
+            "passed": true
+          },
+          {
+            "bits": 8,
+            "scale_bits": 16,
+            "width": 256,
+            "tokens": 1,
+            "max_abs": 0.0,
+            "passed": true
+          },
+          {
+            "bits": 8,
+            "scale_bits": 16,
+            "width": 256,
+            "tokens": 7,
+            "max_abs": 0.0001220703125,
+            "passed": true
+          },
+          {
+            "bits": 8,
+            "scale_bits": 16,
+            "width": 256,
+            "tokens": 33,
+            "max_abs": 0.0001220703125,
+            "passed": true
+          },
+          {
+            "bits": 8,
+            "scale_bits": 16,
+            "width": 512,
+            "tokens": 1,
+            "max_abs": 0.0,
+            "passed": true
+          },
+          {
+            "bits": 8,
+            "scale_bits": 16,
+            "width": 512,
+            "tokens": 7,
+            "max_abs": 0.000244140625,
+            "passed": true
+          },
+          {
+            "bits": 8,
+            "scale_bits": 16,
+            "width": 512,
+            "tokens": 33,
+            "max_abs": 0.000244140625,
+            "passed": true
+          }
+        ],
+        "passed": true,
+        "scope": "synthetic operators; not retained-model quality or serving performance"
+      },
+      "artifacts": {
+        "/Users/danielhalwell/PythonProjects/rotquant/build/rq3-e2e-handoff/stages/operators-CPU/attempt-001/report.json": {
+          "bytes": 5092,
+          "sha256": "9847826af94baf2c5d297d19968ab279e181db0364377bc4a15880c10fbbbb26"
+        }
+      },
+      "elapsed_seconds": 9.04985158398631
+    },
+    {
+      "name": "operators-MTL0",
+      "status": "passed",
+      "signature": "2796c55b1e2c51ad9b9cc5089cf9793c4e851040bdd5dc8c7541e39a90168734",
+      "directory": "/Users/danielhalwell/PythonProjects/rotquant/build/rq3-e2e-handoff/stages/operators-MTL0/attempt-001",
+      "started_utc_epoch": 1789056932.084341,
+      "limit_seconds": 300,
+      "value": {
+        "protocol": "rq3-packed-operator-check-v1",
+        "backend": "MTL0",
+        "library_sha256": "e782a5a502582ca5eaf0cc85a13bbdac27de4f82ef209b82389fdc627cb46ce4",
+        "runtime_files": {
+          "default.metallib": "bc516546d7664f9c99a6d80972885666ae33969fa99cb967619ed627b5efe060",
+          "libggml-base.0.22.0.dylib": "07bcbc6a1657c304cc3e9237bc7052ade0afe1e64c9255738b805b2a1e040022",
+          "libggml-base.0.dylib": "07bcbc6a1657c304cc3e9237bc7052ade0afe1e64c9255738b805b2a1e040022",
+          "libggml-base.dylib": "07bcbc6a1657c304cc3e9237bc7052ade0afe1e64c9255738b805b2a1e040022",
+          "libggml-blas.0.22.0.dylib": "550854a98644a77b681f6f4d3563fcb810d893088d510b34428742c097527301",
+          "libggml-blas.0.dylib": "550854a98644a77b681f6f4d3563fcb810d893088d510b34428742c097527301",
+          "libggml-blas.dylib": "550854a98644a77b681f6f4d3563fcb810d893088d510b34428742c097527301",
+          "libggml-cpu.0.22.0.dylib": "c6694f684a8ef123229e95ec4152b61e521dd040eddc2683fd316b72dbb4a9d6",
+          "libggml-cpu.0.dylib": "c6694f684a8ef123229e95ec4152b61e521dd040eddc2683fd316b72dbb4a9d6",
+          "libggml-cpu.dylib": "c6694f684a8ef123229e95ec4152b61e521dd040eddc2683fd316b72dbb4a9d6",
+          "libggml-metal.0.22.0.dylib": "f4dbda07598edc0c81686ffbac5af885abc569a37451df8da14b74f85479d349",
+          "libggml-metal.0.dylib": "f4dbda07598edc0c81686ffbac5af885abc569a37451df8da14b74f85479d349",
+          "libggml-metal.dylib": "f4dbda07598edc0c81686ffbac5af885abc569a37451df8da14b74f85479d349",
+          "libggml.0.22.0.dylib": "0b2a610a98009a766487bf2056df1cb42680109602697f89f6276fe4997579c5",
+          "libggml.0.dylib": "0b2a610a98009a766487bf2056df1cb42680109602697f89f6276fe4997579c5",
+          "libggml.dylib": "0b2a610a98009a766487bf2056df1cb42680109602697f89f6276fe4997579c5",
+          "libllama.0.3.0.dylib": "c3d5906e3f37d79d9ea8e0ef4dfb3f7dbb71d302d6b4f3dfc8cebdcc3ab045e4",
+          "libllama.0.dylib": "c3d5906e3f37d79d9ea8e0ef4dfb3f7dbb71d302d6b4f3dfc8cebdcc3ab045e4",
+          "libllama.dylib": "c3d5906e3f37d79d9ea8e0ef4dfb3f7dbb71d302d6b4f3dfc8cebdcc3ab045e4",
+          "librotquant_ggml_test.dylib": "e782a5a502582ca5eaf0cc85a13bbdac27de4f82ef209b82389fdc627cb46ce4",
+          "librotquant_native.dylib": "465567d58bbf079df84db3d58eb13f978bbe48896471d8d3ba5711a2cf0c6b72"
+        },
+        "settings": {
+          "kv_dtype": "float16",
+          "flash_attention": "auto",
+          "batch": 1,
+          "GGML_METAL_TENSOR_DISABLE": "1",
+          "GGML_METAL_TENSOR_ENABLE": null
+        },
+        "cases": [
+          {
+            "bits": 5,
+            "scale_bits": 8,
+            "width": 256,
+            "tokens": 1,
+            "max_abs": 0.0,
+            "passed": true
+          },
+          {
+            "bits": 5,
+            "scale_bits": 8,
+            "width": 256,
+            "tokens": 7,
+            "max_abs": 5.960464477539063e-08,
+            "passed": true
+          },
+          {
+            "bits": 5,
+            "scale_bits": 8,
+            "width": 256,
+            "tokens": 33,
+            "max_abs": 3.0517578125e-05,
+            "passed": true
+          },
+          {
+            "bits": 5,
+            "scale_bits": 8,
+            "width": 512,
+            "tokens": 1,
+            "max_abs": 0.0001220703125,
+            "passed": true
+          },
+          {
+            "bits": 5,
+            "scale_bits": 8,
+            "width": 512,
+            "tokens": 7,
+            "max_abs": 0.00048828125,
+            "passed": true
+          },
+          {
+            "bits": 5,
+            "scale_bits": 8,
+            "width": 512,
+            "tokens": 33,
+            "max_abs": 3.814697265625e-06,
+            "passed": true
+          },
+          {
+            "bits": 6,
+            "scale_bits": 16,
+            "width": 256,
+            "tokens": 1,
+            "max_abs": 0.0001220703125,
+            "passed": true
+          },
+          {
+            "bits": 6,
+            "scale_bits": 16,
+            "width": 256,
+            "tokens": 7,
+            "max_abs": 1.52587890625e-05,
+            "passed": true
+          },
+          {
+            "bits": 6,
+            "scale_bits": 16,
+            "width": 256,
+            "tokens": 33,
+            "max_abs": 0.000244140625,
+            "passed": true
+          },
+          {
+            "bits": 6,
+            "scale_bits": 16,
+            "width": 512,
+            "tokens": 1,
+            "max_abs": 0.0,
+            "passed": true
+          },
+          {
+            "bits": 6,
+            "scale_bits": 16,
+            "width": 512,
+            "tokens": 7,
+            "max_abs": 3.0517578125e-05,
+            "passed": true
+          },
+          {
+            "bits": 6,
+            "scale_bits": 16,
+            "width": 512,
+            "tokens": 33,
+            "max_abs": 0.00048828125,
+            "passed": true
+          },
+          {
+            "bits": 8,
+            "scale_bits": 16,
+            "width": 256,
+            "tokens": 1,
+            "max_abs": 0.0,
+            "passed": true
+          },
+          {
+            "bits": 8,
+            "scale_bits": 16,
+            "width": 256,
+            "tokens": 7,
+            "max_abs": 0.0001220703125,
+            "passed": true
+          },
+          {
+            "bits": 8,
+            "scale_bits": 16,
+            "width": 256,
+            "tokens": 33,
+            "max_abs": 0.0001220703125,
+            "passed": true
+          },
+          {
+            "bits": 8,
+            "scale_bits": 16,
+            "width": 512,
+            "tokens": 1,
+            "max_abs": 0.0,
+            "passed": true
+          },
+          {
+            "bits": 8,
+            "scale_bits": 16,
+            "width": 512,
+            "tokens": 7,
+            "max_abs": 0.000244140625,
+            "passed": true
+          },
+          {
+            "bits": 8,
+            "scale_bits": 16,
+            "width": 512,
+            "tokens": 33,
+            "max_abs": 0.0001220703125,
+            "passed": true
+          }
+        ],
+        "passed": true,
+        "scope": "synthetic operators; not retained-model quality or serving performance"
+      },
+      "artifacts": {
+        "/Users/danielhalwell/PythonProjects/rotquant/build/rq3-e2e-handoff/stages/operators-MTL0/attempt-001/report.json": {
+          "bytes": 5109,
+          "sha256": "a4fd7b35e6a83adf2b85fb6da8c745eec7afc40ff56f6c2236de8dc86a14c331"
+        }
+      },
+      "elapsed_seconds": 9.056907000005594
+    },
+    {
+      "name": "whole-model-w6",
+      "status": "passed",
+      "signature": "2796c55b1e2c51ad9b9cc5089cf9793c4e851040bdd5dc8c7541e39a90168734",
+      "directory": "/Users/danielhalwell/PythonProjects/rotquant/build/rq3-e2e-handoff/stages/whole-model-w6/attempt-001",
+      "started_utc_epoch": 1789056941.142698,
+      "limit_seconds": 300,
+      "value": {
+        "protocol": "rq3-synthetic-model-check-v1",
+        "backend": "MTL0",
+        "runtime_files": {
+          "default.metallib": "bc516546d7664f9c99a6d80972885666ae33969fa99cb967619ed627b5efe060",
+          "libggml-base.0.22.0.dylib": "07bcbc6a1657c304cc3e9237bc7052ade0afe1e64c9255738b805b2a1e040022",
+          "libggml-base.0.dylib": "07bcbc6a1657c304cc3e9237bc7052ade0afe1e64c9255738b805b2a1e040022",
+          "libggml-base.dylib": "07bcbc6a1657c304cc3e9237bc7052ade0afe1e64c9255738b805b2a1e040022",
+          "libggml-blas.0.22.0.dylib": "550854a98644a77b681f6f4d3563fcb810d893088d510b34428742c097527301",
+          "libggml-blas.0.dylib": "550854a98644a77b681f6f4d3563fcb810d893088d510b34428742c097527301",
+          "libggml-blas.dylib": "550854a98644a77b681f6f4d3563fcb810d893088d510b34428742c097527301",
+          "libggml-cpu.0.22.0.dylib": "c6694f684a8ef123229e95ec4152b61e521dd040eddc2683fd316b72dbb4a9d6",
+          "libggml-cpu.0.dylib": "c6694f684a8ef123229e95ec4152b61e521dd040eddc2683fd316b72dbb4a9d6",
+          "libggml-cpu.dylib": "c6694f684a8ef123229e95ec4152b61e521dd040eddc2683fd316b72dbb4a9d6",
+          "libggml-metal.0.22.0.dylib": "f4dbda07598edc0c81686ffbac5af885abc569a37451df8da14b74f85479d349",
+          "libggml-metal.0.dylib": "f4dbda07598edc0c81686ffbac5af885abc569a37451df8da14b74f85479d349",
+          "libggml-metal.dylib": "f4dbda07598edc0c81686ffbac5af885abc569a37451df8da14b74f85479d349",
+          "libggml.0.22.0.dylib": "0b2a610a98009a766487bf2056df1cb42680109602697f89f6276fe4997579c5",
+          "libggml.0.dylib": "0b2a610a98009a766487bf2056df1cb42680109602697f89f6276fe4997579c5",
+          "libggml.dylib": "0b2a610a98009a766487bf2056df1cb42680109602697f89f6276fe4997579c5",
+          "libllama.0.3.0.dylib": "c3d5906e3f37d79d9ea8e0ef4dfb3f7dbb71d302d6b4f3dfc8cebdcc3ab045e4",
+          "libllama.0.dylib": "c3d5906e3f37d79d9ea8e0ef4dfb3f7dbb71d302d6b4f3dfc8cebdcc3ab045e4",
+          "libllama.dylib": "c3d5906e3f37d79d9ea8e0ef4dfb3f7dbb71d302d6b4f3dfc8cebdcc3ab045e4",
+          "librotquant_ggml_test.dylib": "e782a5a502582ca5eaf0cc85a13bbdac27de4f82ef209b82389fdc627cb46ce4",
+          "librotquant_native.dylib": "465567d58bbf079df84db3d58eb13f978bbe48896471d8d3ba5711a2cf0c6b72"
+        },
+        "settings": {
+          "kv_dtype": "float16",
+          "flash_attention": "auto",
+          "batch": 1,
+          "GGML_METAL_TENSOR_DISABLE": "1",
+          "GGML_METAL_TENSOR_ENABLE": null
+        },
+        "model_sha256": "71608c0cecf2623f47bf51d9b3880e2dd0e07f1c4ac44257b49f511300e04514",
+        "metrics": {
+          "max_abs_error": 0.001953125,
+          "mean_abs_error": 0.0002573791425675154,
+          "mean_kl": 6.5241568268705e-08,
+          "top1_agreement": 1.0
+        },
+        "by_prompt_length": {
+          "1": {
+            "max_abs_error": 0.001220703125,
+            "mean_abs_error": 0.00021819716009000936,
+            "mean_kl": 4.3910357374096137e-08,
+            "top1_agreement": 1.0
+          },
+          "4": {
+            "max_abs_error": 0.001232147216796875,
+            "mean_abs_error": 0.00028141443100240495,
+            "mean_kl": 6.930795213029664e-08,
+            "top1_agreement": 1.0
+          },
+          "17": {
+            "max_abs_error": 0.001953125,
+            "mean_abs_error": 0.0002519693484322892,
+            "mean_kl": 7.787357379448983e-08,
+            "top1_agreement": 1.0
+          },
+          "64": {
+            "max_abs_error": 0.001953125,
+            "mean_abs_error": 0.00027793563074535795,
+            "mean_kl": 6.987438977593736e-08,
+            "top1_agreement": 1.0
+          }
+        },
+        "thresholds": {
+          "max_abs_error": 0.02,
+          "mean_abs_error": 0.002,
+          "mean_kl": 1e-05,
+          "top1_agreement": 1.0
+        },
+        "guards": {
+          "max_abs_error": true,
+          "mean_abs_error": true,
+          "mean_kl": true,
+          "top1_agreement": true,
+          "exact_generation": true
+        },
+        "passed": true,
+        "gpu_custom_ops": 1008,
+        "cpu_fallback_forbidden": true,
+        "scope": "random two-layer Qwen graph; not retained-4B parity, accuracy or speed"
+      },
+      "artifacts": {
+        "/Users/danielhalwell/PythonProjects/rotquant/build/rq3-e2e-handoff/stages/whole-model-w6/attempt-001/report.json": {
+          "bytes": 3689,
+          "sha256": "831b67e1b936b1fc5171b01fba5c0346544bb04a73fa6c53cdcf8624033d2c90"
+        }
+      },
+      "elapsed_seconds": 6.033554916997673
+    },
+    {
+      "name": "whole-model-w8",
+      "status": "passed",
+      "signature": "2796c55b1e2c51ad9b9cc5089cf9793c4e851040bdd5dc8c7541e39a90168734",
+      "directory": "/Users/danielhalwell/PythonProjects/rotquant/build/rq3-e2e-handoff/stages/whole-model-w8/attempt-001",
+      "started_utc_epoch": 1789056947.177799,
+      "limit_seconds": 300,
+      "value": {
+        "protocol": "rq3-synthetic-model-check-v1",
+        "backend": "MTL0",
+        "runtime_files": {
+          "default.metallib": "bc516546d7664f9c99a6d80972885666ae33969fa99cb967619ed627b5efe060",
+          "libggml-base.0.22.0.dylib": "07bcbc6a1657c304cc3e9237bc7052ade0afe1e64c9255738b805b2a1e040022",
+          "libggml-base.0.dylib": "07bcbc6a1657c304cc3e9237bc7052ade0afe1e64c9255738b805b2a1e040022",
+          "libggml-base.dylib": "07bcbc6a1657c304cc3e9237bc7052ade0afe1e64c9255738b805b2a1e040022",
+          "libggml-blas.0.22.0.dylib": "550854a98644a77b681f6f4d3563fcb810d893088d510b34428742c097527301",
+          "libggml-blas.0.dylib": "550854a98644a77b681f6f4d3563fcb810d893088d510b34428742c097527301",
+          "libggml-blas.dylib": "550854a98644a77b681f6f4d3563fcb810d893088d510b34428742c097527301",
+          "libggml-cpu.0.22.0.dylib": "c6694f684a8ef123229e95ec4152b61e521dd040eddc2683fd316b72dbb4a9d6",
+          "libggml-cpu.0.dylib": "c6694f684a8ef123229e95ec4152b61e521dd040eddc2683fd316b72dbb4a9d6",
+          "libggml-cpu.dylib": "c6694f684a8ef123229e95ec4152b61e521dd040eddc2683fd316b72dbb4a9d6",
+          "libggml-metal.0.22.0.dylib": "f4dbda07598edc0c81686ffbac5af885abc569a37451df8da14b74f85479d349",
+          "libggml-metal.0.dylib": "f4dbda07598edc0c81686ffbac5af885abc569a37451df8da14b74f85479d349",
+          "libggml-metal.dylib": "f4dbda07598edc0c81686ffbac5af885abc569a37451df8da14b74f85479d349",
+          "libggml.0.22.0.dylib": "0b2a610a98009a766487bf2056df1cb42680109602697f89f6276fe4997579c5",
+          "libggml.0.dylib": "0b2a610a98009a766487bf2056df1cb42680109602697f89f6276fe4997579c5",
+          "libggml.dylib": "0b2a610a98009a766487bf2056df1cb42680109602697f89f6276fe4997579c5",
+          "libllama.0.3.0.dylib": "c3d5906e3f37d79d9ea8e0ef4dfb3f7dbb71d302d6b4f3dfc8cebdcc3ab045e4",
+          "libllama.0.dylib": "c3d5906e3f37d79d9ea8e0ef4dfb3f7dbb71d302d6b4f3dfc8cebdcc3ab045e4",
+          "libllama.dylib": "c3d5906e3f37d79d9ea8e0ef4dfb3f7dbb71d302d6b4f3dfc8cebdcc3ab045e4",
+          "librotquant_ggml_test.dylib": "e782a5a502582ca5eaf0cc85a13bbdac27de4f82ef209b82389fdc627cb46ce4",
+          "librotquant_native.dylib": "465567d58bbf079df84db3d58eb13f978bbe48896471d8d3ba5711a2cf0c6b72"
+        },
+        "settings": {
+          "kv_dtype": "float16",
+          "flash_attention": "auto",
+          "batch": 1,
+          "GGML_METAL_TENSOR_DISABLE": "1",
+          "GGML_METAL_TENSOR_ENABLE": null
+        },
+        "model_sha256": "3254becc72f03b31df96318ca42cb82034e1066beb6be5cdf41d664ba3de83d9",
+        "metrics": {
+          "max_abs_error": 0.001953125,
+          "mean_abs_error": 0.0002660823778973685,
+          "mean_kl": 6.400152942030534e-08,
+          "top1_agreement": 1.0
+        },
+        "by_prompt_length": {
+          "1": {
+            "max_abs_error": 0.00103759765625,
+            "mean_abs_error": 0.00023342550007833375,
+            "mean_kl": 4.8207969513453443e-08,
+            "top1_agreement": 1.0
+          },
+          "4": {
+            "max_abs_error": 0.00146484375,
+            "mean_abs_error": 0.0002653816094001134,
+            "mean_kl": 6.093716725167837e-08,
+            "top1_agreement": 1.0
+          },
+          "17": {
+            "max_abs_error": 0.001953125,
+            "mean_abs_error": 0.00028893447274135216,
+            "mean_kl": 8.193772780511619e-08,
+            "top1_agreement": 1.0
+          },
+          "64": {
+            "max_abs_error": 0.0015869140625,
+            "mean_abs_error": 0.00027658792936967476,
+            "mean_kl": 6.492325311097338e-08,
+            "top1_agreement": 1.0
+          }
+        },
+        "thresholds": {
+          "max_abs_error": 0.02,
+          "mean_abs_error": 0.002,
+          "mean_kl": 1e-05,
+          "top1_agreement": 1.0
+        },
+        "guards": {
+          "max_abs_error": true,
+          "mean_abs_error": true,
+          "mean_kl": true,
+          "top1_agreement": true,
+          "exact_generation": true
+        },
+        "passed": true,
+        "gpu_custom_ops": 1008,
+        "cpu_fallback_forbidden": true,
+        "scope": "random two-layer Qwen graph; not retained-4B parity, accuracy or speed"
+      },
+      "artifacts": {
+        "/Users/danielhalwell/PythonProjects/rotquant/build/rq3-e2e-handoff/stages/whole-model-w8/attempt-001/report.json": {
+          "bytes": 3690,
+          "sha256": "febf305e8f855c50e9fa150e11aa1500a463406a48964c46cbd5b57eee572fdf"
+        }
+      },
+      "elapsed_seconds": 9.05981900000188
+    },
+    {
+      "name": "hf-conversion",
+      "status": "passed",
+      "signature": "2796c55b1e2c51ad9b9cc5089cf9793c4e851040bdd5dc8c7541e39a90168734",
+      "directory": "/Users/danielhalwell/PythonProjects/rotquant/build/rq3-e2e-handoff/stages/hf-conversion/attempt-001",
+      "started_utc_epoch": 1789056956.2391171,
+      "limit_seconds": 600,
+      "value": {
+        "protocol": "rq3-offline-hf-conversion-v1",
+        "seed": 331,
+        "backend": "MTL0",
+        "settings": {
+          "kv_dtype": "float16",
+          "flash_attention": "auto",
+          "batch": 1,
+          "GGML_METAL_TENSOR_DISABLE": "1",
+          "GGML_METAL_TENSOR_ENABLE": null
+        },
+        "runtime_files": {
+          "default.metallib": "bc516546d7664f9c99a6d80972885666ae33969fa99cb967619ed627b5efe060",
+          "libggml-base.0.22.0.dylib": "07bcbc6a1657c304cc3e9237bc7052ade0afe1e64c9255738b805b2a1e040022",
+          "libggml-base.0.dylib": "07bcbc6a1657c304cc3e9237bc7052ade0afe1e64c9255738b805b2a1e040022",
+          "libggml-base.dylib": "07bcbc6a1657c304cc3e9237bc7052ade0afe1e64c9255738b805b2a1e040022",
+          "libggml-blas.0.22.0.dylib": "550854a98644a77b681f6f4d3563fcb810d893088d510b34428742c097527301",
+          "libggml-blas.0.dylib": "550854a98644a77b681f6f4d3563fcb810d893088d510b34428742c097527301",
+          "libggml-blas.dylib": "550854a98644a77b681f6f4d3563fcb810d893088d510b34428742c097527301",
+          "libggml-cpu.0.22.0.dylib": "c6694f684a8ef123229e95ec4152b61e521dd040eddc2683fd316b72dbb4a9d6",
+          "libggml-cpu.0.dylib": "c6694f684a8ef123229e95ec4152b61e521dd040eddc2683fd316b72dbb4a9d6",
+          "libggml-cpu.dylib": "c6694f684a8ef123229e95ec4152b61e521dd040eddc2683fd316b72dbb4a9d6",
+          "libggml-metal.0.22.0.dylib": "f4dbda07598edc0c81686ffbac5af885abc569a37451df8da14b74f85479d349",
+          "libggml-metal.0.dylib": "f4dbda07598edc0c81686ffbac5af885abc569a37451df8da14b74f85479d349",
+          "libggml-metal.dylib": "f4dbda07598edc0c81686ffbac5af885abc569a37451df8da14b74f85479d349",
+          "libggml.0.22.0.dylib": "0b2a610a98009a766487bf2056df1cb42680109602697f89f6276fe4997579c5",
+          "libggml.0.dylib": "0b2a610a98009a766487bf2056df1cb42680109602697f89f6276fe4997579c5",
+          "libggml.dylib": "0b2a610a98009a766487bf2056df1cb42680109602697f89f6276fe4997579c5",
+          "libllama.0.3.0.dylib": "c3d5906e3f37d79d9ea8e0ef4dfb3f7dbb71d302d6b4f3dfc8cebdcc3ab045e4",
+          "libllama.0.dylib": "c3d5906e3f37d79d9ea8e0ef4dfb3f7dbb71d302d6b4f3dfc8cebdcc3ab045e4",
+          "libllama.dylib": "c3d5906e3f37d79d9ea8e0ef4dfb3f7dbb71d302d6b4f3dfc8cebdcc3ab045e4",
+          "librotquant_ggml_test.dylib": "e782a5a502582ca5eaf0cc85a13bbdac27de4f82ef209b82389fdc627cb46ce4",
+          "librotquant_native.dylib": "465567d58bbf079df84db3d58eb13f978bbe48896471d8d3ba5711a2cf0c6b72"
+        },
+        "export_sha256": "402841d8b715b02c9ef11f0e00855c15651108b1f988ef30bfd6b43a840de45c",
+        "cases": [
+          {
+            "backend": "CPU",
+            "tokens": 4,
+            "metrics": {
+              "max_abs_error": 0.0013427734375,
+              "mean_abs_error": 0.00029411271680146456,
+              "mean_kl": 7.490395638611909e-08,
+              "top1_agreement": 1.0
+            },
+            "passed": true
+          },
+          {
+            "backend": "CPU",
+            "tokens": 17,
+            "metrics": {
+              "max_abs_error": 0.001708984375,
+              "mean_abs_error": 0.00040403008460998535,
+              "mean_kl": 1.3440330134043032e-07,
+              "top1_agreement": 1.0
+            },
+            "passed": true
+          },
+          {
+            "backend": "CPU",
+            "tokens": 64,
+            "metrics": {
+              "max_abs_error": 0.001953125,
+              "mean_abs_error": 0.0003165758098475635,
+              "mean_kl": 1.1504055233386084e-07,
+              "top1_agreement": 1.0
+            },
+            "passed": true
+          },
+          {
+            "backend": "MTL0",
+            "tokens": 4,
+            "metrics": {
+              "max_abs_error": 0.00146484375,
+              "mean_abs_error": 0.0003140111221000552,
+              "mean_kl": 8.081629387249651e-08,
+              "top1_agreement": 1.0
+            },
+            "passed": true
+          },
+          {
+            "backend": "MTL0",
+            "tokens": 17,
+            "metrics": {
+              "max_abs_error": 0.001708984375,
+              "mean_abs_error": 0.00036172213731333613,
+              "mean_kl": 1.1273278049415363e-07,
+              "top1_agreement": 1.0
+            },
+            "passed": true
+          },
+          {
+            "backend": "MTL0",
+            "tokens": 64,
+            "metrics": {
+              "max_abs_error": 0.001953125,
+              "mean_abs_error": 0.00031946523813530803,
+              "mean_kl": 1.1838320017500171e-07,
+              "top1_agreement": 1.0
+            },
+            "passed": true
+          }
+        ],
+        "thresholds": {
+          "max_abs_error": 0.02,
+          "mean_abs_error": 0.002,
+          "mean_kl": 1e-05,
+          "top1_agreement": 1.0
+        },
+        "passed": true,
+        "scope": "random two-layer HF checkpoint, fake tokenizer, frozen integer IDs; not production 4B/tokenizer validation"
+      },
+      "artifacts": {
+        "/Users/danielhalwell/PythonProjects/rotquant/build/rq3-e2e-handoff/stages/hf-conversion/attempt-001/report.json": {
+          "bytes": 4274,
+          "sha256": "837badb68ef4b5027ad57c70d9f73c2e0612eb24c1f4bbfdc6c2b1ebd614c6e1"
+        }
+      },
+      "elapsed_seconds": 8.040791708001052
+    },
+    {
+      "name": "environment",
+      "status": "passed",
+      "signature": "74234e98afe7498fb5daf1f36ac2d78acc339464f950703b8c019892f982b90b",
+      "directory": "/Users/danielhalwell/PythonProjects/rotquant/build/rq3-e2e-handoff/stages/environment/attempt-002",
+      "started_utc_epoch": 1789057008.404108,
+      "limit_seconds": 720,
+      "value": {
+        "python": "3.12.14 (main, Aug 12 2026, 13:57:54) [Clang 21.0.0 (clang-2100.1.1.101)]",
+        "platform": "macOS-26.6.2-arm64-arm-64bit",
+        "packages": {
+          "transformers": "5.9.0",
+          "safetensors": "0.8.0",
+          "sentencepiece": "0.2.1",
+          "scipy": "1.15.3",
+          "pyyaml": "6.0.3",
+          "ninja": "1.13.0",
+          "cmake": "3.31.10"
+        },
+        "torch": "2.12.0",
+        "torch_file": "/Users/danielhalwell/PythonProjects/rotquant/.venv/lib/python3.12/site-packages/torch/__init__.py",
+        "cuda": null,
+        "backend": "Metal",
+        "device": "Metal",
+        "total_vram_bytes": null,
+        "passed": true
+      },
+      "artifacts": {
+        "/Users/danielhalwell/PythonProjects/rotquant/build/rq3-e2e-handoff/stages/environment/attempt-002/environment.json": {
+          "bytes": 581,
+          "sha256": "53724194a261e05df79b85362088122b72af812b435d5df22b22d3f91aeae321"
+        }
+      },
+      "elapsed_seconds": 4.024233124990133
+    },
+    {
+      "name": "binding-load",
+      "status": "passed",
+      "signature": "74234e98afe7498fb5daf1f36ac2d78acc339464f950703b8c019892f982b90b",
+      "directory": "/Users/danielhalwell/PythonProjects/rotquant/build/rq3-e2e-handoff/stages/binding-load/attempt-002",
+      "started_utc_epoch": 1789057012.460219,
+      "limit_seconds": 120,
+      "value": {
+        "passed": true,
+        "runtime_files": {
+          "default.metallib": "bc516546d7664f9c99a6d80972885666ae33969fa99cb967619ed627b5efe060",
+          "libggml-base.0.22.0.dylib": "07bcbc6a1657c304cc3e9237bc7052ade0afe1e64c9255738b805b2a1e040022",
+          "libggml-base.0.dylib": "07bcbc6a1657c304cc3e9237bc7052ade0afe1e64c9255738b805b2a1e040022",
+          "libggml-base.dylib": "07bcbc6a1657c304cc3e9237bc7052ade0afe1e64c9255738b805b2a1e040022",
+          "libggml-blas.0.22.0.dylib": "550854a98644a77b681f6f4d3563fcb810d893088d510b34428742c097527301",
+          "libggml-blas.0.dylib": "550854a98644a77b681f6f4d3563fcb810d893088d510b34428742c097527301",
+          "libggml-blas.dylib": "550854a98644a77b681f6f4d3563fcb810d893088d510b34428742c097527301",
+          "libggml-cpu.0.22.0.dylib": "c6694f684a8ef123229e95ec4152b61e521dd040eddc2683fd316b72dbb4a9d6",
+          "libggml-cpu.0.dylib": "c6694f684a8ef123229e95ec4152b61e521dd040eddc2683fd316b72dbb4a9d6",
+          "libggml-cpu.dylib": "c6694f684a8ef123229e95ec4152b61e521dd040eddc2683fd316b72dbb4a9d6",
+          "libggml-metal.0.22.0.dylib": "f4dbda07598edc0c81686ffbac5af885abc569a37451df8da14b74f85479d349",
+          "libggml-metal.0.dylib": "f4dbda07598edc0c81686ffbac5af885abc569a37451df8da14b74f85479d349",
+          "libggml-metal.dylib": "f4dbda07598edc0c81686ffbac5af885abc569a37451df8da14b74f85479d349",
+          "libggml.0.22.0.dylib": "0b2a610a98009a766487bf2056df1cb42680109602697f89f6276fe4997579c5",
+          "libggml.0.dylib": "0b2a610a98009a766487bf2056df1cb42680109602697f89f6276fe4997579c5",
+          "libggml.dylib": "0b2a610a98009a766487bf2056df1cb42680109602697f89f6276fe4997579c5",
+          "libllama.0.3.0.dylib": "c3d5906e3f37d79d9ea8e0ef4dfb3f7dbb71d302d6b4f3dfc8cebdcc3ab045e4",
+          "libllama.0.dylib": "c3d5906e3f37d79d9ea8e0ef4dfb3f7dbb71d302d6b4f3dfc8cebdcc3ab045e4",
+          "libllama.dylib": "c3d5906e3f37d79d9ea8e0ef4dfb3f7dbb71d302d6b4f3dfc8cebdcc3ab045e4",
+          "librotquant_ggml_test.dylib": "e782a5a502582ca5eaf0cc85a13bbdac27de4f82ef209b82389fdc627cb46ce4",
+          "librotquant_native.dylib": "465567d58bbf079df84db3d58eb13f978bbe48896471d8d3ba5711a2cf0c6b72"
+        }
+      },
+      "artifacts": {
+        "/Users/danielhalwell/PythonProjects/rotquant/build/rq3-e2e-handoff/stages/binding-load/attempt-002/load.json": {
+          "bytes": 2059,
+          "sha256": "f4ea86facecad044e88ce6d82a9619f2d76394f6b3414feb7c85dc43d78f85d3"
+        }
+      },
+      "elapsed_seconds": 1.0129293749923818
+    }
+  ],
+  "status": "passed"
+}

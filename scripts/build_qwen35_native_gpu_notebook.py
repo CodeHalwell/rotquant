@@ -1,4 +1,4 @@
-"""Build the bounded native-GPU Colab validation notebook (no quality sweep)."""
+"""Build the clean end-to-end native GPU Colab notebook and its legacy alias."""
 from __future__ import annotations
 
 import sys
@@ -14,187 +14,138 @@ from scripts.build_qwen35_packed_validation_notebook import code, md
 def build_notebook():
     return new_notebook(cells=[
         md('''
-        # RotQuant Qwen3.5-4B native GPU validation
+        # RotQuant Qwen3.5-4B — native GPU end-to-end validation
 
         ## Goal
-        Run the retained **W5/scale8 backbone + shared W6/W8 vocabulary** through
-        our isolated llama.cpp integration, on CUDA. No re-quantization, training,
-        Python weight expansion, Unsloth downloads, or public-task sweep.
+        Open a **fresh GPU runtime**, check the saved-evidence path, then choose
+        **Runtime → Run all**. No repair cells or mid-run Git updates.
 
-        This is the first CUDA validation, not an already-validated release.
-        Compilation alone is not success. Small operator and whole-model gates
-        must pass before the real 4B model is loaded. Then saved-probe parity
-        must pass before bounded timings. Any failure stops the notebook.
+        This runs the saved **W5/scale8 backbone + W6 vocabulary** in our native
+        llama.cpp integration. No retraining or requantization. Original Drive
+        evidence is read-only. The previous A100 40GB is a sensible test machine,
+        not a measured minimum-memory requirement.
 
-        Existing Drive checkpoints/results are read-only. New logs and reports
-        have a separate run root. Choose a GPU runtime; the first checks require
-        CUDA and nvcc. The prior A100 40GB is a sensible test machine, not a
-        measured minimum requirement for this new runtime. Disconnect/delete the
-        runtime when finished: the software time cap cannot stop Colab billing.
+        This is correctness validation, **not a demonstrated quality gain or
+        speedup**. CUDA/full-4B success must come from this run, not compilation.
+        The first CUDA build took about 26 minutes. The default allowance is
+        **90 minutes of active stage execution**. Notebook idle time does not
+        consume that allowance, but Colab can still charge while idle.
         '''),
         md('''
-        ## Setup — controls
-        Start from a **fresh Colab runtime**. The new notebook and code must first
-        be published to GitHub. `main` is resolved once to a commit, never pulled
-        mid-run. Prefer replacing `REPO_REF` with that full commit SHA.
+        ## Setup — settings
+        `SOURCE_ROOT` must contain the original `b5_v6_s0/checkpoint/`,
+        `prepared.json`, `preparation.json` and `packed_probes.safetensors`.
+        Result-only ZIPs are insufficient. Leave timings off for this first run.
 
-        Set `SOURCE_ROOT` to the original packed-validation directory containing
-        `b5_v6_s0/checkpoint`, `prepared.json`, `preparation.json`, and
-        `packed_probes.safetensors`. Downloaded result-only bundles are insufficient.
-        Start with W6/seed 0; add `b5_v8_s0` only for a second independent test.
-        `RUN_TIMING=False` runs just the short real-model parity check.
+        Reusing unchanged settings resumes verified completed stages and creates
+        fresh attempts for failures. Choose a new `RUN_NAME` for changed settings
+        or a separate W8 run; previous reports are never overwritten.
         '''),
         code('''
         from pathlib import Path
-        from datetime import datetime, timezone
-        import json, os, shutil, subprocess, sys, time
+        import json, re, shutil, subprocess, sys
 
-        REPO_REF = "main"
+        REPO_REF = "main"  # resolved once to a full commit before execution
         SOURCE_ROOT = Path("/content/drive/MyDrive/rotquant/qwen35_packed_validation/8f10ee60fc7f")
         ARMS = ("b5_v6_s0",)
-        RUN_RETAINED_MODEL = True
-        RUN_TIMING = False  # enable only if you want the bounded 128/512/2048-token timing phase
-        SESSION_BUDGET_MINUTES = 60
+        RUN_NAME = "run1"
+        RUN_TIMING = False
+        ACTIVE_BUDGET_MINUTES = 90
         BUILD_JOBS = 2
-        RUN_TAG = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
-        REPO_DIR = Path("/content/rotquant-native-gpu")
-        LLAMA_DIR = Path("/content/llama-rotquant-native-v3")
-        BUILD_DIR = Path("/content/llama-rotquant-native-v3-build")
-        EXPORT_ROOT = Path("/content/rotquant-native-exports") / RUN_TAG
-        assert 1 <= SESSION_BUDGET_MINUTES <= 180
+
+        assert re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,63}", RUN_NAME)
+        assert 1 <= ACTIVE_BUDGET_MINUTES <= 180
         assert ARMS and len(set(ARMS)) == len(ARMS) and set(ARMS) <= {"b5_v6_s0", "b5_v8_s0"}
-        STARTED = time.monotonic()
+        assert 1 <= BUILD_JOBS <= 32
+        '''),
+        md('''
+        ### Connect Drive and pin code
+        This checks paths and fetches code; it does not start the execution
+        budget. Dependencies go into a dedicated virtual environment, preserving
+        Colab's installed CUDA PyTorch and notebook packages.
         '''),
         code('''
         from google.colab import drive
         drive.mount("/content/drive")
-        import torch
-        assert torch.cuda.is_available(), "Select a CUDA GPU runtime; CPU fallback is forbidden."
-        assert shutil.which("nvcc"), "CUDA toolkit/nvcc is missing. Stop here."
-        subprocess.run(["nvidia-smi"], check=True)
-        if RUN_RETAINED_MODEL:
-            for arm in ARMS:
-                for name in ("checkpoint", "prepared.json", "preparation.json", "packed_probes.safetensors"):
-                    assert (SOURCE_ROOT / arm / name).exists(), f"Missing original evidence: {SOURCE_ROOT / arm / name}"
+        assert shutil.which("nvidia-smi") and shutil.which("nvcc"), "Select a GPU runtime with the CUDA toolkit."
+        subprocess.run(["nvidia-smi"], check=True, timeout=30)
+        for arm in ARMS:
+            for item in ("checkpoint", "prepared.json", "preparation.json", "packed_probes.safetensors"):
+                assert (SOURCE_ROOT / arm / item).exists(), f"Missing original evidence: {SOURCE_ROOT / arm / item}"
+        REPO_DIR = Path("/content/rotquant-native-gpu-e2e/repository")
+        REPO_DIR.parent.mkdir(parents=True, exist_ok=True)
         if not REPO_DIR.exists():
-            subprocess.run(["git", "clone", "https://github.com/CodeHalwell/rotquant.git", str(REPO_DIR)], check=True)
-        assert not subprocess.check_output(["git", "-C", str(REPO_DIR), "status", "--porcelain"], text=True).strip(), "Checkout has edits; do not reset them."
-        subprocess.run(["git", "-C", str(REPO_DIR), "fetch", "origin", REPO_REF], check=True)
+            subprocess.run(["git", "clone", "https://github.com/CodeHalwell/rotquant.git", str(REPO_DIR)], check=True, timeout=300)
+        assert not subprocess.check_output(["git", "-C", str(REPO_DIR), "status", "--porcelain"], text=True).strip(), "Repository has edits; do not reset them. Use a fresh runtime."
+        subprocess.run(["git", "-C", str(REPO_DIR), "fetch", "origin", REPO_REF], check=True, timeout=120)
         COMMIT = subprocess.check_output(["git", "-C", str(REPO_DIR), "rev-parse", "FETCH_HEAD"], text=True).strip()
-        subprocess.run(["git", "-C", str(REPO_DIR), "checkout", "--detach", COMMIT], check=True)
-        assert (REPO_DIR / "scripts/build_rq3_runtime.py").is_file(), "This revision lacks the new runtime. Stop; do not run an older notebook."
-        RESULT_ROOT = Path("/content/drive/MyDrive/rotquant/native_gpu_validation") / COMMIT[:12] / RUN_TAG
-        RESULT_ROOT.mkdir(parents=True, exist_ok=False)
-        LOG_ROOT = RESULT_ROOT / "logs"
+        subprocess.run(["git", "-C", str(REPO_DIR), "checkout", "--detach", COMMIT], check=True, timeout=30)
+        RUNNER = REPO_DIR / "scripts/run_native_gpu_validation.py"
+        assert RUNNER.exists(), "This revision predates the end-to-end notebook. Stop here."
+        WORK_DIR = Path("/content/rotquant-native-gpu-e2e/cache") / COMMIT[:12]
+        RESULT_ROOT = Path("/content/drive/MyDrive/rotquant/native_gpu_e2e") / COMMIT[:12] / RUN_NAME
+        print({"commit": COMMIT, "results": str(RESULT_ROOT), "arms": ARMS,
+               "active_budget_minutes": ACTIVE_BUDGET_MINUTES, "timing": RUN_TIMING})
+        '''),
+        md('''
+        ## Steps and checks — complete workflow
+        1. Isolated dependencies, import/CUDA checks, original checkpoint and
+           saved-probe verification **before** the long build.
+        2. Pinned native build including the loader fix, strict Linux linking,
+           and a fresh-process binding-load check.
+        3. CPU/CUDA packed operators, W6/W8 tiny whole-model graphs, and an
+           offline Transformers-to-native conversion check.
+        4. Exact retained-model export, then GPU parity against frozen logits
+           and generation. Optional timing runs only after parity passes.
+
+        Progress, 30-second heartbeats, attempt logs and a stage ledger are
+        saved to Drive. No failed gate is bypassed. Rerun **this cell** after an
+        interruption in the same session; verified completed stages are reused.
+        After losing a runtime, Run all rebuilds missing local files while
+        retaining earlier attempt reports. Active time is cumulative on resume.
+
+        Text inference only: non-text tensors remain in a counted sidecar, not
+        a working vision tower. No public-task sweep, competitor downloads,
+        external Hadamard build or `llama-cpp-python` wheel.
+        '''),
+        code('''
         sys.path.insert(0, str(REPO_DIR))
-        from scripts.colab_runtime import run_live as _run_live
-        def run_live(command, label, phase_limit=900):
-            remaining = SESSION_BUDGET_MINUTES * 60 - (time.monotonic() - STARTED)
-            if remaining <= 0:
-                raise TimeoutError("Session budget exhausted. Stop the Colab runtime.")
-            return _run_live(command, label, repo_dir=REPO_DIR, log_root=LOG_ROOT,
-                             timeout_seconds=min(remaining, phase_limit))
-        def script(name, *args, label, phase_limit=900):
-            return run_live([sys.executable, "-u", str(REPO_DIR / "scripts" / name), *map(str, args)], label, phase_limit)
-        controls = {"commit": COMMIT, "source_root": str(SOURCE_ROOT), "arms": ARMS,
-                    "run_retained": RUN_RETAINED_MODEL, "run_timing": RUN_TIMING,
-                    "budget_minutes": SESSION_BUDGET_MINUTES, "torch": torch.__version__,
-                    "cuda": torch.version.cuda, "gpu": torch.cuda.get_device_name(0)}
-        (RESULT_ROOT / "controls.json").write_text(json.dumps(controls, indent=2))
-        print(controls, "\\nReports:", RESULT_ROOT)
+        from scripts.colab_runtime import run_live
+        command = [sys.executable, "-u", str(RUNNER),
+                   "--output-dir", str(RESULT_ROOT), "--work-dir", str(WORK_DIR),
+                   "--source-root", str(SOURCE_ROOT),
+                   "--active-minutes", str(ACTIVE_BUDGET_MINUTES), "--jobs", str(BUILD_JOBS)]
+        for arm in ARMS:
+            command.extend(["--arm", arm])
+        if RUN_TIMING:
+            command.append("--timing")
+        # The driver owns active/per-phase budgets; no timer starts in setup.
+        run_live(command, "end-to-end", repo_dir=REPO_DIR,
+                 log_root=RESULT_ROOT / "launch-logs")
         '''),
         md('''
-        ## Steps — dependencies and isolated build
-        Preserve Colab's installed CUDA PyTorch. The experiment does not need
-        `llama-cpp-python`, its wheels, or the external fast-Hadamard extension.
-        The native kernels are compiled with the pinned llama.cpp sources.
-        Build output and 30-second heartbeats are persisted to Drive.
-        '''),
-        code('''
-        run_live([sys.executable, "-m", "pip", "install", "transformers==5.9.0",
-                  "safetensors==0.7.0", "sentencepiece==0.2.1", "scipy==1.15.3",
-                  "pyyaml==6.0.3", "ninja==1.13.0", "cmake>=3.24,<5"], "dependencies", 600)
-        run_live([sys.executable, "-m", "pip", "install", "-e", str(REPO_DIR), "--no-deps"], "install-rotquant", 120)
-        run_live([sys.executable, "-m", "pip", "freeze"], "environment", 60)
-        script("build_rq3_runtime.py", "--source-dir", LLAMA_DIR, "--build-dir", BUILD_DIR,
-               "--backend", "CUDA", "--jobs", BUILD_JOBS, label="native-build", phase_limit=2400)
-        receipt = json.loads((BUILD_DIR / "build-receipt.json").read_text())
-        LIBRARY = Path(receipt["library"])
-        shutil.copy2(BUILD_DIR / "build-receipt.json", RESULT_ROOT / "build-receipt.json")
-        print("Compiled, not yet validated:", LIBRARY)
-        '''),
-        md('''
-        ## Checks — synthetic operators, then a whole Qwen graph
-        The tiny random model has both linear and full attention, GDN permutations,
-        a packed backbone and one shared packed embedding/head. It tests prompts
-        of 1/4/17/64 tokens plus cached decoding. It is not a quality benchmark.
-        CPU is used only as the small-fixture numerical reference; the CUDA graph
-        forbids CPU arithmetic fallback.
-        '''),
-        code('''
-        for backend in ("CPU", "CUDA0"):
-            script("check_rq3_gpu.py", "--library", LIBRARY, "--backend", backend,
-                   "--output", RESULT_ROOT / f"operators-{backend}.json", label=f"operators-{backend}")
-        for bits in (6, 8):
-            fixture = BUILD_DIR / f"synthetic-w{bits}-{RUN_TAG}.gguf"
-            script("make_rq3_model_fixture.py", "--output", fixture, "--llama-dir", LLAMA_DIR,
-                   "--vocabulary-bits", bits, label=f"fixture-w{bits}", phase_limit=120)
-            script("check_rq3_model.py", "--library", LIBRARY, "--model", fixture,
-                   "--backend", "CUDA0", "--output", RESULT_ROOT / f"model-w{bits}.json", label=f"model-w{bits}")
-        script("check_rq3_conversion.py", "--library", LIBRARY, "--llama-dir", LLAMA_DIR,
-               "--output-dir", BUILD_DIR / f"hf-conversion-{RUN_TAG}", "--backend", "CUDA0",
-               "--report", RESULT_ROOT / "hf-conversion.json", label="hf-conversion")
-        '''),
-        md('''
-        ## Retained 4B — exact export, saved-probe parity, optional timing
-        Original codes, scales, codebooks and saved signs are copied, never
-        retrained or re-quantized. Non-text tensors remain in a counted sidecar;
-        this runtime executes **text only**, not the vision tower.
+        ## Results and next steps
+        A pass means these bounded checks passed on this runtime, not full-suite
+        quality or production speed. Ordinary failures also write a summary and
+        reports-only ZIP. Hard VM loss may interrupt archiving, but previously
+        written stage receipts/logs remain on Drive.
 
-        Local exports can occupy about 3.5–3.6GB per arm plus temporary files.
-        They are disposable copies. The canonical Drive checkpoints are unchanged.
-        Timing uses generated repeated-token inputs only to measure execution;
-        no accuracy or competitor speed claim can be made from those numbers.
+        Share the ZIP. Do not loosen thresholds if a numerical gate fails.
+        **Disconnect and delete the Colab runtime when finished or blocked**:
+        neither the execution cap nor notebook completion stops GPU billing.
         '''),
         code('''
-        # Recheck every prerequisite so jumping directly to this cell cannot bypass a failed gate.
-        from scripts.check_rq3_model import runtime_identity
-        current_runtime = runtime_identity(LIBRARY)
-        for name in ("operators-CPU.json", "operators-CUDA0.json", "model-w6.json", "model-w8.json", "hf-conversion.json"):
-            gate = json.loads((RESULT_ROOT / name).read_text())
-            assert gate["passed"], f"Failed prerequisite: {name}"
-            assert gate["runtime_files"] == current_runtime, f"Runtime changed since {name}; use a new run tag and repeat checks."
-        if RUN_RETAINED_MODEL:
-            for arm in ARMS:
-                exported = EXPORT_ROOT / arm
-                script("export_rotquant_gguf_v2.py", SOURCE_ROOT / arm / "checkpoint", exported,
-                       "--llama-cpp-dir", LLAMA_DIR, label=f"export-{arm}", phase_limit=900)
-                args = ["--library", LIBRARY, "--backend", "CUDA0", "--source-arm", SOURCE_ROOT / arm,
-                        "--export", exported, "--output-dir", RESULT_ROOT / arm]
-                if RUN_TIMING:
-                    args.append("--timing")
-                script("run_rq3_retained_gpu.py", *args, label=f"retained-{arm}", phase_limit=900)
-                shutil.copy2(exported / "export.json", RESULT_ROOT / arm / "export.json")
-        else:
-            print("Synthetic validation only; retained 4B was not tested.")
-        '''),
-        md('''
-        ## Next steps
-        Share this new result directory and its logs. A pass establishes only
-        bounded native parity on this hardware. A failure must be investigated;
-        do not relax thresholds or restart the old public-task sweep.
-
-        Before a longer run we still need measured model timings/memory, a matched
-        native baseline, a runtime-bound evaluation identity and an agreed budget.
-        Stop/disconnect the paid Colab runtime now. Keep the original checkpoints.
-        '''),
-        code('''
-        for path in sorted(RESULT_ROOT.rglob("report.json")):
-            row = json.loads(path.read_text())
-            print(path.parent.name, {key: row.get(key) for key in ("passed", "parity", "memory", "error")})
-        archive = shutil.make_archive(str(RESULT_ROOT) + "-reports", "zip", RESULT_ROOT)
-        print("Download reports (no weights):", archive)
-        print("Stop the GPU runtime to avoid further charges.")
+        summary_path = RESULT_ROOT / "summary.json"
+        if summary_path.exists():
+            summary = json.loads(summary_path.read_text())
+            print("Workflow:", summary["status"], "| active minutes:", round(summary["active_minutes"], 1))
+            for stage in summary["stages"]:
+                print(stage["name"], stage["status"], f"{stage.get('elapsed_seconds', 0):.1f}s")
+            if summary.get("error"):
+                print("Stopped:", summary["error"])
+        for archive in sorted(RESULT_ROOT.parent.glob(RUN_NAME + "-reports-*.zip"))[-3:]:
+            print("Reports ZIP:", archive)
+        print("Stop/disconnect the GPU runtime to avoid further charges.")
         '''),
     ], metadata={"kernelspec": {"display_name": "Python 3", "language": "python", "name": "python3"},
                  "language_info": {"name": "python"}, "accelerator": "GPU"})
@@ -203,6 +154,7 @@ def build_notebook():
 if __name__ == "__main__":
     notebook = build_notebook()
     nbformat.validate(notebook)
-    output = Path(__file__).resolve().parents[1] / "notebooks/qwen35_4b_native_gpu_validation_colab.ipynb"
-    nbformat.write(notebook, output)
-    print(output)
+    directory = Path(__file__).resolve().parents[1] / "notebooks"
+    for name in ("qwen35_4b_native_gpu_e2e_colab.ipynb", "qwen35_4b_native_gpu_validation_colab.ipynb"):
+        nbformat.write(notebook, directory / name)
+        print(directory / name)

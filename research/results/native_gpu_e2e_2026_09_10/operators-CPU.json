@@ -1,0 +1,183 @@
+{
+  "protocol": "rq3-packed-operator-check-v1",
+  "backend": "CPU",
+  "library_sha256": "e782a5a502582ca5eaf0cc85a13bbdac27de4f82ef209b82389fdc627cb46ce4",
+  "runtime_files": {
+    "default.metallib": "bc516546d7664f9c99a6d80972885666ae33969fa99cb967619ed627b5efe060",
+    "libggml-base.0.22.0.dylib": "07bcbc6a1657c304cc3e9237bc7052ade0afe1e64c9255738b805b2a1e040022",
+    "libggml-base.0.dylib": "07bcbc6a1657c304cc3e9237bc7052ade0afe1e64c9255738b805b2a1e040022",
+    "libggml-base.dylib": "07bcbc6a1657c304cc3e9237bc7052ade0afe1e64c9255738b805b2a1e040022",
+    "libggml-blas.0.22.0.dylib": "550854a98644a77b681f6f4d3563fcb810d893088d510b34428742c097527301",
+    "libggml-blas.0.dylib": "550854a98644a77b681f6f4d3563fcb810d893088d510b34428742c097527301",
+    "libggml-blas.dylib": "550854a98644a77b681f6f4d3563fcb810d893088d510b34428742c097527301",
+    "libggml-cpu.0.22.0.dylib": "c6694f684a8ef123229e95ec4152b61e521dd040eddc2683fd316b72dbb4a9d6",
+    "libggml-cpu.0.dylib": "c6694f684a8ef123229e95ec4152b61e521dd040eddc2683fd316b72dbb4a9d6",
+    "libggml-cpu.dylib": "c6694f684a8ef123229e95ec4152b61e521dd040eddc2683fd316b72dbb4a9d6",
+    "libggml-metal.0.22.0.dylib": "f4dbda07598edc0c81686ffbac5af885abc569a37451df8da14b74f85479d349",
+    "libggml-metal.0.dylib": "f4dbda07598edc0c81686ffbac5af885abc569a37451df8da14b74f85479d349",
+    "libggml-metal.dylib": "f4dbda07598edc0c81686ffbac5af885abc569a37451df8da14b74f85479d349",
+    "libggml.0.22.0.dylib": "0b2a610a98009a766487bf2056df1cb42680109602697f89f6276fe4997579c5",
+    "libggml.0.dylib": "0b2a610a98009a766487bf2056df1cb42680109602697f89f6276fe4997579c5",
+    "libggml.dylib": "0b2a610a98009a766487bf2056df1cb42680109602697f89f6276fe4997579c5",
+    "libllama.0.3.0.dylib": "c3d5906e3f37d79d9ea8e0ef4dfb3f7dbb71d302d6b4f3dfc8cebdcc3ab045e4",
+    "libllama.0.dylib": "c3d5906e3f37d79d9ea8e0ef4dfb3f7dbb71d302d6b4f3dfc8cebdcc3ab045e4",
+    "libllama.dylib": "c3d5906e3f37d79d9ea8e0ef4dfb3f7dbb71d302d6b4f3dfc8cebdcc3ab045e4",
+    "librotquant_ggml_test.dylib": "e782a5a502582ca5eaf0cc85a13bbdac27de4f82ef209b82389fdc627cb46ce4",
+    "librotquant_native.dylib": "465567d58bbf079df84db3d58eb13f978bbe48896471d8d3ba5711a2cf0c6b72"
+  },
+  "settings": {
+    "kv_dtype": "float16",
+    "flash_attention": "auto",
+    "batch": 1,
+    "GGML_METAL_TENSOR_DISABLE": "1",
+    "GGML_METAL_TENSOR_ENABLE": null
+  },
+  "cases": [
+    {
+      "bits": 5,
+      "scale_bits": 8,
+      "width": 256,
+      "tokens": 1,
+      "max_abs": 0.0,
+      "passed": true
+    },
+    {
+      "bits": 5,
+      "scale_bits": 8,
+      "width": 256,
+      "tokens": 7,
+      "max_abs": 0.000244140625,
+      "passed": true
+    },
+    {
+      "bits": 5,
+      "scale_bits": 8,
+      "width": 256,
+      "tokens": 33,
+      "max_abs": 0.00048828125,
+      "passed": true
+    },
+    {
+      "bits": 5,
+      "scale_bits": 8,
+      "width": 512,
+      "tokens": 1,
+      "max_abs": 0.000244140625,
+      "passed": true
+    },
+    {
+      "bits": 5,
+      "scale_bits": 8,
+      "width": 512,
+      "tokens": 7,
+      "max_abs": 0.000244140625,
+      "passed": true
+    },
+    {
+      "bits": 5,
+      "scale_bits": 8,
+      "width": 512,
+      "tokens": 33,
+      "max_abs": 0.00048828125,
+      "passed": true
+    },
+    {
+      "bits": 6,
+      "scale_bits": 16,
+      "width": 256,
+      "tokens": 1,
+      "max_abs": 0.0001220703125,
+      "passed": true
+    },
+    {
+      "bits": 6,
+      "scale_bits": 16,
+      "width": 256,
+      "tokens": 7,
+      "max_abs": 1.52587890625e-05,
+      "passed": true
+    },
+    {
+      "bits": 6,
+      "scale_bits": 16,
+      "width": 256,
+      "tokens": 33,
+      "max_abs": 0.000244140625,
+      "passed": true
+    },
+    {
+      "bits": 6,
+      "scale_bits": 16,
+      "width": 512,
+      "tokens": 1,
+      "max_abs": 0.0,
+      "passed": true
+    },
+    {
+      "bits": 6,
+      "scale_bits": 16,
+      "width": 512,
+      "tokens": 7,
+      "max_abs": 3.0517578125e-05,
+      "passed": true
+    },
+    {
+      "bits": 6,
+      "scale_bits": 16,
+      "width": 512,
+      "tokens": 33,
+      "max_abs": 0.00048828125,
+      "passed": true
+    },
+    {
+      "bits": 8,
+      "scale_bits": 16,
+      "width": 256,
+      "tokens": 1,
+      "max_abs": 0.0,
+      "passed": true
+    },
+    {
+      "bits": 8,
+      "scale_bits": 16,
+      "width": 256,
+      "tokens": 7,
+      "max_abs": 0.0001220703125,
+      "passed": true
+    },
+    {
+      "bits": 8,
+      "scale_bits": 16,
+      "width": 256,
+      "tokens": 33,
+      "max_abs": 0.0001220703125,
+      "passed": true
+    },
+    {
+      "bits": 8,
+      "scale_bits": 16,
+      "width": 512,
+      "tokens": 1,
+      "max_abs": 0.0,
+      "passed": true
+    },
+    {
+      "bits": 8,
+      "scale_bits": 16,
+      "width": 512,
+      "tokens": 7,
+      "max_abs": 0.000244140625,
+      "passed": true
+    },
+    {
+      "bits": 8,
+      "scale_bits": 16,
+      "width": 512,
+      "tokens": 33,
+      "max_abs": 0.000244140625,
+      "passed": true
+    }
+  ],
+  "passed": true,
+  "scope": "synthetic operators; not retained-model quality or serving performance"
+}

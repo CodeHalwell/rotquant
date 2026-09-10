@@ -1,0 +1,20 @@
+{
+  "python": "3.12.14 (main, Aug 12 2026, 13:57:54) [Clang 21.0.0 (clang-2100.1.1.101)]",
+  "platform": "macOS-26.6.2-arm64-arm-64bit",
+  "packages": {
+    "transformers": "5.9.0",
+    "safetensors": "0.8.0",
+    "sentencepiece": "0.2.1",
+    "scipy": "1.15.3",
+    "pyyaml": "6.0.3",
+    "ninja": "1.13.0",
+    "cmake": "3.31.10"
+  },
+  "torch": "2.12.0",
+  "torch_file": "/Users/danielhalwell/PythonProjects/rotquant/.venv/lib/python3.12/site-packages/torch/__init__.py",
+  "cuda": null,
+  "backend": "Metal",
+  "device": "Metal",
+  "total_vram_bytes": null,
+  "passed": true
+}

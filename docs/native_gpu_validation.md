@@ -6,41 +6,64 @@ with scalar CPU, Metal and CUDA packed operators. CPU and Metal have been
 compiled/executed locally. **CUDA has not been compiled or executed here, and
 the actual retained 4B checkpoint has not been tested in this runtime.** This
 Mac has no NVIDIA toolkit; local result bundles lack the saved model weights.
+The first user Colab build compiled CUDA but exposed a missing loader symbol.
+That fix now builds/loads with GCC on Linux/Python 3.13 as well as locally on
+macOS. CUDA numerical and real retained-model parity remain to be established.
 
 This is an experimental correctness-first runtime, not a production inference
 library or a demonstrated speedup. Do not restart the public-task sweep yet.
 
 ## Colab: what to run
 
-Open [the new notebook](../notebooks/qwen35_4b_native_gpu_validation_colab.ipynb),
-not the old public-task or Python-reference notebook. It must first be published
-to GitHub before a Colab `main` checkout can contain it.
+Open [the end-to-end notebook](../notebooks/qwen35_4b_native_gpu_e2e_colab.ipynb)
+in a fresh GPU session. The old `native_gpu_validation_colab` filename is an
+alias of the replacement, not the previous manual-repair workflow.
 
 1. Select a CUDA GPU runtime. The previous A100 40GB is a sensible test device;
    it is not a newly measured minimum-memory requirement.
 2. Point `SOURCE_ROOT` at the original Drive preparation root. Each arm must
    contain `checkpoint/`, `prepared.json`, `preparation.json`, and
    `packed_probes.safetensors`. Result-only download bundles are insufficient.
-3. Start with `ARMS = ("b5_v6_s0",)`, `RUN_RETAINED_MODEL = True`, and
+3. Start with `ARMS = ("b5_v6_s0",)`, `RUN_NAME = "run1"`, and
    `RUN_TIMING = False`. Add W8 after the W6 test. Pin `REPO_REF` to the published
    commit if possible; the notebook resolves it once and never updates mid-run.
-4. Run cells in order. Each stage writes a persistent log, prints its PID/tail
-   command, streams progress and emits a heartbeat every 30 seconds. The default
-   software time cap is 60 minutes, with per-phase limits. It kills subprocess
-   groups on interruption/timeout; it does **not** terminate Colab billing.
+4. Choose **Runtime → Run all**. One driver runs all stages. It prints phase
+   starts/passes, persistent logs, PIDs/tail commands and 30-second heartbeats.
+   The default cap is **90 active execution minutes**, including a 45-minute
+   build ceiling (the observed first build took roughly 26 minutes). Idle time
+   between notebook cells is not charged against this allowance. Active time
+   remains cumulative across retries. Interrupts/timeouts stop child processes;
+   the runner does **not** terminate Colab billing.
 5. Share the new reports archive, then disconnect/delete the paid runtime.
 
-Stages are: environment checks → pinned native build → CPU/CUDA operator
-conformance → W6/W8 tiny whole-model conformance → lossless retained export →
-canonical saved-probe parity → optional bounded timing. A failed gate stops the
-run. The retained cell explicitly checks previous reports, so jumping ahead
-does not bypass them. No quantization/training, external-Hadamard build,
+Stages are: managed environment → original checkpoint/probe/tokenizer preflight
+→ pinned native build and binding load → CPU/CUDA operator conformance → W6/W8
+tiny whole-model conformance → offline HF conversion check → lossless retained
+export → canonical saved-probe parity → optional bounded timing. All expensive
+commands run as bounded subprocesses. A failed gate stops the driver before
+export or model execution; there is no cell-level shortcut around it.
+No quantization/training, external-Hadamard build,
 `llama-cpp-python` wheel, competitor download or public-task sweep is needed.
 
 Exports go to a new local directory; reports/logs go to a new Drive root. Saved
 checkpoint files and old experiment identities are read-only. The notebook
-does not import results from previous native binaries or resume old quality
-receipts. After losing a runtime, use a new run tag and repeat the gates.
+does not import old quality receipts. `workflow.json` records every attempt,
+its inputs, artifacts and elapsed active time. Completed stages are reused only
+when their request and all recorded artifacts still match. Missing local cache,
+changed runtime hashes, failures or interrupts trigger a new attempt directory.
+After losing a runtime, Run all rebuilds missing binaries/exports. Do not run
+multiple sessions concurrently against one result directory.
+
+Dependency setup uses a dedicated `--system-site-packages` virtual environment:
+Colab's CUDA Torch is inherited and constrained to its existing version; other
+requirements are installed in the venv, not into the notebook environment.
+`requirements/native-gpu.txt` pins the tested versions, including safetensors
+0.8.0 to avoid the previous diffusers conflict. Import and GPU checks run in a
+fresh process. No large ambient `pip freeze` dump is printed.
+
+Ordinary completion/failure produces `summary.json` and a reports-only ZIP.
+Checkpoints/GGUF weights are excluded from that archive. Hard VM loss can prevent
+final archiving, but previously flushed stage receipts/logs remain on Drive.
 
 Before the retained export, an additional small offline Transformers-to-GGUF
 check exercises the real converter and compares CPU/GPU logits with the canonical
@@ -49,6 +72,33 @@ Gate receipts must match the current runtime library hashes; rebuilding cannot
 silently reuse old passes.
 
 ## Build and local test commands
+
+### Recovering the initial Linux loader failure
+
+This section describes the old incident. **The replacement notebook includes
+the fix and needs no user-supplied repair cell or budget-extension snippet.**
+
+The first Colab run of `dd87da2` compiled CUDA successfully but could not load
+`libllama.so`: the custom tied-embedding boolean metadata reader lacked an
+explicit string-key template instantiation. This was a loader/linkage defect,
+not failed numerical parity. The repaired builder tests the Python binding in
+a fresh process before writing a successful receipt; `load_validated` and
+`gpu_validated` remain separate statuses.
+
+After updating to code containing this repair, an existing **exact** original
+patched source tree can be upgraded with the existing source/build paths and
+`--repair-known-loader`. All patched file hashes are checked before any edit;
+unknown edits are rejected. Only the loader source changes, so CMake can reuse
+compiled CUDA objects. Do not delete the build directory, relax parity gates,
+or overwrite old reports. Archive the original receipt and use a fresh run
+root for updated-code validation. Rerun every numerical gate after relinking.
+
+For the original notebook still pinned to `dd87da2`, an explicit local source
+repair must retain the original build receipt and additionally record the old
+and repaired loader hashes plus the resulting runtime library hashes. Such a
+run is a **locally repaired** build, not an unmodified `dd87da2` reproduction.
+
+### Reproducible build
 
 The reproducible build script checks the exact pinned base, patch SHA and every
 modified source file. It rejects unrelated edits rather than resetting them.

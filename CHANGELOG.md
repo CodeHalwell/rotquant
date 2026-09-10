@@ -9,6 +9,35 @@ software.
 
 ## [Unreleased]
 
+### End-to-end native GPU notebook (2026-09-10)
+
+- Replace the multi-cell repair workflow with one native-validation driver and
+  a new `qwen35_4b_native_gpu_e2e_colab.ipynb`; update the legacy notebook alias.
+- Isolate pinned dependencies from Colab, retain its CUDA Torch, and verify
+  original checkpoint/probe/tokenizer evidence before the long build.
+- Include the loader repair, strict Linux undefined-symbol linking, and fresh
+  binding-load gates. Keep every numerical and saved-model parity guard intact.
+- Persist attempt-scoped logs, exact artifact hashes, fail-closed gate status,
+  reports-only archives and verified resume. Charge cumulative active stage time,
+  not notebook idle time, against a declared 90-minute allowance.
+- Share bounded-memory SHA-256 hashing across the native workflow without
+  requiring Python 3.11's `hashlib.file_digest`; preserve hash values and the
+  project's Python 3.10 compatibility.
+- Validate Linux/Python 3.13 library loading, local Metal synthetic execution,
+  and mocked notebook/pipeline ordering and recovery. NVIDIA/actual-4B execution
+  is still an explicit external validation gap, not claimed as tested here.
+
+### Native CUDA library-loading repair (2026-09-10)
+
+- Explicitly instantiate the string-key boolean GGUF metadata reader used by
+  `rotquant.tied_embedding`. The first Colab build linked but could not load
+  `libllama.so` because this symbol was unresolved; no numerical test ran.
+- Check the actual Python/native binding in a fresh, bounded subprocess before
+  emitting a successful build receipt. A loaded library is still not GPU parity.
+- Add an opt-in `--repair-known-loader` for the exact original patched source,
+  validating all patched files before modifying the one loader file. Preserve
+  existing CUDA compilation outputs and reject unknown/user changes.
+
 ### Retained-model export work (2026-09-10)
 
 - Add experimental GGUF-v2 assembly for the saved W5/scale8 backbone and shared

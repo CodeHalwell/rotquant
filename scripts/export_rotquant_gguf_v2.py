@@ -30,14 +30,10 @@ from rotquant.gguf_v2 import (
     join_vocabulary_chunks,
     qwen35_permutations,
 )
+from scripts.native_hashing import digest as file_digest
 
 LLAMA_REVISION = "17252c769a63c1cb650ce98ae309cf4de0da7778"
 LOG = logging.getLogger("rotquant.export.gguf-v2")
-
-
-def file_digest(path: Path) -> str:
-    with path.open("rb") as handle:
-        return hashlib.file_digest(handle, "sha256").hexdigest()
 
 
 def validate_recipe(manifest: dict) -> None:

@@ -8,6 +8,70 @@ Google Drive.
 
 ## 2026-09-10: full-model native execution and bounded Colab handoff
 
+### Replacement end-to-end notebook
+
+Replaced the old manual-repair/budget-extension flow with
+`notebooks/qwen35_4b_native_gpu_e2e_colab.ipynb` and an identical legacy alias.
+One driver owns dependency isolation, preflight, build/load, CPU/GPU operators,
+tiny whole-model checks, conversion, retained export and saved-probe parity.
+The source checkpoint is unchanged. No accuracy threshold or numerical
+execution semantics were relaxed. Each attempt has persistent logs and hashes;
+resume accepts only verified completed artifacts. Its cumulative 90-minute
+allowance counts active stages, not time spent waiting between notebook cells.
+It does not terminate Colab billing.
+
+The [handoff evidence](../research/results/native_gpu_e2e_2026_09_10/README.md)
+records an actual GCC/Linux aarch64/Python 3.13 shared-library build/load and
+local Apple M5 Max/Metal synthetic execution with the repaired loader. All
+eight local stages pass, including CPU/Metal operators, W6/W8 random Qwen
+graphs and offline HF conversion. Repeating the driver rechecks environment
+and binding load, and resumes the six unchanged completed stages. This uses
+cached native objects, not a measured cold CUDA build duration. The local
+test explicitly selects `--synthetic-only --current-environment
+--allow-dirty-local-test` and `GGML_METAL_TENSOR_DISABLE=1`; these are not the
+Colab defaults. The archived controls retain those limitations and file hashes.
+
+Notebook cells execute top-to-bottom under explicit mocked Colab/GPU/network
+operations; managed-environment command construction, interruption cleanup,
+hash invalidation and fail-closed ordering have regression tests. The actual
+Colab venv install, NVIDIA numerical execution, Drive checkpoint export and
+retained 4B parity remain unexecuted locally. A rendered HTML notebook preview
+was generated, but browser inspection was blocked by the tool's file-URL
+policy. To complete those checks, inspect the notebook in Colab, select a fresh
+CUDA runtime, verify the original `SOURCE_ROOT`, and choose Runtime → Run all.
+No pretrained quality result, recipe promotion, latency or VRAM claim follows
+from the synthetic checks.
+
+Final regression run: 840 passed, 17 expected arm64 AVX2 skips, two existing
+SWIG warnings; `ROTQUANT_REQUIRE_GIT_HISTORY=1` was enabled. Ruff, diff whitespace,
+clean pinned patch application, and all three native CTest suites pass.
+`validation.json` in the evidence directory records the exact commands and
+boundaries. Artifact hashing also has a regression with Python 3.11's
+`hashlib.file_digest` removed, protecting the project's Python 3.10 lane.
+
+### Colab follow-up: successful CUDA compilation, blocked library loading
+
+User-supplied logs from `dd87da217593/20260910T141143Z` show compilation/linking
+completed after roughly 26 minutes. The original test library SHA-256 was
+`96b71c3f765246b5b92ac146b88040a895e46c966c89768ba0fb6cbcf560dfb1`.
+The first CPU operator check then failed in `ctypes.CDLL`: `libllama.so.0`
+referenced an undefined `llama_model_loader::get_key<bool>(const std::string &,
+bool &, bool)`. This is user-log evidence, not a downloaded result bundle.
+There are **no CPU/CUDA numerical results or retained-model results from this
+Colab log**. Compilation must not be interpreted as a working runtime.
+
+The custom tied-embedding metadata call needs an explicit string-key boolean
+template instantiation in the loader translation unit; the patch provided
+float/uint32/string instantiations but omitted bool. Added that instantiation
+and a fresh-process binding-load gate before a successful build receipt.
+An opt-in exact-hash source repair can reuse existing CUDA object files; it
+does not reset a checkout or change weights, kernels, thresholds or old receipts.
+Local incremental Metal build/load succeeds and 28 targeted Python tests pass.
+At this initial repair step, Linux/CUDA reloading and numerical correctness
+still required confirmation; the later Linux-only check is recorded above.
+
+### Original local handoff evidence
+
 Implemented the experimental GGUF-v2/native-v3 Qwen graph, scalar CPU and packed
 Metal/CUDA operators, and an isolated reproducible llama.cpp build at
 `17252c769a63c1cb650ce98ae309cf4de0da7778`. The original v1 checkout is untouched.

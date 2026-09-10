@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import ast
 import json
+import subprocess
 from pathlib import Path
 
 import nbformat
@@ -24,15 +25,16 @@ def test_notebook_valid_and_bounded():
     for source in codes:
         ast.parse(source)
     joined = "\n".join(codes)
-    assert "SESSION_BUDGET_MINUTES" in joined and "timeout_seconds=min(remaining, phase_limit)" in joined
+    assert "ACTIVE_BUDGET_MINUTES = 90" in joined and "STARTED" not in joined
     assert 'RUN_TIMING = False' in joined
-    assert 'operators-CUDA0.json' in joined and 'model-w8.json' in joined
-    assert 'assert gate["passed"]' in joined and 'gate["runtime_files"] == current_runtime' in joined
+    assert 'run_native_gpu_validation.py' in joined and '--active-minutes' in joined
     assert "--force" not in joined and '"reset"' not in joined
     assert "run_qwen35_public_tasks" not in joined
     path = Path(__file__).resolve().parents[1] / "notebooks/qwen35_4b_native_gpu_validation_colab.ipynb"
     saved = nbformat.read(path, as_version=4)
     assert [(c.cell_type, c.source) for c in saved.cells] == [(c.cell_type, c.source) for c in notebook.cells]
+    new_path = path.with_name("qwen35_4b_native_gpu_e2e_colab.ipynb")
+    assert nbformat.read(new_path, as_version=4) == saved
 
 
 def test_cuda_build_fails_before_source_mutations(tmp_path, monkeypatch):
@@ -41,6 +43,74 @@ def test_cuda_build_fails_before_source_mutations(tmp_path, monkeypatch):
     with pytest.raises(ValueError, match="nvcc missing"):
         build.build(tmp_path / "source", tmp_path / "build", "CUDA", 2)
     assert not list(tmp_path.iterdir())
+
+
+def test_patch_emits_boolean_string_key_symbol():
+    patch = (build.INTEGRATION / "rotquant-native-v2.patch").read_text()
+    assert "+" + build.BOOL_INSTANTIATION in patch
+
+
+def loader_fixture(tmp_path, monkeypatch):
+    source = tmp_path / "source"
+    path = source / build.LOADER
+    path.parent.mkdir(parents=True)
+    original = "// test loader\n" + build.LOADER_ANCHOR
+    path.write_text(original)
+    other = source / "unrelated.cpp"
+    other.write_text("// test source\n")
+    monkeypatch.setattr(build, "OLD_LOADER_SHA", build.digest(path))
+    expected = {build.LOADER: build.hashlib.sha256(
+        original.replace(build.LOADER_ANCHOR, build.BOOL_INSTANTIATION + build.LOADER_ANCHOR).encode()).hexdigest(),
+        "unrelated.cpp": build.digest(other)}
+    return source, path, other, original, expected
+
+
+def test_known_loader_repair_is_opt_in_exact_and_idempotent(tmp_path, monkeypatch):
+    source, path, _, original, expected = loader_fixture(tmp_path, monkeypatch)
+    with pytest.raises(ValueError, match="patched source mismatch"):
+        build.verify_patched_source(source, expected)
+    assert path.read_text() == original
+    build.verify_patched_source(source, expected, repair_known_loader=True)
+    assert build.digest(path) == expected[build.LOADER]
+    build.verify_patched_source(source, expected, repair_known_loader=True)
+    assert path.read_text().count(build.BOOL_INSTANTIATION) == 1
+
+
+@pytest.mark.parametrize("mutation", ["loader", "other", "contract"])
+def test_loader_repair_never_overwrites_unknown_changes(tmp_path, monkeypatch, mutation):
+    source, path, other, _, expected = loader_fixture(tmp_path, monkeypatch)
+    if mutation == "loader":
+        path.write_text(path.read_text() + "// user edit\n")
+    elif mutation == "other":
+        other.write_text("// user edit\n")
+    else:
+        expected[build.LOADER] = "wrong-repaired-hash"
+    before = path.read_bytes(), other.read_bytes()
+    with pytest.raises(ValueError):
+        build.verify_patched_source(source, expected, repair_known_loader=True)
+    assert before == (path.read_bytes(), other.read_bytes())
+
+
+def test_build_does_not_emit_receipt_on_library_load_failure(tmp_path, monkeypatch):
+    directory = tmp_path / "build"
+    (directory / "bin").mkdir(parents=True)
+    library = directory / "bin/librotquant_ggml_test.so"
+    library.write_bytes(b"not a shared library")
+    monkeypatch.setattr(build, "prepare_source", lambda *a, **k: {"patch_sha256": "fixture"})
+    monkeypatch.setattr(build, "run", lambda *a, **k: None)
+    def fail_load(_):
+        raise subprocess.CalledProcessError(1, "library load")
+    monkeypatch.setattr(build, "verify_library_load", fail_load)
+    with pytest.raises(subprocess.CalledProcessError):
+        build.build(tmp_path / "source", directory, "CPU", 1)
+    assert not (directory / "build-receipt.json").exists()
+
+
+def test_library_load_check_rejects_unloadable_file(tmp_path):
+    path = tmp_path / "invalid-runtime.so"
+    path.write_bytes(b"invalid shared library")
+    with pytest.raises(subprocess.CalledProcessError):
+        build.verify_library_load(path)
 
 
 def test_metrics_are_teacher_to_candidate_kl():

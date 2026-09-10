@@ -2,7 +2,6 @@
 from __future__ import annotations
 
 import argparse
-import hashlib
 import json
 import os
 import sys
@@ -11,6 +10,7 @@ from pathlib import Path
 import numpy as np
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+from scripts.native_hashing import digest
 from scripts.rq3_test_runtime import NativeTests
 
 
@@ -31,9 +31,6 @@ def runtime_identity(library):
     directory = Path(library).resolve().parent
     files = [p for p in directory.iterdir() if p.is_file() and (
         ".so" in p.name or ".dylib" in p.name or p.suffix == ".dll" or p.name == "default.metallib")]
-    def digest(path):
-        with path.open("rb") as handle:
-            return hashlib.file_digest(handle, "sha256").hexdigest()
     return {p.name: digest(p) for p in sorted(files)}
 
 
@@ -80,8 +77,7 @@ def check_model(library, model_path, backend):
     thresholds = {"max_abs_error": .02, "mean_abs_error": .002, "mean_kl": 1e-5, "top1_agreement": 1.}
     guards = {k: metrics[k] >= v if k == "top1_agreement" else metrics[k] <= v for k, v in thresholds.items()}
     guards["exact_generation"] = captured[backend]["traces"] == captured["CPU"]["traces"]
-    with Path(model_path).open("rb") as handle:
-        model_digest = hashlib.file_digest(handle, "sha256").hexdigest()
+    model_digest = digest(model_path)
     return {"protocol": "rq3-synthetic-model-check-v1", "backend": backend,
             "runtime_files": runtime_identity(library), "settings": execution_settings(), "model_sha256": model_digest,
             "metrics": metrics, "by_prompt_length": by_prompt, "thresholds": thresholds, "guards": guards, "passed": all(guards.values()),

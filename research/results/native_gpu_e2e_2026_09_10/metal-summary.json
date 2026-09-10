@@ -1,0 +1,59 @@
+{
+  "protocol": "rq3-gpu-e2e-v2",
+  "status": "passed",
+  "active_minutes": 0.9227139993160866,
+  "stages": [
+    {
+      "name": "environment",
+      "status": "passed",
+      "elapsed_seconds": 4.028595374998986
+    },
+    {
+      "name": "native-build-and-load",
+      "status": "passed",
+      "elapsed_seconds": 4.051568540991866
+    },
+    {
+      "name": "binding-load",
+      "status": "passed",
+      "elapsed_seconds": 1.00458933399932
+    },
+    {
+      "name": "operators-CPU",
+      "status": "passed",
+      "elapsed_seconds": 9.04985158398631
+    },
+    {
+      "name": "operators-MTL0",
+      "status": "passed",
+      "elapsed_seconds": 9.056907000005594
+    },
+    {
+      "name": "whole-model-w6",
+      "status": "passed",
+      "elapsed_seconds": 6.033554916997673
+    },
+    {
+      "name": "whole-model-w8",
+      "status": "passed",
+      "elapsed_seconds": 9.05981900000188
+    },
+    {
+      "name": "hf-conversion",
+      "status": "passed",
+      "elapsed_seconds": 8.040791708001052
+    },
+    {
+      "name": "environment",
+      "status": "passed",
+      "elapsed_seconds": 4.024233124990133
+    },
+    {
+      "name": "binding-load",
+      "status": "passed",
+      "elapsed_seconds": 1.0129293749923818
+    }
+  ],
+  "error": null,
+  "boundary": "Validation workflow status, not a quality improvement or serving speedup."
+}

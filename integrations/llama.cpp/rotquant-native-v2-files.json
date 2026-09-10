@@ -1,6 +1,6 @@
 {
   "base_revision": "17252c769a63c1cb650ce98ae309cf4de0da7778",
-  "patch_sha256": "4ab7baf3029120abdf7dd255981514f0a12c53ea0a85d388f302a2200f2ce0c4",
+  "patch_sha256": "29d176717dc7ee1d0aa5cc211a9f1538aebf28388633297e9ccd66edf52de0eb",
   "files_sha256": {
     "ggml/src/ggml-backend.cpp": "8197d695b87077912739324f414859f6db7e606ac12798e84924e94844addfd0",
     "ggml/src/ggml-cuda/CMakeLists.txt": "029b62d2189ea25962fdd1a2064aa699c010481081c7d68ec9f3aeaab5198939",
@@ -22,7 +22,7 @@
     "src/llama-hparams.h": "ce9420f02951e8c84ae63160ef53c2dfaed0ee5a76cef96bbf0da26d78f1950b",
     "src/llama-kv-cache.cpp": "b02a3ae356a261ebb02942978405a2adea69aec6b6b0d022249e7bf6bb5f415e",
     "src/llama-kv-cache.h": "7c1c02082f79e87ea201e1e5bb2aafc4f96abb097b027bbf06ead57b28f88fe5",
-    "src/llama-model-loader.cpp": "a0c4e088f8734646d0546ed0ae84073f3c6d4c560247249850fa4330e82526a2",
+    "src/llama-model-loader.cpp": "011e1113ed864d30e754818d702dc470ccc7abf07c752da1272d8deec4d6bb79",
     "src/llama-model.cpp": "768f5cb06bb97d883c8e5e264e7d895648f32ba2103ba4d9aa0001779fa69b7d",
     "src/llama-rotquant.cpp": "575b9f120b8692f630300c6fabbfc6d7fe1bef5187e369859235fc36a3ce47b8",
     "src/llama-rotquant.h": "08b234a1a52dbd3379a4d0935f950585a81c29158cdc491828573fd4849d72d9",

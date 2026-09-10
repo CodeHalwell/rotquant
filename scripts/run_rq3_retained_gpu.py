@@ -27,7 +27,8 @@ from scripts.check_rq3_model import execution_settings, runtime_identity
 from scripts.rq3_test_runtime import NativeTests
 
 
-def verified_evidence(arm, exported):
+def verified_source_evidence(arm):
+    """Verify immutable preparation/checkpoint/probe bindings before any build."""
     prepared = json.loads((arm / "prepared.json").read_text())
     intent_path = arm / "preparation.json"
     intent = json.loads(intent_path.read_text())
@@ -43,6 +44,12 @@ def verified_evidence(arm, exported):
     probes = arm / "packed_probes.safetensors"
     if prepared["probe_files"].get(probes.name) != digest(probes):
         raise ValueError("canonical probe hash mismatch")
+    return probes, manifest
+
+
+def verified_evidence(arm, exported):
+    probes, _ = verified_source_evidence(arm)
+    checkpoint = arm / "checkpoint"
     export = json.loads((exported / "export.json").read_text())
     if (export.get("protocol") != "rotquant-gguf-v2-export-v1"
             or export["checkpoint_manifest_sha256"] != digest(checkpoint / MANIFEST_NAME)):

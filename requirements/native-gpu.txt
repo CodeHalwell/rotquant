@@ -1,0 +1,9 @@
+# CUDA Torch is inherited from Colab, constrained to its existing version.
+# These packages are installed in a dedicated system-site-packages venv.
+transformers==5.9.0
+safetensors==0.8.0
+sentencepiece==0.2.1
+scipy==1.15.3
+pyyaml==6.0.3
+ninja==1.13.0
+cmake==3.31.10

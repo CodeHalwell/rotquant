@@ -1,0 +1,17 @@
+{
+  "protocol": "rq3-linux-load-check-v1",
+  "source": "local Docker validation, not the Colab GPU",
+  "platform": "Linux aarch64",
+  "python": "3.13",
+  "compiler_family": "GCC",
+  "base_revision": "17252c769a63c1cb650ce98ae309cf4de0da7778",
+  "patch_sha256": "29d176717dc7ee1d0aa5cc211a9f1538aebf28388633297e9ccd66edf52de0eb",
+  "linker_flags": "-Wl,--no-undefined",
+  "load_method": "ctypes.CDLL('/out/bin/librotquant_ggml_test.so') in python:3.13-slim",
+  "library_sha256": "20d59553568a8afc2b8b92cbb1d8d487fe4dfd9be7c60b0c239ab0d36666f97f",
+  "llama_library_sha256": "eb478cca60d3e8ef8d9381c1135392089093b50b6ecf1fbde95869de8ded3b20",
+  "passed": true,
+  "cuda_executed": false,
+  "retained_model_executed": false,
+  "boundary": "Linux compilation/linking and immediate shared-library loading only; not GPU or model parity."
+}
