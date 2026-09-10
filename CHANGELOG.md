@@ -9,6 +9,37 @@ software.
 
 ## [Unreleased]
 
+### Retained-model export work (2026-09-10)
+
+- Add experimental GGUF-v2 assembly for the saved W5/scale8 backbone and shared
+  W6/W8 vocabulary without requantization, scale rounding or sign regeneration.
+  Keep Qwen GDN permutations separate from the original affine-scale payload.
+- Preserve/count non-text tensors in an auxiliary safetensors sidecar, verify
+  source integrity and record output/tensor hashes. Reject unsupported recipes
+  and existing output directories. Full-size export and model GPU execution
+  remain unvalidated. Preserve explicit hybrid layer topology as well as GDN
+  value-head maps; do not assume a default full-attention interval.
+- Add synthetic assembly/converter tests. Historical model/scorer/checkpoint
+  behavior and experiment receipts are unchanged.
+
+### Experimental full-model native GPU execution (2026-09-10)
+
+- Add a consolidated, pinned llama.cpp v2 integration for retained W5/scale8
+  backbones and shared W6/W8 vocabulary. Add scalar CPU, Metal and CUDA packed
+  rotation/matmul/embedding/head operators, one GPU-resident vocabulary owner,
+  strict payload/map validation and an actual scheduler-level no-CPU-fallback
+  gate. The historical v1 checkout/patch is preserved separately.
+- Add an isolated build with source/patch hashes, private whole-model bindings,
+  synthetic operator and cached-generation checks, and an offline random
+  Transformers-checkpoint export/conformance check. CPU/Metal execute locally;
+  CUDA compilation/execution and real retained-4B parity remain pending.
+- Add the native-GPU Colab notebook with streamed persistent logs, heartbeats,
+  time limits, immutable run identities, saved-probe verification and optional
+  bounded timings only after parity. No old experiment or artifact is rewritten.
+- Record the M5 upstream tensor-API failure and explicit simdgroup-only Metal
+  validation setting. Do not infer model quality or production speed from
+  synthetic conformance.
+
 ### Native serving preparation (2026-09-09)
 
 - Fix L5: native-v2/GGUF-v1 exporters reject non-FP16 scale storage; they no

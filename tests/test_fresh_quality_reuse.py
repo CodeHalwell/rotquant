@@ -237,7 +237,10 @@ def test_reuse_compatibility_keeps_reviewed_hf_scoring_and_core_code_unchanged()
                                     ":(exclude)rotquant/native.py",
                                     ":(exclude)rotquant/gguf.py",
                                     ":(exclude)rotquant/native_v3.py",
-                                    ":(exclude)rotquant/native_v3_ffi.py"],
+                                    ":(exclude)rotquant/native_v3_ffi.py",
+                                    # Export-only GGUF-v2 assembly. No imports from
+                                    # the frozen checkpoint/model/scorer graph.
+                                    ":(exclude)rotquant/gguf_v2.py"],
                                    cwd=runner.ROOT, text=True)
     assert not code, "re-review compatibility when model execution/scoring code changes"
     # Do not turn the two existing-module exclusions into a blanket future

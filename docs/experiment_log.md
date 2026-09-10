@@ -6,6 +6,69 @@ learned, negative results, and the decision that followed. Results produced in
 external notebooks are recorded here even when their raw artifacts live on
 Google Drive.
 
+## 2026-09-10: full-model native execution and bounded Colab handoff
+
+Implemented the experimental GGUF-v2/native-v3 Qwen graph, scalar CPU and packed
+Metal/CUDA operators, and an isolated reproducible llama.cpp build at
+`17252c769a63c1cb650ce98ae309cf4de0da7778`. The original v1 checkout is untouched.
+The [run guide](native_gpu_validation.md) and new native-GPU Colab notebook
+require build/operator/whole-model/export/parity gates before optional timing.
+No old checkpoint, notebook, score or experiment identity is overwritten.
+
+Local hardware: Apple M5 Max, 64 GiB unified memory; AppleClang 21; Torch 2.12.0.
+The [raw reports](../research/results/native_gpu_2026_09_10/) and build receipt
+retain model/library/patch hashes and execution settings. Results:
+
+- CPU and Metal: all 18 packed operator cases pass, including W5/scale8,
+  W6/W8 vocabulary, permutation maps and lookup. Maximum absolute error against
+  canonical Torch is at most 0.00048828125.
+- Full random two-layer Qwen graphs (one linear, one full-attention layer),
+  W6 and W8: all 1/4/17/64-token prompt and eight-step cached-decode checks pass
+  on Metal with `GGML_METAL_TENSOR_DISABLE=1`. Maximum absolute logit error is
+  0.001953125; mean KL is 6.52e-8 (W6) / 6.40e-8 (W8); all checked argmax IDs
+  and short greedy sequences match CPU. These are not pretrained-model scores.
+- An offline random Transformers model was quantized into a test checkpoint,
+  exported through the real pinned converter and run on CPU/Metal. All six
+  4/17/64-token comparisons against that canonical model pass. Its tokenizer is
+  explicitly fake, and evaluation uses frozen integer IDs. This test exposed
+  the converter's default-interval assumption; the exporter now preserves the
+  explicit hybrid layer map. It does not validate actual 4B conversion/tokenization.
+- Negative result: the same final runtime and W6 fixture with the M5 tensor API
+  left at its default fails numeric conformance (max error 0.1399393, mean
+  0.0056265, KL 7.70e-5), despite exact short generation. Intermediate checks
+  locate the first large discrepancy in dense alpha/beta matmul, not packed
+  embedding/first normalization. Explicit simdgroup Metal execution passes at
+  unchanged thresholds. The default M5 path remains unsupported by this gate.
+- The scheduler's strict GPU gate was tested negatively: a CPU model with
+  `ROTQUANT_REQUIRE_GPU=1` rejects execution. Successful Metal checks prohibit
+  CPU arithmetic fallback; allocated host staging memory is not hidden.
+- Release and separate ASan/UBSan native CTest builds pass all three suites.
+  The new loader-facing native-v3 validation ABI includes shape/malformed/null
+  rejection tests. A clean pinned checkout accepts the consolidated patch.
+- Final full Python run with `ROTQUANT_REQUIRE_GIT_HISTORY=1`: 813 passed,
+  17 expected AVX2 skips on arm64; ruff and both repository/patch whitespace
+  checks pass. Notebook nbformat/AST/source-regeneration checks pass. The Colab
+  CUDA/Drive cells were not executed locally. Two existing SWIG warnings remain.
+
+CUDA source is implemented but **not compiled or run here**. Original retained
+4B safetensors are absent locally; actual model parity, timings and VRAM remain
+to be measured in the new Colab. This step produces no 4B quality result,
+competitor speedup, recipe promotion, paid job, or claim of production readiness.
+
+## 2026-09-10: retained-model exporter preparation (earlier step)
+
+Added the experimental GGUF-v2 exporter/assembly helpers described in
+[the native-runtime contract](native_runtime_v3.md#gguf-v2-export-work-10-september).
+Saved W5/scale8 and W6/W8 codes/scales are preserved, GDN maps are separate,
+and non-text tensors are retained/countable. No checkpoint weights are present
+in the local retained-result bundles, so no actual 4B export or model execution
+was performed. This initial exporter-only step preceded the user's confirmation
+of the substantial private llama.cpp integration; execution work is recorded above.
+
+Local targeted tests: 26 passed (13 new export tests plus 13 frozen-result reuse
+tests), with `ROTQUANT_REQUIRE_GIT_HISTORY=1`; scoped ruff and diff checks clean.
+No paid run, artifact rewrite, new quality measurement or promotion occurred.
+
 ## 2026-09-09: public-task run stopped; native serving takes priority
 
 The user stopped the run at `5a98b99eb2d178c2da9705a5cd8afcb1f0f3e026`

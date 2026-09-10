@@ -1,7 +1,10 @@
 # Native-v3 matrix contract and W5 serving milestone
 
-Status, 9 September 2026: **exact matrix format and scalar CPU conformance are
-implemented; the W5/W6/W8 full-model runtime is not ready.** This is not checkpoint
+Status, 10 September 2026: **the exact matrix format, full Qwen graph and
+CPU/Metal/CUDA operators are implemented; CPU and Metal conformance have run,
+but CUDA and the actual retained 4B remain unvalidated.** Use the
+[new native-GPU notebook and run guide](native_gpu_validation.md), not the
+old Python-reference quality sweep. This matrix format is not checkpoint
 v3, a GGUF format version, or an extension that stock llama.cpp understands.
 Existing native-v2/GGUF-v1 bytes and supported 16-bit-scale paths are unchanged.
 The legacy exporters now reject compressed/32-bit scales instead of silently
@@ -110,10 +113,48 @@ allocate the requested dense rows. Preparation/serialization may temporarily
 hold more than one packed copy; those costs must not be hidden in load/peak
 memory reporting. No automatic Metal/CUDA fallback exists in this binding.
 
+## GGUF-v2 export work (10 September)
+
+`scripts/export_rotquant_gguf_v2.py` now assembles the retained W5/scale8 backbone
+and W6/W8 shared vocabulary into an experimental GGUF-v2 container. It requires
+the original integrity-verified checkpoint, not a result bundle containing only
+`rotquant_config.json`. It uses the pinned Qwen converter for the dense tensors,
+tokenizer and model metadata, and copies the native-v3 packed payload unchanged.
+
+- `*.rqv3` contains the original native-v3 bytes; `*.rqsign` stores the saved
+  int8 FWHT signs. Optional `*.rqrow` and `*.rqcol` are int32 Qwen GDN maps.
+  Permuting affine uint8 scale codes in isolation would change the weights;
+  instead, the runtime must apply these row and input-column maps.
+- `token_embd.rqv3` contains all original, word-aligned vocabulary chunks with
+  one scalar codebook. Its embedding and output-head uses must share storage.
+  The new runtime implements inverse-FWHT/FP16 vocabulary rounding explicitly.
+- Non-text tensors excluded by the text converter are saved unchanged in
+  `auxiliary.safetensors` and included in the payload byte total. That sidecar
+  is not a working multimodal projector. Nothing is discarded to inflate a
+  compression claim.
+- Export goes to a new directory and records source/file/tensor hashes in
+  `export.json`. Existing artifacts are never overwritten. Unsupported bias,
+  LoRA, activation quantization and learned rotations fail closed.
+
+Small synthetic tests cover the matrix assembly and converter adapter,
+including exact saved codes/scales, deduplicated signs, vocabulary sharing,
+GDN maps and unsupported-recipe rejection. Explicit per-layer hybrid topology
+is preserved instead of assuming the pinned converter's default interval four.
+Separate native operator, whole-model and offline HF-to-GGUF tests now execute
+on CPU/Metal; see the [run guide](native_gpu_validation.md) for their boundaries.
+They do **not** establish successful full-size conversion or 4B/CUDA parity.
+The export receipt still says `runtime_validated: false`: successful export is
+not execution evidence, and the old GGUF-v1 runtime cannot load this container.
+
+The development machine has an M5 Max with 64 GiB unified memory. Metal testing
+is possible locally; NVIDIA CUDA execution is not. Locally available retained
+result bundles currently contain manifests but no model/packed safetensors.
+The original W5/W6 or W5/W8 checkpoint is needed for actual 4B validation.
+
 ## Remaining work, in implementation order
 
-1. **Exact full-model exporter and CPU graph.** Freeze a new GGUF/operator
-   contract around these arrays. Preserve original W5 codes and uint8 affine
+1. **Validate the implemented exporter and graph on the actual checkpoint.**
+   The contract and CPU/Metal/CUDA operators now exist. Verify original W5 codes and uint8 affine
    scales; one owner for W6/W8 embedding/head storage; original rotation IDs,
    scales and centroids. Retain Qwen GDN value-head permutations and model
    metadata. Count auxiliary/vision tensors, headers and serialization overhead.
@@ -126,9 +167,10 @@ memory reporting. No automatic Metal/CUDA fallback exists in this binding.
    tolerances before observing results. Use FP16 cache; do not revive withdrawn
    KV claims. Keep FP32 model buffers intact. Close any relevant L1/L2/L3/L7
    rotation/loading defects before supporting learned-rotation variants.
-3. **Packed Metal, then CUDA for Colab.** Fuse decode/scale/round/multiply in
-   bounded tiles, upload static tensors once, share vocabulary/codebooks, and
-   avoid writing whole expanded weights to device memory every token. Benchmark
+3. **Validate CUDA, then optimize the correctness-first packed kernels.**
+   Decode/scale/round/multiply already execute in bounded tiles; static packed
+   tensors and one shared vocabulary stay on the GPU. No complete dense weight
+   matrix is written per token. Benchmark
    the actual W5/scale8 and W6/W8 workload, not old W4 numbers. Build and execute
    the llama.cpp patch in CI; `git apply --check` is insufficient. A standard
    `GGML_CUDA=ON` build does not provide custom RotQuant operators.
@@ -149,11 +191,12 @@ memory reporting. No automatic Metal/CUDA fallback exists in this binding.
    the old run as incomplete reference-path evidence, never merge its records
    into native outcomes. All-provider 4B and then 27B remain later milestones.
 
-No paid sweep, full-model GGUF artifact, Metal/CUDA performance result or new
-quality result is produced by this preparation. The remaining L1–L12 queue is
+No paid sweep, retained 4B GGUF artifact, 4B Metal/CUDA performance result or new
+quality result is produced by this work. Random tiny-model GGUFs are test fixtures,
+not retained-model evidence. The remaining L1–L12 queue is
 not declared closed: only the lossy-export blocker L5 is addressed here.
 
-## Local verification record
+## Historical matrix-only verification record (9 September)
 
 Development checkout based on `0054735324928733f75d9574e74a40f1dc41eda8`
 (working-tree changes), macOS arm64, AppleClang 21, Torch 2.12.0 and NumPy 2.4.6:

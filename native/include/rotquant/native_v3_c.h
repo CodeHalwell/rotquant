@@ -20,6 +20,9 @@ extern "C" {
 ROTQUANT_NATIVE_API uint32_t rq_native_v3_abi_version(void);
 ROTQUANT_NATIVE_API uint32_t rq_native_v3_format_version(void);
 ROTQUANT_NATIVE_API const char *rq_native_v3_last_error(void);
+/* Validate compact payload and expected matrix dimensions without decoding rows. */
+ROTQUANT_NATIVE_API int rq_native_v3_validate(
+    const uint8_t *data, size_t data_size, size_t rows, size_t columns);
 ROTQUANT_NATIVE_API int rq_native_v3_dequantize(
     const uint8_t *data, size_t data_size, float *output, size_t output_size,
     size_t row_start, size_t row_count);

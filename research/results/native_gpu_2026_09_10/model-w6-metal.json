@@ -1,0 +1,84 @@
+{
+  "protocol": "rq3-synthetic-model-check-v1",
+  "backend": "MTL0",
+  "runtime_files": {
+    "default.metallib": "bc516546d7664f9c99a6d80972885666ae33969fa99cb967619ed627b5efe060",
+    "libggml-base.0.22.0.dylib": "07bcbc6a1657c304cc3e9237bc7052ade0afe1e64c9255738b805b2a1e040022",
+    "libggml-base.0.dylib": "07bcbc6a1657c304cc3e9237bc7052ade0afe1e64c9255738b805b2a1e040022",
+    "libggml-base.dylib": "07bcbc6a1657c304cc3e9237bc7052ade0afe1e64c9255738b805b2a1e040022",
+    "libggml-blas.0.22.0.dylib": "550854a98644a77b681f6f4d3563fcb810d893088d510b34428742c097527301",
+    "libggml-blas.0.dylib": "550854a98644a77b681f6f4d3563fcb810d893088d510b34428742c097527301",
+    "libggml-blas.dylib": "550854a98644a77b681f6f4d3563fcb810d893088d510b34428742c097527301",
+    "libggml-cpu.0.22.0.dylib": "c6694f684a8ef123229e95ec4152b61e521dd040eddc2683fd316b72dbb4a9d6",
+    "libggml-cpu.0.dylib": "c6694f684a8ef123229e95ec4152b61e521dd040eddc2683fd316b72dbb4a9d6",
+    "libggml-cpu.dylib": "c6694f684a8ef123229e95ec4152b61e521dd040eddc2683fd316b72dbb4a9d6",
+    "libggml-metal.0.22.0.dylib": "f4dbda07598edc0c81686ffbac5af885abc569a37451df8da14b74f85479d349",
+    "libggml-metal.0.dylib": "f4dbda07598edc0c81686ffbac5af885abc569a37451df8da14b74f85479d349",
+    "libggml-metal.dylib": "f4dbda07598edc0c81686ffbac5af885abc569a37451df8da14b74f85479d349",
+    "libggml.0.22.0.dylib": "0b2a610a98009a766487bf2056df1cb42680109602697f89f6276fe4997579c5",
+    "libggml.0.dylib": "0b2a610a98009a766487bf2056df1cb42680109602697f89f6276fe4997579c5",
+    "libggml.dylib": "0b2a610a98009a766487bf2056df1cb42680109602697f89f6276fe4997579c5",
+    "libllama.0.3.0.dylib": "6ebe48a46cd3ab8ce40188c782ae7ebb0aec015335f83f364c77a514a5676791",
+    "libllama.0.dylib": "6ebe48a46cd3ab8ce40188c782ae7ebb0aec015335f83f364c77a514a5676791",
+    "libllama.dylib": "6ebe48a46cd3ab8ce40188c782ae7ebb0aec015335f83f364c77a514a5676791",
+    "librotquant_ggml_test.dylib": "e782a5a502582ca5eaf0cc85a13bbdac27de4f82ef209b82389fdc627cb46ce4",
+    "librotquant_native.dylib": "465567d58bbf079df84db3d58eb13f978bbe48896471d8d3ba5711a2cf0c6b72"
+  },
+  "settings": {
+    "kv_dtype": "float16",
+    "flash_attention": "auto",
+    "batch": 1,
+    "GGML_METAL_TENSOR_DISABLE": "1",
+    "GGML_METAL_TENSOR_ENABLE": null
+  },
+  "model_sha256": "71608c0cecf2623f47bf51d9b3880e2dd0e07f1c4ac44257b49f511300e04514",
+  "metrics": {
+    "max_abs_error": 0.001953125,
+    "mean_abs_error": 0.0002573791425675154,
+    "mean_kl": 6.5241568268705e-08,
+    "top1_agreement": 1.0
+  },
+  "by_prompt_length": {
+    "1": {
+      "max_abs_error": 0.001220703125,
+      "mean_abs_error": 0.00021819716009000936,
+      "mean_kl": 4.3910357374096137e-08,
+      "top1_agreement": 1.0
+    },
+    "4": {
+      "max_abs_error": 0.001232147216796875,
+      "mean_abs_error": 0.00028141443100240495,
+      "mean_kl": 6.930795213029664e-08,
+      "top1_agreement": 1.0
+    },
+    "17": {
+      "max_abs_error": 0.001953125,
+      "mean_abs_error": 0.0002519693484322892,
+      "mean_kl": 7.787357379448983e-08,
+      "top1_agreement": 1.0
+    },
+    "64": {
+      "max_abs_error": 0.001953125,
+      "mean_abs_error": 0.00027793563074535795,
+      "mean_kl": 6.987438977593736e-08,
+      "top1_agreement": 1.0
+    }
+  },
+  "thresholds": {
+    "max_abs_error": 0.02,
+    "mean_abs_error": 0.002,
+    "mean_kl": 1e-05,
+    "top1_agreement": 1.0
+  },
+  "guards": {
+    "max_abs_error": true,
+    "mean_abs_error": true,
+    "mean_kl": true,
+    "top1_agreement": true,
+    "exact_generation": true
+  },
+  "passed": true,
+  "gpu_custom_ops": 1008,
+  "cpu_fallback_forbidden": true,
+  "scope": "random two-layer Qwen graph; not retained-4B parity, accuracy or speed"
+}

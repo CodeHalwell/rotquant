@@ -146,6 +146,12 @@ template<class Function> int checked(Function function) noexcept {
 } // namespace
 
 extern "C" {
+int rq_native_v3_validate(const uint8_t *data, size_t data_size, size_t rows, size_t columns) {
+    return checked([&] {
+        Matrix matrix(data, data_size);
+        require(matrix.rows == rows && matrix.cols == columns, "matrix dimensions disagree with model");
+    });
+}
 uint32_t rq_native_v3_abi_version(void) { return 1; }
 uint32_t rq_native_v3_format_version(void) { return 3; }
 const char *rq_native_v3_last_error(void) { return last_error; }

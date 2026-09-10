@@ -55,6 +55,10 @@ int main() {
         for (size_t bits = 1; bits <= 8; ++bits) {
             for (size_t sbits : {8, 16}) {
                 auto data = fixture(bits, sbits);
+                check(rq_native_v3_validate(data.data(), data.size(), 3, 13) == 0);
+                check(rq_native_v3_validate(data.data(), data.size(), 4, 13) == 1);
+                check(rq_native_v3_validate(data.data(), data.size(), 3, 12) == 1);
+                check(rq_native_v3_validate(data.data(), data.size() - 1, 3, 13) == 1);
                 float weights[39], x[13] = {}, y[3];
                 check(rq_native_v3_dequantize(data.data(), data.size(), weights, 39, 0, 3) == 0);
                 for (size_t i = 0; i < 39; ++i) {
@@ -83,6 +87,7 @@ int main() {
             }
         }
         check(rq_native_v3_dequantize(nullptr, 64, nullptr, 0, 0, 1) == 1);
+        check(rq_native_v3_validate(nullptr, 64, 3, 13) == 1);
         std::puts("native-v3: bits 1..8, scale8/16, exact decode and fail-closed checks passed");
         return 0;
     } catch (const std::exception &e) {
