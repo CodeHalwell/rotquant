@@ -57,9 +57,23 @@ multiple sessions concurrently against one result directory.
 Dependency setup uses a dedicated `--system-site-packages` virtual environment:
 Colab's CUDA Torch is inherited and constrained to its existing version; other
 requirements are installed in the venv, not into the notebook environment.
+The first end-to-end attempt (`1507627bca7b`) stopped in `ensurepip`, before
+any native build or numerical test. Setup now uses `venv --without-pip` and
+the base interpreter's pip with an explicit `--python` target, as documented
+by [pip](https://pip.pypa.io/en/stable/topics/python-option/) (requires pip
+22.3 or newer). It checks the target prefix and inherited Torch version/location
+before and after installation, and reapplies venv configuration on every
+attempt, including partial failures. It neither clears the environment nor
+upgrades global pip/Torch. Install reports are retained with the attempt logs.
 `requirements/native-gpu.txt` pins the tested versions, including safetensors
 0.8.0 to avoid the previous diffusers conflict. Import and GPU checks run in a
 fresh process. No large ambient `pip freeze` dump is printed.
+
+The [bootstrap regression](../research/results/native_gpu_bootstrap_2026_09_10/README.md)
+executes real dependency installs with `ensurepip` disabled on Linux/Python
+3.13, including fresh setup, recovery from the reproduced error and a repeat.
+The same CPU-only check runs in CI; it does not establish CUDA/model parity or
+reproduce every preinstalled package in a Colab image.
 
 Ordinary completion/failure produces `summary.json` and a reports-only ZIP.
 Checkpoints/GGUF weights are excluded from that archive. Hard VM loss can prevent

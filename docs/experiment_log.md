@@ -8,6 +8,31 @@ Google Drive.
 
 ## 2026-09-10: full-model native execution and bounded Colab handoff
 
+### Follow-up: pip-less Colab bootstrap
+
+The replacement notebook at `1507627bca7b/run1` failed in the environment
+stage: stdlib `venv` launched `ensurepip`, which exited 1. The user's log
+contains no underlying ensurepip stderr and no new build/numerical/model
+results. Earlier mocked setup tests did not catch this; the real local native
+run had explicitly used `--current-environment`, skipping managed installation.
+
+Removed ensurepip from the setup path. The driver now creates a pip-less venv
+and uses the base pip's explicit target-interpreter option. It checks virtual
+environment identity and inherited Torch location/version before and after
+installing, and always reapplies configuration when retrying a partial venv.
+No global dependency upgrade, checkpoint change or numerical-gate relaxation.
+
+The [new raw evidence](../research/results/native_gpu_bootstrap_2026_09_10/README.md)
+records **real** dependency installations on Linux aarch64/Python 3.13.15 with
+ensurepip disabled. The original command reproduces the error and leftover
+Python executable. Fresh setup, repair of that partial environment and repeat
+setup all pass the pinned Qwen/RotQuant import checks. The base distribution
+inventory and Torch entry-point hash are unchanged. A CPU-only CI job now
+exercises this path on x86-64. This is bootstrap evidence, not Colab/CUDA/4B
+parity; all production GPU gates remain pending. Final regression suite:
+849 passed, 17 existing arm64 AVX2 skips, two existing SWIG warnings; lint and
+whitespace checks pass. Historical receipts are preserved separately.
+
 ### Replacement end-to-end notebook
 
 Replaced the old manual-repair/budget-extension flow with

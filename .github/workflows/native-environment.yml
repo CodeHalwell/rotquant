@@ -1,0 +1,40 @@
+name: Native notebook environment
+
+"on":
+  push:
+    branches: [main]
+    paths:
+      - ".github/workflows/native-environment.yml"
+      - "scripts/*native_gpu*.py"
+      - "requirements/native-gpu.txt"
+      - "notebooks/qwen35_4b_native_gpu*.ipynb"
+      - "tests/*native_gpu*"
+      - "pyproject.toml"
+  pull_request:
+    paths:
+      - ".github/workflows/native-environment.yml"
+      - "scripts/*native_gpu*.py"
+      - "requirements/native-gpu.txt"
+      - "notebooks/qwen35_4b_native_gpu*.ipynb"
+      - "tests/*native_gpu*"
+      - "pyproject.toml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  pipless-python313:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build CPU-only missing-ensurepip fixture
+        run: docker build -t rotquant-bootstrap-ci - < tests/native_gpu_environment.Dockerfile
+      - name: Test actual installs, partial-venv recovery and repeated setup
+        run: docker run --rm -v "$GITHUB_WORKSPACE:/workspace" rotquant-bootstrap-ci
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: native-environment-python313
+          path: build/native-environment-ci/

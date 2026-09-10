@@ -9,6 +9,19 @@ software.
 
 ## [Unreleased]
 
+### Colab pip-less environment bootstrap (2026-09-10)
+
+- Remove the native notebook's dependency on `ensurepip`: create the venv with
+  `--without-pip` and use base pip's explicit `--python` target, guarded by
+  `--require-virtualenv`. Do not install into the notebook environment.
+- Reapply configuration on retries instead of trusting a leftover Python
+  executable. Verify the target prefix and inherited Torch version/location
+  before and after installation; retain dependency-install receipts.
+- Add real Linux/Python 3.13 CPU install tests for a fresh target, a reproduced
+  failed-ensurepip target and a repeated setup, plus a dedicated CI job.
+  Pinned Qwen/RotQuant imports pass without changing the base package inventory.
+  No kernels, saved models or parity thresholds change; CUDA/4B remains pending.
+
 ### End-to-end native GPU notebook (2026-09-10)
 
 - Replace the multi-cell repair workflow with one native-validation driver and

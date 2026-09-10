@@ -62,7 +62,10 @@ def build_notebook():
         ### Connect Drive and pin code
         This checks paths and fetches code; it does not start the execution
         budget. Dependencies go into a dedicated virtual environment, preserving
-        Colab's installed CUDA PyTorch and notebook packages.
+        Colab's installed CUDA PyTorch and notebook packages. Setup does not
+        require `ensurepip`: the notebook's pip installs into the explicitly
+        selected venv. Its identity and inherited Torch are checked before and
+        after installation, including when retrying an incomplete setup.
         '''),
         code('''
         from google.colab import drive

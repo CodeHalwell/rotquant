@@ -1,0 +1,12 @@
+{
+  "provenance": "User-pasted Colab traceback, 2026-09-10; not a downloaded report bundle",
+  "revision": "1507627bca7b",
+  "run_name": "run1",
+  "phase": "environment",
+  "command": "/usr/bin/python3 -m venv --system-site-packages --copies /content/rotquant-native-gpu-e2e/cache/1507627bca7b/venv",
+  "failed_child": "venv/bin/python3 -m ensurepip --upgrade --default-pip",
+  "exit_status": 1,
+  "underlying_ensurepip_stderr_available": false,
+  "native_build_started": false,
+  "numerical_results_available": false
+}

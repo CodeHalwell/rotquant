@@ -19,6 +19,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
+from scripts.native_gpu_environment import prepare_environment
 from scripts.native_gpu_workflow import Workflow, digest, fingerprint, write_json
 
 
@@ -48,6 +49,7 @@ def repository_identity(allow_dirty=False):
     return {"revision": revision, "dirty_local_test": bool(dirty),
             "workflow_sources": {str(p.relative_to(ROOT)): digest(p) for p in [
                 Path(__file__), ROOT / "scripts/native_gpu_workflow.py", ROOT / "scripts/native_hashing.py",
+                ROOT / "scripts/native_gpu_environment.py",
                 ROOT / "scripts/preflight_native_gpu.py",
                 ROOT / "scripts/build_rq3_runtime.py", ROOT / "requirements/native-gpu.txt",
                 ROOT / "integrations/llama.cpp/rotquant-native-v2.patch"]}}
@@ -84,15 +86,8 @@ def run_pipeline(args):
 
             def dependencies(stage):
                 if not args.current_environment:
-                    if not python.exists():
-                        stage.command([sys.executable, "-m", "venv", "--system-site-packages", "--copies", environment_dir], "create-environment")
+                    prepare_environment(stage, ROOT, environment_dir, base_torch)
                     os.environ["PATH"] = str(environment_dir / "bin") + os.pathsep + old_path
-                    constraints = stage.directory / "torch-constraint.txt"
-                    constraints.write_text(f"torch=={base_torch}\n")
-                    stage.command([python, "-m", "pip", "install", "--disable-pip-version-check",
-                                   "-r", ROOT / "requirements/native-gpu.txt", "-c", constraints], "dependencies")
-                    stage.command([python, "-m", "pip", "install", "-e", ROOT, "--no-deps",
-                                   "--disable-pip-version-check"], "install-rotquant")
                 report = stage.directory / "environment.json"
                 extra = ["--allow-unpinned-local-test"] if args.current_environment else []
                 command(stage, "preflight_native_gpu.py", "environment", "--backend", args.backend,

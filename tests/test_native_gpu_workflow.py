@@ -193,14 +193,23 @@ def test_managed_environment_setup_preserves_torch_and_restores_path(tmp_path, m
     saved_command = support.Stage.command
     old_path = os.environ.get("PATH", "")
     setup = []
+    # Failed ensurepip can leave this executable; its existence must not skip setup.
+    partial = args.work_dir / "venv/bin/python"
+    partial.parent.mkdir(parents=True)
+    partial.touch()
     def command(stage, cmd, label):
         words = list(map(str, cmd))
         if words[1:3] == ["-m", "venv"]:
-            assert "--system-site-packages" in words and "--copies" in words
+            assert {"--without-pip", "--system-site-packages", "--copies"} <= set(words)
+            assert "--clear" not in words
             setup.append("venv")
         elif words[1:3] == ["-m", "pip"]:
-            assert words[0] == str(args.work_dir / "venv/bin/python")
-            assert os.environ["PATH"].split(os.pathsep)[0] == str(args.work_dir / "venv/bin")
+            assert words[0] == sys.executable
+            assert words[words.index("--python") + 1] == str(partial)
+            assert {"--isolated", "--require-virtualenv"} <= set(words)
+            if "--version" in words:
+                setup.append("installer")
+                return
             if "-c" in words:
                 constraint = Path(words[words.index("-c") + 1]).read_text()
                 assert constraint == f"torch=={pipeline.importlib.metadata.version('torch')}\n"
@@ -208,11 +217,15 @@ def test_managed_environment_setup_preserves_torch_and_restores_path(tmp_path, m
             else:
                 assert "--no-deps" in words and "-e" in words
                 setup.append("editable-without-dependencies")
+        elif Path(words[2]).name == "native_gpu_environment.py":
+            assert words[words.index("--expected-torch-file") + 1].endswith("torch/__init__.py")
+            setup.append(label)
         else:
             return saved_command(stage, cmd, label)
     monkeypatch.setattr(support.Stage, "command", command)
     pipeline.run_pipeline(args)
-    assert setup == ["venv", "pinned-dependencies", "editable-without-dependencies"]
+    assert setup == ["venv", "verify-target", "installer", "pinned-dependencies",
+                     "editable-without-dependencies", "verify-installed-target"]
     assert os.environ["PATH"] == old_path
 
 
