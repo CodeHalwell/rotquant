@@ -2,6 +2,11 @@
 
 ## Run this next
 
+**Superseded as the next experiment by the [native optimisation study](native_gpu_optimization.md).**
+The [original pilot results](../research/results/native_pilot_2026_09_11/README.md)
+are archived, including the partial 2048 run. This simpler reference-only
+notebook remains usable; `CONTEXTS` now permits targeted reruns.
+
 Open [the new Colab notebook](../notebooks/qwen35_4b_native_gpu_pilot_colab.ipynb)
 after its supporting code has been published. Use a fresh A100 40GB session,
 leave W5/W6 selected, verify the source path, then **Runtime → Run all**.
@@ -24,7 +29,7 @@ Expect one more build before the new persistent cache can save future builds.
 | Cached steps | 32 per repetition, fixed count even at EOS |
 | Repetitions | 1 excluded warmup + 3 measured |
 | Execution allowance | 90 cumulative active minutes; 45-minute build cap |
-| Pilot cap | 3 minutes per context, including load/verification/diagnostics |
+| Pilot cap | Context/repetition-aware; defaults 4 / 6 / 12 minutes, including load/verification |
 | Cost stops | Below 2 measured decode tok/s, or sampled process VRAM above 16,384 MiB |
 
 The speed and VRAM limits are adjustable **spending guards**, not scientific

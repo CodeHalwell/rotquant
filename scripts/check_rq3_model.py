@@ -36,6 +36,9 @@ def runtime_identity(library):
 
 def execution_settings():
     return {"kv_dtype": "float16", "flash_attention": "auto", "batch": 1,
+            "rq3_kernel": os.environ.get("ROTQUANT_RQ3_KERNEL", "reference"),
+            "rq3_profile": os.environ.get("ROTQUANT_RQ3_PROFILE") == "1",
+            "cuda_graphs_disabled": "GGML_CUDA_DISABLE_GRAPHS" in os.environ,
             "GGML_METAL_TENSOR_DISABLE": os.environ.get("GGML_METAL_TENSOR_DISABLE"),
             "GGML_METAL_TENSOR_ENABLE": os.environ.get("GGML_METAL_TENSOR_ENABLE")}
 

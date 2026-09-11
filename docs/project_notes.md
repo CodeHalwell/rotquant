@@ -1,9 +1,12 @@
 # RotQuant project notes
 
-September 11 preparation: the next runnable experiment is the
-[native GPU performance pilot](native_gpu_pilot.md): unchanged W5/W6, private
-Drive artifact persistence, fresh parity, three capped timing contexts and
-per-context process VRAM. No new CUDA throughput result or recipe promotion.
+September 11 follow-up: the [first A100 throughput pilot](../research/results/native_pilot_2026_09_11/README.md)
+passed 13 stages; 2048-token timing exceeded an undersized cap. Completed 128/512
+contexts measured ~36.4 prefill / 19.8 decode tok/s. The next runnable notebook is
+the [native optimisation study](native_gpu_optimization.md): corrected budgets,
+targeted contexts, separate operator profiles, an opt-in tiled-prefill candidate
+and same-bridge BF16/UD-Q4 controls. Recipe/quality gates are unchanged. No new
+kernel speedup or promotion is claimed; its CUDA validation remains to be run.
 
 Latest follow-up (10 September): the user's A100 run at `06a4379c7107` passed
 native CUDA and retained W5/W6 saved-probe parity, after the public-task notebook

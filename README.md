@@ -1,5 +1,11 @@
 # rotquant-eval
 
+**Next Colab run:** [native GPU optimisation and BF16/Unsloth comparison](https://colab.research.google.com/github/CodeHalwell/rotquant/blob/main/notebooks/qwen35_4b_native_optimization_colab.ipynb).
+The [runbook](docs/native_gpu_optimization.md) covers the unchanged W5/W6 recipe,
+corrected timing budgets, gated experimental kernel and separate diagnostics.
+The [first A100 pilot](research/results/native_pilot_2026_09_11/README.md) measured
+~36.4 prefill / 19.8 decode tok/s; 2048-token timing is partial, not a complete pass.
+
 A GPU-oriented assessment harness for **TurboQuant-style rotation + weight
 compression**. The implemented experiment cells test the following hypotheses on
 real models with fixed metrics:
@@ -148,14 +154,14 @@ common-FP16 KL by 55.6–57.9% versus the pinned Unsloth UD-Q4_K_XL; W5/W8 by
 W4 models or evidence of general task/serving superiority. The authored tasks
 exposed seed sensitivity and two oracle/format interpretation limitations.
 
-**Next: the bounded native GPU performance pilot.** The public-task run was
+**Next: the native GPU optimisation study.** The public-task run was
 stopped after the W5/W6 Python reference path proved too slow. Native full-model
 execution now passes the user's [A100 W5/W6 saved-probe checks](research/results/native_cuda_2026_09_10/README.md),
-but speed was not measured. The [new notebook](notebooks/qwen35_4b_native_gpu_pilot_colab.ipynb)
-adds private Drive build/export persistence, fresh correctness gates, and
-separately capped prefill/decode/VRAM tests at 128/512/2048 input tokens.
-See the [runbook](docs/native_gpu_pilot.md); this is prepared code, not a new
-CUDA throughput result. Saved checkpoints and partial results are preserved;
+and the [first throughput pilot](research/results/native_pilot_2026_09_11/README.md)
+now provides baseline timings. The [new notebook](notebooks/qwen35_4b_native_optimization_colab.ipynb)
+adds corrected per-context budgets, isolated profiles, a gated opt-in prefill
+kernel, and same-bridge BF16/UD-Q4 controls. See the [runbook](docs/native_gpu_optimization.md);
+candidate speedup and CUDA conformance are unmeasured. Saved checkpoints and partial results are preserved;
 no re-quantization or training is required before a new runtime-bound
 [public-task run](docs/public_tasks_run_2026-09-09.md). The
 [project deep dive of 8 September](docs/project_deep_dive_2026-09-08.md) records

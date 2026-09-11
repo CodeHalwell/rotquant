@@ -179,6 +179,17 @@ def test_full_pipeline_order_and_verified_resume(tmp_path, monkeypatch):
     assert (args.source_root / "b5_v6_s0/prepared.json").read_bytes() == b"immutable source"
 
 
+def test_targeted_context_skips_other_timings_but_not_parity(tmp_path, monkeypatch):
+    args, commands = fake_pipeline(tmp_path, monkeypatch)
+    args.performance_pilot = True
+    args.context = [2048]
+    pipeline.run_pipeline(args)
+    pilots = [cli for name, cli in commands if name == "run_rq3_performance_pilot.py"]
+    assert len(pilots) == 1 and pilots[0][pilots[0].index("--context") + 1] == "2048"
+    assert any(name == "run_rq3_retained_gpu.py" for name, _ in commands)
+    assert pipeline.read(args.output_dir / "workflow.json")["controls"]["pilot_contexts"] == [2048]
+
+
 def test_numerical_failure_prevents_export_and_retained_execution(tmp_path, monkeypatch):
     args, commands = fake_pipeline(tmp_path, monkeypatch, fail="check_rq3_gpu")
     with pytest.raises(subprocess.CalledProcessError):
@@ -250,7 +261,7 @@ def test_pilot_requires_fresh_parity_and_caps_each_context(tmp_path, monkeypatch
     pilots = [cli for name, cli in commands if name == "run_rq3_performance_pilot.py"]
     assert [cli[cli.index("--context") + 1] for cli in pilots] == ["128", "512", "2048"]
     rows = pipeline.read(args.output_dir / "workflow.json")["attempts"]
-    assert [row["limit_seconds"] for row in rows if row["name"].startswith("pilot-")] == [180, 180, 180]
+    assert [row["limit_seconds"] for row in rows if row["name"].startswith("pilot-")] == [240, 360, 720]
     commands.clear()
     pipeline.run_pipeline(args)
     assert sum(name == "check_rq3_gpu.py" for name, _ in commands) == 2

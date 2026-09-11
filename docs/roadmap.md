@@ -22,16 +22,18 @@ See the [evidence and caveats](../research/results/native_cuda_2026_09_10/README
 This verifies native reproduction of the quantized checkpoint, not FP16/BF16
 quality recovery. W5/W8 is covered by synthetic tests, not a retained-model run.
 
-**Next gate: measured native speed/memory/cost before another paid task sweep.**
-The September 11 [pilot notebook and runbook](native_gpu_pilot.md) now implement
-private, hash-checked binary/export persistence and the bounded W5/W6 timing/VRAM
-pilot, with fresh numerical gates and independently capped context processes.
-It is prepared and locally tested, **not yet a CUDA performance result**.
-After the pilot, proceed to
-retained W5/W8 and longer-context parity, and steady-state transfer/DRAM profiling.
-Sampled 3,446 MiB process VRAM at batch 1/context capacity 256 is only a short-probe
-observation. Timing was off. Resume public tasks under a new runtime-bound
-identity only after cost/quality gates, with comparable native baselines.
+**Next gate: native optimisation and matched-engine performance before tasks.**
+The [September 11 A100 pilot](../research/results/native_pilot_2026_09_11/README.md)
+measured ~36.4 prefill / 19.8 decode tok/s with completed 128/512-token trials;
+2048 has one measured repetition because the three-minute cap was too short.
+13 stages passed, including unchanged retained parity. Sampled process VRAM
+was 3450/3972/5542 MiB; these are not hardware minima or transient peak bounds.
+The [next study](native_gpu_optimization.md) implements context-aware budgets,
+targeted reruns, isolated CUDA operator profiles, a gated opt-in four-token
+weight-reuse kernel and same-bridge pinned BF16/UD-Q4 controls. No candidate
+CUDA result is available yet. Then proceed to retained W5/W8/longer-context
+parity and transfer/DRAM profiling. Resume public tasks under a new runtime-bound
+identity only after cost/quality gates; no speed ratio substitutes for quality.
 No new allocator/recovery sweep, requantization or promotion. Existing
 checkpoint and evaluation receipts remain unchanged.
 

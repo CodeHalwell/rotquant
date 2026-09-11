@@ -52,6 +52,8 @@ def repository_identity(allow_dirty=False):
                 ROOT / "scripts/native_gpu_environment.py",
                 ROOT / "scripts/native_gpu_cache.py", ROOT / "scripts/run_rq3_performance_pilot.py",
                 ROOT / "scripts/native_pilot_controls.py",
+                ROOT / "scripts/native_performance_study.py", ROOT / "scripts/native_cuda_diagnostics.py",
+                ROOT / "scripts/run_native_gguf_baseline.py",
                 ROOT / "scripts/run_rq3_retained_gpu.py", ROOT / "scripts/rq3_test_runtime.py",
                 ROOT / "scripts/check_rq3_model.py", ROOT / "scripts/check_rq3_gpu.py",
                 ROOT / "scripts/check_rq3_conversion.py", ROOT / "scripts/export_rotquant_gguf_v2.py",
@@ -62,7 +64,15 @@ def repository_identity(allow_dirty=False):
 
 def run_pipeline(args):
     cache_dir = getattr(args, "persistent_cache_dir", None)
-    pilot = getattr(args, "performance_pilot", False)
+    study = getattr(args, "performance_study", False)
+    pilot = getattr(args, "performance_pilot", False) or study
+    from scripts.native_pilot_controls import phase_minutes, selected_contexts
+    contexts = selected_contexts(getattr(args, "context", None))
+    baselines = [] if getattr(args, "no_baselines", False) else (getattr(args, "baseline", None) or ["bf16", "ud_q4"])
+    if len(set(baselines)) != len(baselines) or set(baselines) - {"bf16", "ud_q4"}:
+        raise ValueError("Choose unique pinned BF16/UD-Q4 controls")
+    if study and args.backend != "CUDA":
+        raise ValueError("The tiled-kernel study and conventional comparison require CUDA")
     pilot_controls = {"decode_steps": getattr(args, "decode_steps", 32),
                       "repetitions": getattr(args, "repetitions", 3),
                       "min_decode_tps": getattr(args, "min_decode_tps", 2.),
@@ -104,7 +114,11 @@ def run_pipeline(args):
                 "metal_tensor_disable": os.environ.get("GGML_METAL_TENSOR_DISABLE")}
     if cache_dir or pilot:
         controls.update(persistent_cache_dir=str(cache_dir.resolve()) if cache_dir else None,
-                        performance_pilot=pilot, pilot_controls=pilot_controls)
+                        performance_pilot=pilot, pilot_controls=pilot_controls,
+                        pilot_contexts=contexts)
+    if study:
+        controls.update(performance_study=True, conventional_baselines=baselines,
+                        diagnostic_profiles=not getattr(args, "skip_profile", False))
     args.work_dir.mkdir(parents=True, exist_ok=True)
     source = args.work_dir / "llama-source"
     build_dir = args.work_dir / "llama-build"
@@ -114,7 +128,15 @@ def run_pipeline(args):
     backend = "CUDA0" if args.backend == "CUDA" else "MTL0"
     old_path = os.environ.get("PATH", "")
     old_library_path = os.environ.get("LD_LIBRARY_PATH")
+    cuda_keys = ("ROTQUANT_RQ3_KERNEL", "ROTQUANT_RQ3_PROFILE", "GGML_CUDA_DISABLE_GRAPHS")
+    old_cuda = {key: os.environ.get(key) for key in cuda_keys}
     try:
+        if study:
+            # The orchestrator, not stale notebook environment variables, owns
+            # variant selection and instrumented-vs-throughput separation.
+            for key in cuda_keys:
+                os.environ.pop(key, None)
+            os.environ["ROTQUANT_RQ3_KERNEL"] = "reference"
         with Workflow(args.output_dir, ROOT, controls, args.active_minutes) as workflow:
             def command(stage, name, *values, label=None):
                 return stage.command([python, "-u", ROOT / "scripts" / name, *values], label or Path(name).stem)
@@ -247,7 +269,8 @@ def run_pipeline(args):
                     signature={"runtime": runtime, "environment": environment, "source": evidence,
                                "export": exported["receipt"], "timing": args.timing}, minutes=20, reuse=not (pilot or cache_dir))
                 if pilot:
-                    for context in (128, 512, 2048):
+                    references = {}
+                    for context in contexts:
                         def performance(stage, context=context, arm=arm, exported=exported, parity=parity):
                             output = stage.directory / "pilot"
                             options = [item for key, value in pilot_controls.items()
@@ -257,12 +280,27 @@ def run_pipeline(args):
                                     "--probes", args.source_root / arm / "packed_probes.safetensors",
                                     "--context", context, "--output-dir", output, *options)
                             report = output / "report.json"
-                            return passed(report, runtime), [report]
-                        workflow.stage(f"pilot-{arm}-ctx{context}", performance,
+                            return {**passed(report, runtime), "report_path": str(report)}, [report]
+                        measured = workflow.stage(f"pilot-{arm}-ctx{context}", performance,
                             signature={"runtime": runtime, "environment": environment, "source": evidence,
                                        "export": exported["receipt"], "controls": pilot_controls},
-                            minutes=3, reuse=False)
+                            minutes=phase_minutes(context, pilot_controls["decode_steps"],
+                                                  pilot_controls["repetitions"]), reuse=False)
+                        references[context] = measured["report_path"]
+                    if study:
+                        from scripts.native_performance_study import run_study
+                        run_study(workflow, command, arm=arm, library=library, runtime=runtime,
+                                  source=source, build_dir=build_dir, exported=exported,
+                                  source_arm=args.source_root / arm, parity=parity,
+                                  references=references, controls=pilot_controls, environment=environment,
+                                  baselines=baselines, profile=not getattr(args, "skip_profile", False))
     finally:
+        if study:
+            for key, value in old_cuda.items():
+                if value is None:
+                    os.environ.pop(key, None)
+                else:
+                    os.environ[key] = value
         os.environ["PATH"] = old_path
         if old_library_path is None:
             os.environ.pop("LD_LIBRARY_PATH", None)
@@ -281,6 +319,13 @@ def main():
     parser.add_argument("--timing", action="store_true")
     parser.add_argument("--persistent-cache-dir", type=Path, help="Private Drive build/export cache; no cached GPU passes")
     parser.add_argument("--performance-pilot", action="store_true", help="Fresh parity, then three independently bounded timing contexts")
+    parser.add_argument("--performance-study", action="store_true", help="Reference + gated tiled kernel + diagnostics + matched conventional GGUFs")
+    parser.add_argument("--skip-profile", action="store_true", help="Skip diagnostic-only CUDA event runs")
+    group = parser.add_mutually_exclusive_group()
+    group.add_argument("--baseline", action="append", choices=("bf16", "ud_q4"))
+    group.add_argument("--no-baselines", action="store_true", help="Explicitly skip conventional GGUF comparison")
+    parser.add_argument("--context", action="append", type=int, choices=(128, 512, 2048),
+                        help="Repeat to select only the required timing contexts; default all three")
     parser.add_argument("--decode-steps", type=int, default=32)
     parser.add_argument("--repetitions", type=int, default=3)
     parser.add_argument("--min-decode-tps", type=float, default=2.)

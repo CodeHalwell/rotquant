@@ -73,9 +73,11 @@ new file mode 100644
 index 000000000..bf054b443
 --- /dev/null
 +++ b/ggml/src/ggml-cuda/rq3.cu
-@@ -0,0 +1,114 @@
+@@ -0,0 +1,209 @@
 +#include "common.cuh"
 +#include "rotquant-v3.h"
++#include "ggml-cuda.h"
++#include <mutex>
 +using rq3_ulong = uint64_t;
 +using uchar = unsigned char;
 +using uint = unsigned int;
@@ -175,6 +177,64 @@ index 000000000..bf054b443
 +    if (lane == 0) { out[token * v.rows + grid.x] = rq3_round(tile[0]); }
 +}
 +
++// Experimental prefill only: four tokens share each decoded weight. The
++// per-token accumulation and 128-lane reduction order match kernel_rq3.
++// No dense weight expansion, recipe change, or tensor-core rounding change.
++static __global__ void kernel_rq3_tiled4(rq3_args a, const uchar * src0,
++        const uchar * src1, const uchar * src2, float * out) {
++    const uint lane = threadIdx.x;
++    const rq3_ulong first = rq3_ulong(blockIdx.y) * 4;
++    const rq3_view v = rq3_parse(src1);
++    const rq3_ulong row = a.permutation ? ((const int *) src2)[blockIdx.x] : blockIdx.x;
++    const float * input = (const float *) src0;
++    float sums[4] = {0, 0, 0, 0};
++    __shared__ float tile[4][128];
++    for (rq3_ulong start = 0; start < v.cols; start += 128) {
++        const rq3_ulong col = start + lane;
++        const float w = rq3_round(rq3_weight(v, row, col));
++        #pragma unroll
++        for (int t = 0; t < 4; ++t) {
++            if (first + t < rq3_ulong(a.tokens)) {
++                sums[t] += w * rq3_round(input[(first + t) * v.cols + col]);
++            }
++        }
++    }
++    #pragma unroll
++    for (int t = 0; t < 4; ++t) { tile[t][lane] = sums[t]; }
++    __syncthreads();
++    for (uint stride = 64; stride > 0; stride /= 2) {
++        if (lane < stride) {
++            #pragma unroll
++            for (int t = 0; t < 4; ++t) { tile[t][lane] += tile[t][lane + stride]; }
++        }
++        __syncthreads();
++    }
++    if (lane == 0) {
++        #pragma unroll
++        for (int t = 0; t < 4; ++t) {
++            if (first + t < rq3_ulong(a.tokens)) {
++                out[(first + t) * v.rows + blockIdx.x] = rq3_round(tile[t][0]);
++            }
++        }
++    }
++}
++
++// Process-local diagnostics. Counts describe host dispatches, not CUDA graph
++// replays. Timings require graphs disabled and intentionally synchronize each
++// custom op; never include these runs in the uninstrumented speed table.
++static std::mutex rq3_profile_mutex;
++static double rq3_profile_ms[4] = {};
++static uint64_t rq3_profile_calls[4] = {};
++static uint64_t rq3_tiled_dispatches = 0;
++extern "C" GGML_BACKEND_API int ggml_cuda_rq3_diagnostics(
++        double * ms, uint64_t * calls, uint64_t * tiled) {
++    if (!ms || !calls || !tiled) { return 0; }
++    std::lock_guard<std::mutex> guard(rq3_profile_mutex);
++    for (int i = 0; i < 4; ++i) { ms[i] = rq3_profile_ms[i]; calls[i] = rq3_profile_calls[i]; }
++    *tiled = rq3_tiled_dispatches;
++    return 1;
++}
++
 +void ggml_cuda_rq3(ggml_backend_cuda_context & ctx, ggml_tensor * op) {
 +    GGML_ASSERT(rq3_supported(op));
 +    const auto tag = rq3_kind(op);
@@ -183,10 +243,45 @@ index 000000000..bf054b443
 +    rq3_args a = {inputs, op->ne[0], tokens, op->src[2]->type == GGML_TYPE_I32, int64_t(tag)};
 +    const int64_t groups = tag == RQ3_ROTATE || tag == RQ3_ROWS ? inputs / 128 : op->ne[0];
 +    GGML_ASSERT(groups > 0 && groups <= INT32_MAX && tokens > 0 && tokens <= 65535);
-+    kernel_rq3<<<dim3(groups, tokens), 128, 0, ctx.stream()>>>(a,
-+        (const uchar *) op->src[0]->data, (const uchar *) op->src[1]->data,
-+        (const uchar *) op->src[2]->data, (float *) op->data);
++    const char * variant = getenv("ROTQUANT_RQ3_KERNEL");
++    GGML_ASSERT(!variant || strcmp(variant, "reference") == 0 || strcmp(variant, "tiled4") == 0);
++    const bool tiled = variant && strcmp(variant, "tiled4") == 0 && tag == RQ3_MATMUL && tokens >= 4;
++    const char * enabled = getenv("ROTQUANT_RQ3_PROFILE");
++    const bool profile = enabled && strcmp(enabled, "1") == 0;
++    cudaEvent_t begin = nullptr, end = nullptr;
++    if (profile) {
++        GGML_ASSERT(getenv("GGML_CUDA_DISABLE_GRAPHS") != nullptr);
++        cudaStreamCaptureStatus capture;
++        CUDA_CHECK(cudaStreamIsCapturing(ctx.stream(), &capture));
++        GGML_ASSERT(capture == cudaStreamCaptureStatusNone);
++        CUDA_CHECK(cudaEventCreate(&begin));
++        CUDA_CHECK(cudaEventCreate(&end));
++        CUDA_CHECK(cudaEventRecord(begin, ctx.stream()));
++    }
++    if (tiled) {
++        kernel_rq3_tiled4<<<dim3(groups, (tokens + 3) / 4), 128, 0, ctx.stream()>>>(a,
++            (const uchar *) op->src[0]->data, (const uchar *) op->src[1]->data,
++            (const uchar *) op->src[2]->data, (float *) op->data);
++    } else {
++        kernel_rq3<<<dim3(groups, tokens), 128, 0, ctx.stream()>>>(a,
++            (const uchar *) op->src[0]->data, (const uchar *) op->src[1]->data,
++            (const uchar *) op->src[2]->data, (float *) op->data);
++    }
 +    CUDA_CHECK(cudaGetLastError());
++    float elapsed = 0;
++    if (profile) {
++        CUDA_CHECK(cudaEventRecord(end, ctx.stream()));
++        CUDA_CHECK(cudaEventSynchronize(end));
++        CUDA_CHECK(cudaEventElapsedTime(&elapsed, begin, end));
++        CUDA_CHECK(cudaEventDestroy(begin));
++        CUDA_CHECK(cudaEventDestroy(end));
++    }
++    std::lock_guard<std::mutex> guard(rq3_profile_mutex);
++    const int index = int(tag) - int(RQ3_ROTATE);
++    GGML_ASSERT(index >= 0 && index < 4);
++    rq3_profile_ms[index] += elapsed;
++    rq3_profile_calls[index]++;
++    if (tiled) { rq3_tiled_dispatches++; }
 +}
 diff --git a/ggml/src/ggml-metal/CMakeLists.txt b/ggml/src/ggml-metal/CMakeLists.txt
 index 140c5d809..a17adbe6a 100644

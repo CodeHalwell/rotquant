@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import sys
 from pathlib import Path
 
@@ -33,7 +34,8 @@ def check(library, backend):
             signs = rotation.signs.numpy().astype(np.int8)
             weights = torch.from_numpy(decode_native_v3_rows(native))
             vocabulary = rotation.inverse_activation(weights).half()
-            for tokens in (1, 7, 33):
+            tiled = os.environ.get("ROTQUANT_RQ3_KERNEL", "reference") == "tiled4"
+            for tokens in ((1, 3, 4, 5, 7, 33) if tiled else (1, 7, 33)):
                 x = torch.randn(tokens, width, generator=generator).half()
                 rows = np.random.default_rng(13).permutation(137).astype(np.int32) if bits == 5 else None
                 columns = np.random.default_rng(17).permutation(width).astype(np.int32) if bits == 5 else None
@@ -48,6 +50,15 @@ def check(library, backend):
                     np.testing.assert_allclose(embeddings, vocabulary[ids].float().numpy(), rtol=0, atol=0.000125)
                 # FP32 parallel reductions may cross an FP16 rounding boundary.
                 np.testing.assert_allclose(actual, expected, rtol=0.002, atol=0.001)
+                if tiled and bits == 5:
+                    # Same data and arithmetic: additionally require exact
+                    # equivalence to the original native kernel, including tails.
+                    os.environ["ROTQUANT_RQ3_KERNEL"] = "reference"
+                    try:
+                        reference = runtime.operator(backend, native, signs, x.float().numpy(), rows=rows, columns=columns)
+                    finally:
+                        os.environ["ROTQUANT_RQ3_KERNEL"] = "tiled4"
+                    np.testing.assert_array_equal(actual, reference)
                 report = {"bits": bits, "scale_bits": sbits, "width": width, "tokens": tokens,
                           "max_abs": float(np.max(np.abs(actual - expected))), "passed": True}
                 print(json.dumps(report), flush=True)

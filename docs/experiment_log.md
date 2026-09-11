@@ -6,7 +6,37 @@ learned, negative results, and the decision that followed. Results produced in
 external notebooks are recorded here even when their raw artifacts live on
 Google Drive.
 
-## 2026-09-11: native performance pilot prepared (not a CUDA result)
+## 2026-09-11: A100 pilot returned; native optimisation study prepared
+
+Archived the user's `pilot1-reports-1789113892245467172` reports byte-for-byte
+with a [reproducible audit and review](../research/results/native_pilot_2026_09_11/README.md).
+13 stages passed; the final 2048 timing stopped at 180 seconds. Completed
+128/512 results were 36.38/36.47 prefill tok/s and 19.86/19.84 decode tok/s,
+with 3450/3972 MiB sampled process VRAM. The partial 2048 result (one measured
+rep) was 36.45/19.73 tok/s and 5542 MiB. Retained parity was unchanged: 16/16
+top-1 positions, 4/4 short traces, KL 8.6674e-6 versus the saved quantized model.
+Active time 39.08 minutes included 27.14 minutes build/load. Cache publication
+was logged; a later-VM restoration has not yet been observed.
+
+Decision: correct the scheduling budget, then measure operator costs and test
+an opt-in weight-reuse prefill kernel with exact operator/reference and existing
+whole-model guards. The [new notebook/runbook](native_gpu_optimization.md) also
+implements same-native-bridge pinned BF16/UD-Q4 speed controls, identical prompt
+and replayed decode IDs, separate diagnostic profiles, targeted contexts, live
+progress and reports download. Default timing caps are 4/6/12 minutes, with a
+90-active-minute total allowance. There is no automatic kernel/recipe promotion.
+This implementation is not a new CUDA speedup or quality result; the next A100
+run must compile and validate the candidate. No cloud job was launched here.
+
+Local verification: **908 passed, 17 existing arm64 AVX2 skips, two existing
+SWIG warnings**; repository Ruff and whitespace checks pass. All 28 patched
+files match the contract after application to a fresh pinned llama.cpp tree.
+A fresh CPU library builds/loads; all 18 CPU operator cases pass and the tiny
+Qwen graph produces finite logits. Notebook cells execute top-to-bottom under
+explicit Colab/network/GPU mocks; mocked results are not shipped as data.
+Rendered Colab presentation and real CUDA candidate execution remain pending.
+
+## 2026-09-11: original native performance pilot preparation (historical)
 
 Built a [new end-to-end notebook/runbook](native_gpu_pilot.md) after reviewing
 the successful native W5/W6 run below. It uses the same saved recipe and gates,

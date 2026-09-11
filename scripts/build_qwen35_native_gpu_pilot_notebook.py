@@ -41,8 +41,8 @@ def build_notebook():
         A reports-only ZIP is insufficient. The source is never modified.
 
         The default **90 active-minute** allowance includes dependency setup,
-        hashing/copying, build and tests. Each performance context has a **3-minute
-        ceiling**. The 2 tok/s and 16 GiB limits below are conservative spending
+        hashing/copying, build and tests. Performance caps scale with context and
+        repetitions (default **4 / 6 / 12 minutes**). The 2 tok/s and 16 GiB limits are spending
         guards, not pass marks for quality or production readiness.
         '''),
         code('''
@@ -53,6 +53,7 @@ def build_notebook():
         SOURCE_ROOT = Path("/content/drive/MyDrive/rotquant/qwen35_packed_validation/8f10ee60fc7f")
         CACHE_ROOT = Path("/content/drive/MyDrive/rotquant/native_artifact_cache/v1")
         ARMS = ("b5_v6_s0",)
+        CONTEXTS = (128, 512, 2048)  # use (2048,) for a targeted rerun with a new RUN_NAME
         RUN_NAME = "pilot1"
         ACTIVE_BUDGET_MINUTES = 90
         BUILD_JOBS = 2
@@ -95,14 +96,15 @@ def build_notebook():
         for name in ("run_native_gpu_validation.py", "native_gpu_cache.py", "run_rq3_performance_pilot.py", "native_pilot_controls.py"):
             assert (REPO_DIR / "scripts" / name).exists(), "Pilot code is not present at REPO_REF. Stop before spending on the build."
         sys.path.insert(0, str(REPO_DIR))
-        from scripts.native_pilot_controls import validate_controls
+        from scripts.native_pilot_controls import selected_contexts, validate_controls
+        CONTEXTS = selected_contexts(CONTEXTS)
         validate_controls(128, DECODE_STEPS, MEASURED_REPETITIONS,
                           MIN_DECODE_TOKENS_PER_SECOND, MAX_PROCESS_VRAM_MIB)
         WORK_DIR = Path("/content/rotquant-native-pilot/work") / COMMIT[:12]
         RESULT_ROOT = Path("/content/drive/MyDrive/rotquant/native_gpu_pilot") / COMMIT[:12] / RUN_NAME
         print({"commit": COMMIT, "results": str(RESULT_ROOT), "cache": str(CACHE_ROOT),
                "arms": ARMS, "active_minutes": ACTIVE_BUDGET_MINUTES,
-               "contexts": [128, 512, 2048], "decode_steps": DECODE_STEPS})
+               "contexts": CONTEXTS, "decode_steps": DECODE_STEPS})
         '''),
         md('''
         ## Steps and checks — run the complete pilot
@@ -141,6 +143,8 @@ def build_notebook():
                    "--max-vram-mib", str(MAX_PROCESS_VRAM_MIB)]
         for arm in ARMS:
             command.extend(["--arm", arm])
+        for context in CONTEXTS:
+            command.extend(["--context", str(context)])
         run_live(command, "native-performance-pilot", repo_dir=REPO_DIR,
                  log_root=RESULT_ROOT / "launch-logs")
         '''),
@@ -176,7 +180,7 @@ def build_notebook():
         rows = ["| Arm | Input tokens | Status | Measured reps | Prefill tok/s | Decode tok/s | Peak MiB* |",
                 "| :-- | --: | :-- | --: | --: | --: | --: |"]
         for arm in ARMS:
-            for context in (128, 512, 2048):
+            for context in CONTEXTS:
                 attempts = sorted((RESULT_ROOT / "stages" / f"pilot-{arm}-ctx{context}").glob("attempt-*"))
                 report_path = attempts[-1] / "pilot/report.json" if attempts else None
                 report = json.loads(report_path.read_text()) if report_path and report_path.exists() else {}

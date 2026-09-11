@@ -10,6 +10,7 @@ checkpoint writes are excluded; rates do not describe total job wall time.
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
 import signal
@@ -45,9 +46,32 @@ def summarize(rows):
         "boundary": "Warmup excluded. Rates are total tokens / total time; min/max are observed repetitions, not confidence intervals."}
 
 
+def reference_tokens(reference):
+    """Require a complete, deterministic uninstrumented reference receipt."""
+    rows = reference.get("rows", [])
+    controls = reference.get("controls", {})
+    if (reference.get("passed") is not True or reference.get("measurement_kind") != "throughput"
+            or reference.get("settings", {}).get("rq3_kernel") != "reference"
+            or reference.get("settings", {}).get("rq3_profile") is not False
+            or controls.get("repetitions", 0) < 2
+            or len(rows) != controls["repetitions"] + 1):
+        raise ValueError("Complete uninstrumented reference run required")
+    fixed = rows[1].get("decode_input_ids")
+    if (not fixed or len(fixed) != controls.get("decode_steps")
+            or any(type(token) is not int or token < 0 for token in fixed)
+            or any(not r.get("completed") or r.get("decode_input_ids") != fixed
+                   or r.get("warmup") != (i == 0) for i, r in enumerate(rows))):
+        raise ValueError("Reference token sequence is incomplete or differs across repetitions")
+    return fixed
+
+
 def measure(model, ids, *, context, decode, repetitions, minimum_tps, maximum_vram,
-            memory, persist, clock=time.perf_counter):
+            memory, persist, clock=time.perf_counter, forced_decode=None, diagnostics=None):
+    from scripts.native_cuda_diagnostics import difference
+
     prompt = np.resize(ids, context).astype(np.int32)
+    if forced_decode is not None and len(forced_decode) != decode:
+        raise ValueError("Fixed-token replay length must equal decode steps")
     rows = []
     def memory_guard():
         peak = memory.report()["sampled_peak_process_vram_mib"]
@@ -57,20 +81,31 @@ def measure(model, ids, *, context, decode, repetitions, minimum_tps, maximum_vr
         memory_guard()
         print(f"PILOT context={context} repetition={repetition}/{repetitions} "
               f"{'warmup' if repetition == 0 else 'measured'}: prefill", flush=True)
+        # Persist the phase BEFORE entering a potentially long native call.
+        row = {"input_tokens": context, "repetition": repetition, "warmup": repetition == 0,
+               "phase": "prefill", "completed": False, "decode_steps": 0,
+               "decode_seconds": 0., "decode_step_seconds": [], "decode_input_ids": []}
+        persist(rows, row)
+        before = diagnostics.snapshot() if diagnostics else None
         start = clock()
         logits = model.evaluate(prompt, reset=True)
         prefill = clock() - start
-        row = {"input_tokens": context, "repetition": repetition, "warmup": repetition == 0,
-               "prefill_seconds": prefill, "decode_step_seconds": [], "decode_steps": 0,
-               "decode_seconds": 0., "completed": False}
+        if diagnostics:
+            row["prefill_profile"] = difference(before, diagnostics.snapshot())
+        row.update(prefill_seconds=prefill, phase="decode")
         if prefill <= 0 or not np.isfinite(logits).all():
             raise ValueError("Invalid prefill measurement")
         persist(rows, row)
+        print(f"PILOT context={context} rep={repetition}: prefill {prefill:.2f}s "
+              f"({context/prefill:.2f} tok/s)", flush=True)
+        before = diagnostics.snapshot() if diagnostics else None
         for step in range(decode):
             memory_guard()
             start = clock()
             # Fixed number of cached steps, even at EOS: not task generation.
             token = int(logits.argmax())
+            if forced_decode is not None:
+                token = int(forced_decode[step])
             logits = model.evaluate([token])
             elapsed = clock() - start
             if elapsed <= 0 or not np.isfinite(logits).all():
@@ -78,12 +113,15 @@ def measure(model, ids, *, context, decode, repetitions, minimum_tps, maximum_vr
             row["decode_step_seconds"].append(elapsed)
             row["decode_steps"] += 1
             row["decode_seconds"] += elapsed
+            row["decode_input_ids"].append(token)
             # Persist outside the timed region, including partial repetitions.
             persist(rows, row)
             if (step + 1) % 8 == 0:
                 print(f"PILOT context={context} rep={repetition}: decode {step+1}/{decode} "
                       f"({row['decode_steps']/row['decode_seconds']:.2f} tok/s)", flush=True)
-        row.update(completed=True, prefill_tokens_per_second=context / prefill,
+        if diagnostics:
+            row["decode_profile"] = difference(before, diagnostics.snapshot())
+        row.update(completed=True, phase="completed", prefill_tokens_per_second=context / prefill,
                    decode_tokens_per_second=decode / row["decode_seconds"])
         rows.append(row)
         persist(rows, None)
@@ -103,6 +141,11 @@ def verify_inputs(library, exported, parity_path, probe_path):
             or gate.get("export_sha256") != digest(exported / "export.json")
             or gate.get("probe_sha256") != digest(probe_path)):
         raise ValueError("A matching retained parity pass is required before timing")
+    # Old unlabelled receipts predate selectable kernels and are reference only.
+    expected = execution_settings()
+    settings = gate.get("settings", {})
+    if settings.get("rq3_kernel", "reference") != expected["rq3_kernel"]:
+        raise ValueError("Retained parity used a different kernel variant")
     receipt = json.loads((exported / "export.json").read_text())
     if (receipt.get("checkpoint_manifest_sha256") != gate.get("checkpoint_manifest_sha256")
             or receipt.get("artifact_files") != gate.get("export_files")
@@ -129,6 +172,7 @@ def run(args):
                      "max_process_vram_mib": args.max_vram_mib},
         "settings": execution_settings(), "rows": [], "in_progress": None, "summary": None,
         "boundary": __doc__}
+    report["measurement_kind"] = "diagnostic" if report["settings"]["rq3_profile"] else "throughput"
     memory = ProcessVRAM()
     def persist(rows=None, current=None):
         if rows is not None:
@@ -143,15 +187,39 @@ def run(args):
                       probe_sha256=gate["probe_sha256"], complete_model_payload_bytes=gate["complete_model_payload_bytes"])
         expected = load_file(str(args.probes))
         ids = expected["p0.input.input_ids"][0].numpy()
+        report["prompt_ids_sha256"] = hashlib.sha256(
+            np.resize(ids, args.context).astype("<i4").tobytes()).hexdigest()
+        fixed = None
+        reference = getattr(args, "replay_report", None)
+        if reference:
+            source = json.loads(reference.read_text())
+            fixed = reference_tokens(source)
+            if (source.get("passed") is not True or source.get("measurement_kind") != "throughput"
+                    or source["runtime_files"] != identity or source["context"] != args.context
+                    or source.get("prompt_ids_sha256") != report["prompt_ids_sha256"]
+                    or source["controls"] != report["controls"] or source["backend"] != gate["backend"]
+                    or source.get("probe_sha256") != gate["probe_sha256"]
+                    or source.get("export_sha256") != gate["export_sha256"]):
+                raise ValueError("Invalid reference replay report")
+            report["replay_report_sha256"] = digest(reference)
         os.environ["ROTQUANT_REQUIRE_GPU"] = "1"
         runtime = NativeTests(args.library)
+        diagnostics = None
+        if gate["backend"] == "CUDA0" and (report["settings"]["rq3_profile"] or
+                                             report["settings"]["rq3_kernel"] != "reference"):
+            from scripts.native_cuda_diagnostics import CudaDiagnostics
+            diagnostics = CudaDiagnostics(args.library)
         with memory:
             start = time.perf_counter()
             with runtime.model(args.exported / "model.gguf", gate["backend"], report["context_capacity"]) as model:
                 report["load_seconds"] = time.perf_counter() - start
                 measure(model, ids, context=args.context, decode=args.decode_steps, repetitions=args.repetitions,
                         minimum_tps=args.min_decode_tps, maximum_vram=args.max_vram_mib,
-                        memory=memory, persist=persist)
+                        memory=memory, persist=persist, forced_decode=fixed, diagnostics=diagnostics)
+                if diagnostics:
+                    report["native_diagnostics"] = diagnostics.snapshot()
+                    if report["settings"]["rq3_kernel"] == "tiled4" and not report["native_diagnostics"]["tiled_host_dispatches"]:
+                        raise ValueError("Requested tiled kernel was not dispatched")
                 report["gpu_custom_ops"] = model.custom_ops
                 if model.custom_ops <= 0:
                     raise ValueError("No packed native operations observed")
@@ -181,6 +249,7 @@ def main():
     parser.add_argument("--repetitions", type=int, default=3)
     parser.add_argument("--min-decode-tps", type=float, default=2.)
     parser.add_argument("--max-vram-mib", type=float, default=16384.)
+    parser.add_argument("--replay-report", type=Path, help="Replay the validated reference's decode IDs")
     args = parser.parse_args()
     def terminate(signum, frame):
         raise KeyboardInterrupt("Pilot phase interrupted; partial measurements preserved")
