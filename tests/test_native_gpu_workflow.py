@@ -160,7 +160,7 @@ def fake_pipeline(tmp_path, monkeypatch, fail=None):
         else:
             if fail and fail in script:
                 raise subprocess.CalledProcessError(1, cmd)
-            out = option("--output-dir") / "report.json" if script == "run_rq3_retained_gpu.py" else option("--report" if "--report" in cli else "--output")
+            out = option("--output-dir") / "report.json" if script in {"run_rq3_retained_gpu.py", "run_rq3_performance_pilot.py"} else option("--report" if "--report" in cli else "--output")
             support.write_json(out, {"passed": True, "runtime_files": pipeline.runtime_files(library)})
     monkeypatch.setattr(support.Stage, "command", command)
     return args, commands
@@ -239,6 +239,80 @@ def test_changed_runtime_invalidates_all_numerical_gates(tmp_path, monkeypatch):
     assert any(name == "build_rq3_runtime.py" for name, _ in commands)
     # Our mocked rebuild is byte-identical to the original. Existing numerical
     # receipts may therefore be reused, but the changed binary was not trusted.
+
+
+def test_pilot_requires_fresh_parity_and_caps_each_context(tmp_path, monkeypatch):
+    args, commands = fake_pipeline(tmp_path, monkeypatch)
+    args.performance_pilot = True
+    pipeline.run_pipeline(args)
+    names = [name for name, _ in commands]
+    assert names.index("run_rq3_retained_gpu.py") < names.index("run_rq3_performance_pilot.py")
+    pilots = [cli for name, cli in commands if name == "run_rq3_performance_pilot.py"]
+    assert [cli[cli.index("--context") + 1] for cli in pilots] == ["128", "512", "2048"]
+    rows = pipeline.read(args.output_dir / "workflow.json")["attempts"]
+    assert [row["limit_seconds"] for row in rows if row["name"].startswith("pilot-")] == [180, 180, 180]
+    commands.clear()
+    pipeline.run_pipeline(args)
+    assert sum(name == "check_rq3_gpu.py" for name, _ in commands) == 2
+    assert sum(name == "run_rq3_retained_gpu.py" for name, _ in commands) == 1
+    assert sum(name == "run_rq3_performance_pilot.py" for name, _ in commands) == 3
+    assert not any(name == "build_rq3_runtime.py" for name, _ in commands)
+
+
+def test_failed_pilot_stops_larger_contexts_preserving_parity(tmp_path, monkeypatch):
+    args, commands = fake_pipeline(tmp_path, monkeypatch, fail="run_rq3_performance_pilot")
+    args.performance_pilot = True
+    with pytest.raises(subprocess.CalledProcessError):
+        pipeline.run_pipeline(args)
+    assert sum(name == "run_rq3_performance_pilot.py" for name, _ in commands) == 1
+    rows = pipeline.read(args.output_dir / "workflow.json")["attempts"]
+    assert next(row for row in rows if row["name"] == "retained-b5_v6_s0")["status"] == "passed"
+    assert pipeline.read(args.output_dir / "summary.json")["status"] == "failed"
+
+
+def test_cached_pipeline_wiring_and_library_environment(tmp_path, monkeypatch):
+    args, _ = fake_pipeline(tmp_path, monkeypatch)
+    args.performance_pilot = True
+    args.persistent_cache_dir = tmp_path / "private-cache"
+    monkeypatch.setenv("LD_LIBRARY_PATH", "original")
+    saved = support.Stage.command
+    cache_calls = []
+    def command(stage, cmd, label):
+        words = list(map(str, cmd))
+        if len(words) > 2 and Path(words[2]).name == "native_gpu_cache.py":
+            def option(name):
+                return Path(words[words.index(name) + 1])
+            kind = words[3]
+            cache_calls.append(kind)
+            if kind == "runtime":
+                saved(stage, [words[0], "-u", "build_rq3_runtime.py"], "mock-build")
+                receipt = pipeline.read(args.work_dir / "llama-build/build-receipt.json")
+                result = {"library": receipt["library"], "build_receipt": receipt, "cache_hit": False}
+            else:
+                destination = option("--destination")
+                saved(stage, [words[0], "-u", "export_rotquant_gguf_v2.py", args.source_root / "b5_v6_s0/checkpoint",
+                              destination], "mock-export")
+                result = {"directory": str(destination), "cache_hit": False}
+            support.write_json(option("--output"), result)
+            return
+        if len(words) > 2 and Path(words[2]).name in {"check_rq3_gpu.py", "run_rq3_performance_pilot.py"}:
+            assert os.environ["LD_LIBRARY_PATH"].startswith(str(args.work_dir / "llama-build/bin"))
+        return saved(stage, cmd, label)
+    monkeypatch.setattr(support.Stage, "command", command)
+    pipeline.run_pipeline(args)
+    assert cache_calls == ["runtime", "export"]
+    assert os.environ["LD_LIBRARY_PATH"] == "original"
+    assert pipeline.read(args.output_dir / "summary.json")["status"] == "passed"
+
+
+@pytest.mark.parametrize("target", ["work_dir", "output_dir", "persistent_cache_dir"])
+def test_pilot_never_writes_inside_original_evidence(tmp_path, monkeypatch, target):
+    args, commands = fake_pipeline(tmp_path, monkeypatch)
+    args.performance_pilot = True
+    setattr(args, target, args.source_root / "must-not-write-here")
+    with pytest.raises(ValueError, match="overlap original"):
+        pipeline.run_pipeline(args)
+    assert not commands
 
 
 def test_notebook_cells_execute_in_order_with_mock_colab(tmp_path, monkeypatch):

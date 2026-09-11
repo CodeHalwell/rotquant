@@ -3,17 +3,25 @@
 Status: 10 September 2026. The private llama.cpp integration now has a
 whole-Qwen graph for the retained W5/scale8 backbone and shared W6/W8 vocabulary,
 with scalar CPU, Metal and CUDA packed operators. CPU and Metal have been
-compiled/executed locally. **CUDA has not been compiled or executed here, and
-the actual retained 4B checkpoint has not been tested in this runtime.** This
-Mac has no NVIDIA toolkit; local result bundles lack the saved model weights.
+compiled/executed locally. **The user's A100 run at `06a4379c7107` now passes
+CUDA operators, synthetic whole-model/conversion checks, and retained W5/W6
+4B saved-probe parity.** See the [reviewed evidence](../research/results/native_cuda_2026_09_10/README.md).
+This Mac still cannot independently replay CUDA or recheck absent model tensors.
 The first user Colab build compiled CUDA but exposed a missing loader symbol.
 That fix now builds/loads with GCC on Linux/Python 3.13 as well as locally on
-macOS. CUDA numerical and real retained-model parity remain to be established.
+macOS. The later Colab run closes the initial W5/W6 CUDA parity gate; retained
+W5/W8, longer contexts, throughput and matched-engine comparisons remain pending.
 
 This is an experimental correctness-first runtime, not a production inference
 library or a demonstrated speedup. Do not restart the public-task sweep yet.
 
 ## Colab: what to run
+
+**After the successful W5/W6 correctness run, use the new
+[performance pilot notebook](../notebooks/qwen35_4b_native_gpu_pilot_colab.ipynb)
+and [pilot runbook](native_gpu_pilot.md).** It retains all gates, adds a private
+Drive artifact cache and gives each timing context a separate cap/process.
+The instructions below describe the preserved correctness-only notebook.
 
 Open [the end-to-end notebook](../notebooks/qwen35_4b_native_gpu_e2e_colab.ipynb)
 in a fresh GPU session. The old `native_gpu_validation_colab` filename is an

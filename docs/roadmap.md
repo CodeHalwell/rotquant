@@ -14,17 +14,26 @@ All six packed reload gates passed; both W5 recipes beat the pinned provider on
 fresh C4 KL, but the authored task suite does not justify an overall task win.
 W5/W6 remains the under-budget candidate; W5/W8 the fidelity alternative.
 
-Latest decision: the user stopped the [public-task run](public_tasks_run_2026-09-09.md)
-after the first W5/W6 arm proved too slow on the Python reference path.
-**Native serving preparation now precedes another paid sweep.** The
-[native-v3 contract and implementation sequence](native_runtime_v3.md) are the
-current next steps. Exact 1–8-bit matrix storage with scale8/16 and compiled scalar
-CPU conformance are implemented; full-model W5/W6/W8 GGUF, Metal and CUDA are not.
-The legacy lossy scale export is rejected. Next: exact graph/vocabulary operators,
-CPU model parity, accelerator kernels, a measured speed/memory/cost preflight,
-then a new runtime-bound public-task run. No new allocator/recovery sweep,
-re-quantization or promotion. Existing checkpoint and evaluation receipts remain
-unchanged; do not mix new-runtime results into the stopped run's identity.
+September 10 update: after stopping the slow [Python-reference public-task run](public_tasks_run_2026-09-09.md),
+the native-v3/full-Qwen graph and GPU operators are implemented. The user's
+`06a4379c7107` A100 run passed all 11 stages, including retained W5/W6 saved-probe
+parity: 16/16 argmax positions, 4/4 short traces, cross-engine KL 8.6674e-6.
+See the [evidence and caveats](../research/results/native_cuda_2026_09_10/README.md).
+This verifies native reproduction of the quantized checkpoint, not FP16/BF16
+quality recovery. W5/W8 is covered by synthetic tests, not a retained-model run.
+
+**Next gate: measured native speed/memory/cost before another paid task sweep.**
+The September 11 [pilot notebook and runbook](native_gpu_pilot.md) now implement
+private, hash-checked binary/export persistence and the bounded W5/W6 timing/VRAM
+pilot, with fresh numerical gates and independently capped context processes.
+It is prepared and locally tested, **not yet a CUDA performance result**.
+After the pilot, proceed to
+retained W5/W8 and longer-context parity, and steady-state transfer/DRAM profiling.
+Sampled 3,446 MiB process VRAM at batch 1/context capacity 256 is only a short-probe
+observation. Timing was off. Resume public tasks under a new runtime-bound
+identity only after cost/quality gates, with comparable native baselines.
+No new allocator/recovery sweep, requantization or promotion. Existing
+checkpoint and evaluation receipts remain unchanged.
 
 ### September 9 serving requirement: minimize memory traffic
 
@@ -53,13 +62,15 @@ W5 backbone and W6/W8 vocabulary recipe on one measured serving path:
   any offload/reference path must be explicit. Do not infer DRAM traffic from
   file size or claim a speedup without measurements.
 
-Current Qwen Python validation still copies CPU-owned codebook values on demand
+The historical Qwen Python validation copies CPU-owned codebook values on demand
 and transiently expands backbone weights/vocabulary chunks before matrix
 multiplication. No persistent dense fallback is present in the validated runs,
 but that does **not** establish a bandwidth-efficient fused GPU runtime. The
 3.44/3.60 GB artifacts already include codebooks, scales, rotations and auxiliary
 files; their file sizes are not total peak VRAM requirements. These serving
-requirements are pending engineering work, not newly measured improvements.
+requirements are not yet all accepted: native packed operators now pass W5/W6
+CUDA parity, but steady-state transfers, DRAM traffic, longer-context residency
+and comparative throughput still require measurement.
 
 ### Future research: attention-type sensitivity and rotation interactions
 

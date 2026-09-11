@@ -6,7 +6,65 @@ learned, negative results, and the decision that followed. Results produced in
 external notebooks are recorded here even when their raw artifacts live on
 Google Drive.
 
+## 2026-09-11: native performance pilot prepared (not a CUDA result)
+
+Built a [new end-to-end notebook/runbook](native_gpu_pilot.md) after reviewing
+the successful native W5/W6 run below. It uses the same saved recipe and gates,
+with private Drive persistence for exact-compatible compiled libraries and
+lossless exports. Cache hits are not correctness passes: imports, packed
+operators, whole-model/conversion and retained parity run fresh before timing.
+Original artifacts and the older correctness notebook are unchanged.
+
+The pilot separates 128/512/2048-input-token contexts into new processes,
+one warmup plus three measured repetitions of 32 cached steps each. Every
+context has a three-minute cap; 2 tok/s and 16 GiB default spending guards
+stop larger contexts. Raw partial timings, synchronous bridge rates and
+sampled per-process VRAM persist independently from the parity report.
+Full-vocabulary host copies/validation/argmax are included in timed calls;
+diagnostic writes/logging are excluded. No matched-baseline speedup is claimed.
+
+Local tests exercise cache integrity/restore, notebook cell execution under
+explicit mocks, denominators, warmup, cost gates and pipeline stop/resume.
+The timing loop also executes on an existing tiny two-layer Metal fixture at
+all three lengths (8 steps, 2 measured repetitions), with no fallback. The
+complete new Linux/CUDA cache/4B pilot remains unexecuted; no cloud job was
+launched. This is infrastructure preparation, not quantization quality evidence.
+Final local suite: 881 passed, 17 existing arm64 AVX2 skips, two existing SWIG
+warnings; lint and whitespace checks pass. The rendered notebook preview could
+not be opened under the browser URL policy; visual review remains pending.
+
 ## 2026-09-10: full-model native execution and bounded Colab handoff
+
+### First retained 4B native CUDA pass
+
+Reviewed the user-supplied `run1-reports-1789072777350631702` bundle from clean
+`06a4379c7107` on A100-SXM4-40GB. All 11 stages passed in 32.2359 active minutes;
+26.9064 minutes were the build. The [byte-preserved archive and audit](../research/results/native_cuda_2026_09_10/README.md)
+contain all 38 supplied files. Available receipt hashes, producer/patch hashes,
+runtime/source/export bindings, reported guards and byte/time totals reconcile.
+Absent weights/binaries/probe tensors prevent an independent local GPU replay
+or recomputation of the raw logit metrics; these are reviewed user-run results.
+
+The retained W5/scale8 + shared W6/scale16 model (`b5_v6_s0`) matched all 16
+saved next-token argmax positions and all four eight-token greedy traces from
+64-token inputs. KL(saved quantized reference || native) was 8.6674e-6,
+max/mean absolute logit errors 0.0322266/0.00283652: all unchanged cross-engine
+guards passed. This is **not** 100% alignment with FP16/BF16 or a new quality win.
+Both 18-case operator suites, W6/W8 random whole-model checks and six offline
+conversion cases passed. Only W5/W6 has retained-4B CUDA evidence so far.
+
+The log records 33/33 GPU-offloaded layers and the no-CPU-compute-fallback
+guard was enabled. Sampled process VRAM was 3,446 MiB (3.3652 GiB), 38 samples,
+batch 1/context capacity 256/FP16 cache. Payload was 2.7683 GB text GGUF plus
+0.6671 GB non-text sidecar = 3.4354 GB; the sidecar is not executed by the text
+runtime. Neither small-context VRAM nor file bytes establish a general memory
+minimum, bandwidth reduction or speedup. Timing was disabled.
+
+Decision: proceed to persistent validated-runtime/export reuse and a bounded
+native speed/memory pilot, then W5/W8/longer-context conformance and a small
+same-runtime public-task comparison. No expensive sweep, recipe promotion or
+change to earlier saved model/quality evidence. Stage-local build/export
+validation flags remain untouched; later bound reports carry the CUDA pass.
 
 ### Follow-up: pip-less Colab bootstrap
 

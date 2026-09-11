@@ -1,11 +1,17 @@
 # RotQuant project notes
 
-Latest follow-up: the public-task notebook was stopped for reference-runtime
-cost. Native-first implementation and acceptance gates are now in
-[`native_runtime_v3.md`](native_runtime_v3.md) and the roadmap. L5 is fixed;
-exact native-v3 matrix storage and scalar CPU conformance are implemented, **not
-W5 full-model GGUF/Metal/CUDA**. The original review and inventory below retain
-historical context; no saved artifact or task outcome was replaced.
+September 11 preparation: the next runnable experiment is the
+[native GPU performance pilot](native_gpu_pilot.md): unchanged W5/W6, private
+Drive artifact persistence, fresh parity, three capped timing contexts and
+per-context process VRAM. No new CUDA throughput result or recipe promotion.
+
+Latest follow-up (10 September): the user's A100 run at `06a4379c7107` passed
+native CUDA and retained W5/W6 saved-probe parity, after the public-task notebook
+was stopped for reference-runtime cost. See the [results review](../research/results/native_cuda_2026_09_10/README.md)
+and [`native_gpu_validation.md`](native_gpu_validation.md). Full graph/GPU
+implementation is no longer pending; native throughput, broader parity and
+matched-baseline task evaluation are. The original September 9 inventory below
+is historical; no saved artifact or old task outcome was replaced.
 
 Working reference notes, written 9 September 2026 against `85e1254` (origin/main)
 plus the [same-day review](project_review_2026-09-09.md). They are a companion
@@ -935,12 +941,15 @@ scripts/serve_rotquant_gguf.sh out.gguf 8085
 
 ## 14. Next steps
 
-The stopped-run update supersedes the original review's §4 ordering. Follow
+The September 10 CUDA result supersedes the original review's §4 ordering. Follow
 [`native_runtime_v3.md`](native_runtime_v3.md): exact full-model GGUF/CPU graph
 and shared vocabulary, numerical conformance, packed Metal/CUDA execution,
 measured speed/memory/cost preflight, then a new runtime-bound public-task run.
-The matrix format/CPU floor and L5 are implemented; the full-model/GPU steps and
-remaining review defects are not. Research branches and all-variant 4B/27B
+The matrix format/CPU floor, L5, full graph and packed GPU path are implemented;
+the user's A100 W5/W6 probe run passed. Next: persistent compatible runtime/export
+reuse, bounded timing/VRAM, retained W5/W8 and broader-context parity, then small
+native public tasks. Unrelated review defects are not closed by this run.
+Research branches and all-variant 4B/27B
 comparisons wait for this serving path. No version tag or release is implied.
 
 ## 15. Glossary

@@ -1,8 +1,10 @@
 # Native-v3 matrix contract and W5 serving milestone
 
 Status, 10 September 2026: **the exact matrix format, full Qwen graph and
-CPU/Metal/CUDA operators are implemented; CPU and Metal conformance have run,
-but CUDA and the actual retained 4B remain unvalidated.** Use the
+CPU/Metal/CUDA operators are implemented; CPU/Metal conformance and the user's
+A100 CUDA/retained-W5/W6 saved-probe checks have passed.** The
+[September 10 evidence review](../research/results/native_cuda_2026_09_10/README.md)
+does not establish throughput, long-context behavior or retained W5/W8 parity. Use the
 [new native-GPU notebook and run guide](native_gpu_validation.md), not the
 old Python-reference quality sweep. This matrix format is not checkpoint
 v3, a GGUF format version, or an extension that stock llama.cpp understands.
