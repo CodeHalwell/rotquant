@@ -416,9 +416,11 @@ Per group: one little-endian fp16 scale then `ceil(group_size × bits / 8)`
 LSB-first code bytes; partial final groups padded with zero codes; the
 codebook travels as `2^bits` fp32 centroids. For 4-bit, group 128 this is
 byte-identical to RotQuant-GGUF v1. Residual, sketch and per-row-scale
-encodings fail closed. Until 9 September 8-bit scales were silently decoded and
-re-rounded to fp16 by the exporter (defect L5); since `2461eb8` non-fp16 scales
-are rejected, and the separate native-v3 format stores them exactly.
+encodings fail closed. The C++ runtime only ever sees fp16 scale bytes and
+carries no `scale_bits_main` metadata; the conversion happens in the Python
+exporters. Until 9 September they silently decoded 8-bit scales and re-rounded
+them to fp16 (defect L5); since `2461eb8` they reject non-fp16 scales, and the
+separate native-v3 format stores them exactly.
 
 ### 6.3 Compatibility matrix
 
@@ -426,8 +428,8 @@ are rejected, and the separate native-v3 format stores them exactly.
 |---|---|---|---|
 | W4, fp16 scales, FWHT or butterfly | Yes | Backbone matrices, byte-exact | Yes, with the tied vocabulary at 4-bit RMS (CPU scalar, Metal) |
 | W4 with 8-bit scales (`scale8`) | Yes | Rejected since `2461eb8` (L5 fixed on 9 September; formerly silently re-rounded to fp16) | Rejected (same fix) |
-| W5 backbone, 8-bit scales | Yes | 5-bit blocks exist but non-fp16 scales are rejected (L5); the separate native-v3 matrix format stores scale8 exactly, with scalar C++ conformance only | No: GGUF v1 is 4-bit only |
-| Packed W6/W8 tied vocabulary (checkpoint v3) | Yes, tiled | No layout and no lookup operation | No |
+| W5 backbone, 8-bit scales | Yes | 5-bit blocks exist, but the Python exporter now rejects the artifact's 8-bit scales (L5) rather than re-rounding them, so no native-v2 representation of the W5 artifact exists; the separate native-v3 matrix format stores scale8 exactly, with scalar C++ conformance only | No: the GGUF v1 writer rejects anything but 4-bit codes |
+| Packed W6/W8 tied vocabulary (checkpoint v3) | Yes, tiled | The blocks could hold each chunk (W6/W8 scalar codes, group 128, fp16 scales); what is missing is a packed-vocabulary export adapter, an embedding lookup operation, model-level execution and the `dense_equivalent` projection semantics | No |
 | Any activation quantisation (A8) | Yes (dequantised immediately) | No | No |
 | KV cache codes | Simulator only | No | 3.25-bpv map implemented in the v1 patch, quality withdrawn |
 

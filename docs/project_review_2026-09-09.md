@@ -62,10 +62,12 @@ Python reference path.
 - The recipe that wins runs only on the tiled Python reference path. The
   native-v2 C++ runtime handles 1–8-bit blocks, but only per matrix and only
   with fp16 scales; the GGUF exporter and the llama.cpp patch are W4 with
-  fp16 scales. None of them can consume the W5 artifacts' 8-bit scales or
-  packed vocabulary, and nothing on that side has changed since 31 August.
-  Until it does there is no memory, throughput or same-engine evidence, and
-  every provider comparison stays cross-engine.
+  fp16 scales. None of them reproduces the W5 artifacts exactly: native-v2
+  could hold their 5-bit matrices only after the Python encoder re-rounded
+  the original 8-bit scales to fp16, and none has an embedding lookup or
+  model execution for the packed vocabulary. Nothing on that side had
+  changed since 31 August. Until it does there is no memory, throughput or
+  same-engine evidence, and every provider comparison stays cross-engine.
 - The engineering baseline is sound at this revision: Python CI is green on
   `main` for Python 3.10–3.13, lint is clean, the native runtime builds
   warning-free and passes conformance, and the full suite passes locally
