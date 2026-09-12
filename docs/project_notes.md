@@ -57,8 +57,7 @@ review and several have been superseded. Read them in this order.
 | What is the plan and what is the gate status right now? | `roadmap.md` (Stage 2 header and its dated updates) | Current; the top entries supersede the historical ones below them |
 | What has every run measured and decided? | `experiment_log.md` | Current ledger; newest entries at the top, older narrative below the result table |
 | What are the current headline numbers? | `fresh_quality_results_2026-09-09.md` | Current |
-| What is the next GPU run? | `native_runtime_v3.md`, then `public_tasks_run_2026-09-09.md` | Public-task run stopped; native model parity and speed/cost preflight first |
-| What is the native runtime state and what does the next Colab do? | `native_runtime_v3.md`, `native_gpu_validation.md`, `native_gpu_pilot.md`, `native_gpu_optimization.md`, `research/results/native_cuda_2026_09_10/README.md`, `research/results/native_pilot_2026_09_11/README.md` | Current; the optimisation study is the next run |
+| What is the next GPU run, and what is the native runtime state? | `native_gpu_optimization.md` is the runbook for the next run; `native_runtime_v3.md` and `native_gpu_validation.md` describe the runtime; `research/results/native_cuda_2026_09_10/README.md` and `research/results/native_pilot_2026_09_11/README.md` hold the A100 evidence | Current: the optimisation study is next. The public-task sweep (`public_tasks_run_2026-09-09.md`) is stopped and resumes only under a runtime-bound identity after the cost and quality gates |
 | Why is the Unsloth comparison structured the way it is? | `results_review_2026-09-06.md` | Current; the byte-budget finding |
 | What is the maths and what is only hypothesis? | `how_rotquant_works.md` (sections 14 and 15 especially) | Current |
 | What may a competitive claim say? | `competitive_eval.md`, `competitive_data.md` | Current contract; the 300-prompt suite it describes has never been built |
