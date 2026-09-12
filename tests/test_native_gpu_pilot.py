@@ -221,6 +221,13 @@ def test_notebook_is_valid_and_executes_top_to_bottom_under_mocks(tmp_path, monk
     google.colab = colab
     monkeypatch.setitem(sys.modules, "google", google)
     monkeypatch.setitem(sys.modules, "google.colab", colab)
+    ipython = types.ModuleType("IPython")
+    ipython_display = types.ModuleType("IPython.display")
+    ipython_display.Markdown = lambda text: text
+    ipython_display.display = lambda *objects, **kwargs: None
+    ipython.display = ipython_display
+    monkeypatch.setitem(sys.modules, "IPython", ipython)
+    monkeypatch.setitem(sys.modules, "IPython.display", ipython_display)
     monkeypatch.setattr("shutil.which", lambda _: "/fake/tool")
     def command(cmd, **kwargs):
         if cmd[:2] == ["git", "clone"]:

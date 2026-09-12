@@ -9,6 +9,16 @@ software.
 
 ## [Unreleased]
 
+### Test environment (2026-09-12)
+
+- The two notebook-execution tests for the native GPU pilot and the native
+  optimisation study now stub `IPython.display` alongside their existing
+  `google.colab` stubs. Both notebooks' results cells import it, Colab
+  provides it, but the locked `dev`/`eval` environment does not, so Python CI
+  on `main` had failed on every Python version since `1bc31d4` with
+  `ModuleNotFoundError: No module named 'IPython'`. Notebooks, the locked
+  dependencies and every numerical gate are unchanged.
+
 ### Colab pip-less environment bootstrap (2026-09-10)
 
 - Remove the native notebook's dependency on `ensurepip`: create the venv with
