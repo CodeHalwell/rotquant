@@ -1,5 +1,21 @@
 # RotQuant project notes
 
+September 11 follow-up: the [first A100 throughput pilot](../research/results/native_pilot_2026_09_11/README.md)
+passed 13 stages; 2048-token timing exceeded an undersized cap. Completed 128/512
+contexts measured ~36.4 prefill / 19.8 decode tok/s. The next runnable notebook is
+the [native optimisation study](native_gpu_optimization.md): corrected budgets,
+targeted contexts, separate operator profiles, an opt-in tiled-prefill candidate
+and same-bridge BF16/UD-Q4 controls. Recipe/quality gates are unchanged. No new
+kernel speedup or promotion is claimed; its CUDA validation remains to be run.
+
+Latest follow-up (10 September): the user's A100 run at `06a4379c7107` passed
+native CUDA and retained W5/W6 saved-probe parity, after the public-task notebook
+was stopped for reference-runtime cost. See the [results review](../research/results/native_cuda_2026_09_10/README.md)
+and [`native_gpu_validation.md`](native_gpu_validation.md). Full graph/GPU
+implementation is no longer pending; native throughput, broader parity and
+matched-baseline task evaluation are. The original September 9 inventory below
+is historical; no saved artifact or old task outcome was replaced.
+
 Working reference notes, written 9 September 2026 against `85e1254` (origin/main)
 plus the [same-day review](project_review_2026-09-09.md). They are a companion
 to, not a replacement for, the three documents that carry authority:
@@ -41,7 +57,8 @@ review and several have been superseded. Read them in this order.
 | What is the plan and what is the gate status right now? | `roadmap.md` (Stage 2 header and its dated updates) | Current; the top entries supersede the historical ones below them |
 | What has every run measured and decided? | `experiment_log.md` | Current ledger; newest entries at the top, older narrative below the result table |
 | What are the current headline numbers? | `fresh_quality_results_2026-09-09.md` | Current |
-| What is the next GPU run? | `public_tasks_run_2026-09-09.md` | Current, not yet executed |
+| What is the next GPU run? | `native_runtime_v3.md`, then `public_tasks_run_2026-09-09.md` | Public-task run stopped; native model parity and speed/cost preflight first |
+| What is the native runtime state and what does the next Colab do? | `native_runtime_v3.md`, `native_gpu_validation.md`, `native_gpu_pilot.md`, `native_gpu_optimization.md`, `research/results/native_cuda_2026_09_10/README.md`, `research/results/native_pilot_2026_09_11/README.md` | Current; the optimisation study is the next run |
 | Why is the Unsloth comparison structured the way it is? | `results_review_2026-09-06.md` | Current; the byte-budget finding |
 | What is the maths and what is only hypothesis? | `how_rotquant_works.md` (sections 14 and 15 especially) | Current |
 | What may a competitive claim say? | `competitive_eval.md`, `competitive_data.md` | Current contract; the 300-prompt suite it describes has never been built |
@@ -117,8 +134,9 @@ about Dynamic 3.0 cannot be made from this artifact.
 **What "success" means here.** Lower KL divergence from the source model at
 equal or fewer bytes, confirmed across seeds and on inputs that were not used
 to choose the recipe, then task accuracy on public benchmarks, then a runtime
-that actually consumes the packed bytes. The project has the first, is about
-to test the second, and has not started the third for the winning recipe.
+that actually consumes the packed bytes. The project has the first; it started and then stopped the second on the
+reference path; and since 10 September it has a first native runtime for the
+third, whose checkpoint parity passed and whose speed is being measured.
 
 ## 3. Timeline
 
@@ -140,6 +158,8 @@ Codex and Copilot review passes. Roughly a dozen A100 Colab campaigns.
 | 7 Sep | Vocabulary results: W5/W6 and W5/W8 finalists; packed validation notebook; first CUDA run fails the W6 reload gate; RoPE fp32 buffer defect found and fixed; revalidation notebook | `8f10ee6`, `89d25f3` |
 | 8 Sep | Revalidation passes with zero probe error; fresh-quality experiment prepared; two failed attempts (missing `generation_config.json`; Hindi tokenizer gate); reuse path; Python CI red at `a4ac776`; deep dive | `bdf6595`, `733bb3d`, `a4ac776`, `6c90054`, `36eb548` |
 | 9 Sep | Deep dive merged (PR #18); fresh-quality run completes and is archived; public-task gate prepared; memory-bandwidth requirement, hybrid-attention research note and full Unsloth inventory recorded; this review | `d4292d6`, `5a98b99`, `85e1254`, `1aaa1a7` |
+| 10 Sep | Public-task run stopped for cost on the reference path (FP16 arm complete, 30 of 384 prompts of the first W5/W6 arm at about 0.85 tokens/s); native-v3 matrix format and the L5 fix (committed 9 Sep, `2461eb8`); full-model llama.cpp v2 integration with CPU, Metal and CUDA packed operators and GGUF-v2 assembly; end-to-end native GPU notebook; A100 run `06a4379` passes all 11 stages including retained W5/W6 saved-probe parity | `2461eb8`, `dd87da2`, `1507627`, `06a4379` |
+| 11 Sep | First A100 throughput pilot: 13 stages pass, about 36.4 prefill and 19.8 decode tokens/s at 128/512 tokens, 2,048-token timing partial under an undersized cap; native optimisation study prepared | `1bc31d4`, `ed92046` |
 
 Pattern worth noticing: every second day a review found a defect that would
 have invalidated a result (KV state sharing, subnormal scale step, GPTQ scale
@@ -236,7 +256,7 @@ simulator with endpoint check), `layer_mse`, `quantization`
 
 | Notebook | Cells | Status |
 |---|---:|---|
-| `qwen35_4b_public_tasks_colab` | 22 | **Live: the next run** |
+| `qwen35_4b_public_tasks_colab` | 22 | **Stopped: reference path too slow; preserve for provenance** |
 | `qwen35_4b_fresh_quality_colab` | 24 | Completed 9 Sep (producer `d4292d6`) |
 | `qwen35_4b_packed_revalidation_colab` | 18 | Completed 8 Sep (loader `89d25f3`) |
 | `qwen35_4b_packed_validation_colab` | 18 | Completed 7 Sep (`8f10ee6`); W6 reload gate failed, later revalidated |
@@ -297,6 +317,14 @@ never executed.
 - The patch's scope is **4-bit only**: Gaussian codebook, group 128, fp16 scales, FWHT or
   butterfly rotations of block 128, tied vocabulary at 4-bit with RMS scales.
   It cannot load the W5 recipe, 8-bit scales or the packed W6/W8 vocabulary.
+- That is the **v1** patch. The consolidated **v2** integration added on
+  10 September (`integrations/llama.cpp/rotquant-native-v2.patch`,
+  `rotquant-native-v2-files.json` and the `rq3/` model bridge) carries the whole
+  Qwen graph for the retained W5/scale8 backbone and shared W6/W8 vocabulary
+  with scalar CPU, Metal and CUDA packed operators, a scheduler-level
+  no-CPU-fallback gate, and a private Drive cache for compiled libraries and
+  lossless exports. It is experimental and correctness-first; §6.3 records what
+  it has and has not demonstrated.
 
 ## 5. How a run works
 
@@ -347,12 +375,12 @@ internalising because the identity discipline is also what makes runs brittle:
   output root for any run whose notebook tracks `main`.
 - Reuse of the seed-0 fresh-quality records binds the runtime: `torch
   2.11.0+cu128`, Python 3.13, an A100-SXM4-40GB. A different SKU refuses.
-- `tests/test_fresh_quality_reuse.py` asserts that `git diff 733bb3d --
-  rotquant scripts/run_experiment.py scripts/run_unsloth_qwen35_4b_kl.py
-  scripts/run_qwen35_packed_validation.py` is empty and that five functions
-  of the fresh-eval runner are AST-identical to that revision. This is the
-  "reuse freeze": the library cannot change until that test is retired or
-  `REUSABLE_SOURCE` is re-reviewed. The run it protected is complete.
+- `tests/test_fresh_quality_reuse.py` still protects the frozen checkpoint,
+  quantizer, model/scoring paths and five runner ASTs against `733bb3d`.
+  The September 9 native preparation narrowly exempts the isolated matrix
+  modules and audits the **exact** L5 guard additions to the two legacy
+  exporters; other edits to those modules require re-review too. It does not
+  authorize reusing old records with a native model backend.
 - The public-task runner binds its receipts to `source_identity()` too, so
   the same "merge, pin, then run" rule applies to the next session.
 
@@ -362,6 +390,8 @@ internalising because the identity discipline is also what makes runs brittle:
 /content/drive/MyDrive/rotquant/qwen35_packed_validation/8f10ee60fc7f/   b5_v6_s0, b5_v8_s0 (original tensors)
 /content/drive/MyDrive/rotquant/qwen35_fresh_quality/d4292d6fdec6/replicas/   b5_v6_s1, b5_v8_s1, b5_v6_s2, b5_v8_s2
 /content/drive/MyDrive/rotquant/qwen35_fresh_quality/733bb3d2e477/fresh/     reused seed-0 and source records
+/content/drive/MyDrive/rotquant/native_artifact_cache/v1/                    private cache of compiled native libraries and lossless GGUF-v2 exports (10–11 Sep)
+/content/drive/MyDrive/rotquant/native_gpu_pilot/<commit>/pilot1/           native pilot results and reports
 ```
 
 Planning figures from the runbooks: about 45 GB Drive for packed validation,
@@ -386,29 +416,51 @@ Per group: one little-endian fp16 scale then `ceil(group_size × bits / 8)`
 LSB-first code bytes; partial final groups padded with zero codes; the
 codebook travels as `2^bits` fp32 centroids. For 4-bit, group 128 this is
 byte-identical to RotQuant-GGUF v1. Residual, sketch and per-row-scale
-encodings fail closed; 8-bit scales are not rejected but silently decoded and
-re-rounded to fp16 by the exporter (defect L5).
+encodings fail closed. Until 9 September 8-bit scales were silently decoded and
+re-rounded to fp16 by the exporter (defect L5); since `2461eb8` non-fp16 scales
+are rejected, and the separate native-v3 format stores them exactly.
 
 ### 6.3 Compatibility matrix
 
 | Recipe | Python `QuantLinear` (reference path, per-layer dequant, runs the whole model) | Native-v2 C++ (per-matrix dequantize and matmul kernels for 1–8-bit blocks with fp16 scales; no embedding lookup, no model execution) | RotQuant-GGUF v1 / llama.cpp patch (whole model, 4-bit only) |
 |---|---|---|---|
 | W4, fp16 scales, FWHT or butterfly | Yes | Backbone matrices, byte-exact | Yes, with the tied vocabulary at 4-bit RMS (CPU scalar, Metal) |
-| W4 with 8-bit scales (`scale8`) | Yes | Lossy: the exporter does not check `scale_bits_main`, decodes the scales and re-rounds them to fp16 (defect L5) | Same lossy conversion |
-| W5 backbone, 8-bit scales | Yes | 5-bit blocks exist, but the same lossy scale conversion applies (L5), so the export is not bit-exact with the artifact | No: GGUF v1 is 4-bit only |
+| W4 with 8-bit scales (`scale8`) | Yes | Rejected since `2461eb8` (L5 fixed on 9 September; formerly silently re-rounded to fp16) | Rejected (same fix) |
+| W5 backbone, 8-bit scales | Yes | 5-bit blocks exist but non-fp16 scales are rejected (L5); the separate native-v3 matrix format stores scale8 exactly, with scalar C++ conformance only | No: GGUF v1 is 4-bit only |
 | Packed W6/W8 tied vocabulary (checkpoint v3) | Yes, tiled | No layout and no lookup operation | No |
 | Any activation quantisation (A8) | Yes (dequantised immediately) | No | No |
-| KV cache codes | Simulator only | No | 3.25-bpv map implemented in the patch, quality withdrawn |
+| KV cache codes | Simulator only | No | 3.25-bpv map implemented in the v1 patch, quality withdrawn |
 
-The consequence: no runtime outside the Python reference path reproduces the
-W5 artifacts' numerics as a complete model, and no resident-memory or
-throughput measurement exists for them. The 3.44/3.60 GB figures are file
-sizes.
+Those are the legacy columns. Since 10 September a fourth path exists that
+the table above predates: the private llama.cpp **v2** integration
+(`integrations/llama.cpp/rotquant-native-v2.patch` with the `rq3/` bridge) plus
+GGUF-v2 assembly of the saved checkpoint without requantisation, carrying the
+whole Qwen graph with scalar CPU, Metal and CUDA packed operators and one
+GPU-resident shared vocabulary owner. On the A100 it reproduced the retained
+W5/W6 checkpoint on the saved probes (16/16 argmax positions, 4/4 short
+traces, KL 8.67e-6 against the saved quantised reference; run `06a4379`,
+10 September) and measured about 36.4 prefill and 19.8 decode tokens/s at
+128- and 512-token contexts with 3,450–3,972 MiB sampled process VRAM, plus
+one partial 2,048-token repetition at 5,542 MiB (pilot `1bc31d4`,
+11 September). Those are checkpoint-parity and private-bridge throughput
+figures: not FP16-quality parity, not a matched-baseline speedup, and not a
+peak-VRAM bound. W5/W8 has synthetic checks only; longer contexts and
+same-bridge BF16/UD-Q4 controls are the next study. The text GGUF the runtime
+loads is 2,768,298,560 bytes plus a 667,061,152-byte non-text sidecar it does
+not load; the 3.44/3.60 GB figures remain checkpoint file sizes.
+
+The [native-v3 matrix primitive](native_runtime_v3.md) can exactly encode and
+reconstruct W1–W8 with scale8/16 in scalar C++. It adds matrix conformance,
+not graph-level support, to the legacy columns above; rotations, shared
+vocabulary semantics and final FP16 rounding remain operator responsibilities.
+The stopped public-task log is a slow **reference-path** timing observation
+(about 0.85 generated tokens/s on the first W5/W6 arm against about 15.4 for
+FP16 on the same 30 GSM8K prompts), not a native serving benchmark.
 
 ### 6.4 Serving backends
 
 Transformers: loads through `load_packed_model`, works for `forward` and
-`generate`, no fused kernel. llama.cpp: experimental W4 fork only. vLLM and
+`generate`, no fused kernel. llama.cpp: the v1 fork is W4 only; the v2 integration runs the retained W5/W6 model on CUDA with checkpoint parity (§6.3) and is still experimental. vLLM and
 SGLang: nothing implemented; the roadmap wants a `QuantizationConfig` plus
 linear method plus Triton/CUDA GEMV. Unsloth: a training-side producer only;
 its GGUF export requantises and therefore does not preserve RotQuant.
@@ -420,7 +472,7 @@ tokens/s for a 128-token prefill and 47 tokens/s decode for a short request;
 `llama-bench` reported 14.67 ± 1.46 tokens/s for `tg16` and 20.57 ± 0.27 for
 `pp64`. The two decode figures were never reconciled. Generic Q4_0 cache
 quantisation was slower than fp16 cache at depth 512. None of this concerns
-the W5 recipe.
+the W5 recipe; its first native figures are in §6.3.
 
 ## 7. Results ledger with canonical numbers
 
@@ -698,7 +750,7 @@ Status as of `85e1254`. "Open" means verified still present in the code today.
 | L2 | `checkpoint.py:771-787` | `model.to(dtype)` rounds fp32 butterfly angles before restoring them; `LearnedRotation.theta` and `DenseOrthogonal.R` never restored | Open |
 | L3 | `checkpoint.py:313-317` | `torch_dtype` inferred from the first floating tensor; a v3 artifact with fp32 theta reloads as fp32 | Open |
 | L4 | `quantize.py:958`, `calibrate.py:181-188`, `linear.py:402-403` | GPTQ without a Hessian warns and falls back to rounding; `refresh_quantization()` re-packs GPTQ layers as RTN | Open |
-| L5 | `native.py:238-280`, `gguf.py:87-105, 231-285` | Exporters ignore `scale_bits_main`; scale8 artifacts export lossily and are charged 16 bits per scale | Open |
+| L5 | `native.py`, `gguf.py`, `native_v3.py` | Legacy exporters now reject non-FP16 scales; separate native-v3 matrix storage preserves compressed scales exactly | Fixed for export; full-model v3 integration pending |
 | L6 | `rotate.py:255` | A block that does not divide the dimension is silently replaced by the largest power-of-two divisor | Open |
 | L7 | `linear.py:114-149`, `patch.py:437-438` | In-process `.half()` recasts rotation parameters | Open |
 | L8 | `quantize.py:137-146` | `replace(cfg, codebook=…)` keeps Gaussian search bounds, so a uniform codebook clips at 1.5σ (the E2 confound) | Open |
@@ -777,7 +829,7 @@ llama.cpp build timeout.
 | Diverse development | 25 authored snippets, 5 per domain (agentic, code, maths, multilingual, long document), plus 25 trajectory prompts | Spent |
 | Fresh C4 | 24 × 512 tokens at skip 32,768, disjoint from every archived hash | Used once (9 September); now development data |
 | Authored tasks | 96: 24 each of multilingual arithmetic, Python code tracing, JSON structure, tool selection | Frozen; two families need repair before reuse |
-| Public tasks | GSM8K test (1,319, MIT), CRUXEval test (800, MIT), IFEval (541, Apache-2.0); 128 hash-selected per benchmark with seed 20260909, 384 per arm, nine arms, 3,456 generations; caps 1,024 / 512 / 2,048 new tokens; prompts over 2,048 tokens fail preparation; Google's IFEval checkers pinned at `e6890f85`, NLTK 3.9.2 | Prepared, never run |
+| Public tasks | GSM8K test (1,319, MIT), CRUXEval test (800, MIT), IFEval (541, Apache-2.0); 128 hash-selected per benchmark with seed 20260909, 384 per arm, nine arms, 3,456 generations; caps 1,024 / 512 / 2,048 new tokens; prompts over 2,048 tokens fail preparation; Google's IFEval checkers pinned at `e6890f85`, NLTK 3.9.2 | Started on the reference path on 10 September and stopped for cost after 30 of 384 prompts of the first W5/W6 arm at about 0.85 tokens/s; to be rerun under a new runtime-bound identity on the native path once the cost and quality gates pass |
 | 300-prompt competitive contract | 60 per domain, 32 greedy tokens, exact token IDs, disjoint calibration | Specified since 31 August, never built; five prerequisites untouched |
 | Zero-shot bundle | ARC, BoolQ, PIQA, WinoGrande, HellaSwag via `lm-eval` | Wired, never run; `lm_eval: not-installed` in every archived environment |
 
@@ -891,6 +943,8 @@ scripts/serve_rotquant_gguf.sh out.gguf 8085
 | 9 Sep | Keep W5/W6 as the under-budget candidate and W5/W8 as the fidelity alternative; no promotion from the authored tasks; run the public-task gate; then one measured serving path | Fresh-quality result |
 | 9 Sep | Compression must reduce inference memory traffic, not only file size; fused decode/scale/matmul with device-resident static data is a runtime acceptance requirement | User priority recorded in the roadmap |
 | 9 Sep | Extend the external target to every published Unsloth variant (21 for 4B, 24 for 27B), curve not point; 27B is separately budgeted | Frontier plan |
+| 10 Sep | Stop the reference-path public-task run; native checkpoint parity and a measured speed/memory/cost gate come before any task sweep; keep the partial evidence and never resume new native execution into old receipts | Native-v3 milestone |
+| 11 Sep | Keep the recipe and parity thresholds unchanged; correct the timing budget and run the optimisation study with operator profiles, the opt-in weight-reuse kernel and same-bridge controls; no kernel or recipe promotion from the pilot | Pilot review |
 
 ## 13. Open questions and hypotheses
 
@@ -917,22 +971,29 @@ scripts/serve_rotquant_gguf.sh out.gguf 8085
 8. **Activation quantisation.** Declare A8 out of scope for the kernel contract
    until a native A8 GEMM exists, or build one; the decision has been pending
    since 31 August and blocks the operator interface.
-9. **What does the W5 recipe cost to serve?** Unknown until a runtime exists:
-   resident bytes, prefill and decode tokens/s, DRAM traffic.
+9. **What does the W5 recipe cost to serve?** First figures exist since
+    11 September: about 36.4 prefill and 19.8 decode tokens/s and 3.4–5.5 GB
+    sampled process VRAM on an A100 through the private bridge. Still unknown:
+    matched-baseline throughput, DRAM traffic, longer contexts and W5/W8.
 10. **Where on the 21-variant curve does RotQuant sit?** One point has been
     measured; the provider's own IQ2 to Q8 range is 1.52 to 5.95 GB.
 
 ## 14. Next steps
 
-Ordered in [`project_review_2026-09-09.md`](project_review_2026-09-09.md) §4:
-run the public-task gate; lift the reuse freeze and land L1–L12, tag v0.1.0 and
-bump the version, strip withdrawn numbers, cut the README; build one measured
-serving path for the W5 recipe (an 8-bit scale layout, the packed tied
-vocabulary and model-level execution for native-v2, whose 1–8-bit blocks
-already exist; the GGUF exporter and llama.cpp patch extended beyond W4; a
-compiling patch workflow; a same-engine provider comparison; memory and
-throughput on named hardware);
-only then the research branches, starting with the 4B all-variant sweep.
+The 10–11 September native results supersede the original review's §4 ordering.
+Follow [`native_runtime_v3.md`](native_runtime_v3.md) and the roadmap's
+September 11 entry: the matrix format and CPU floor, the L5 fix, the full
+graph and the packed GPU path are implemented, and the A100 W5/W6 probe run
+and throughput pilot have passed their correctness stages. Next is the
+[native optimisation study](native_gpu_optimization.md): corrected context
+budgets, separate operator profiles, an opt-in four-token weight-reuse prefill
+kernel gated on exact operator and whole-model parity, and pinned BF16 and
+UD-Q4 controls through the same native bridge. Then retained W5/W8 and
+longer-context parity, transfer and DRAM profiling, and only after the cost
+and quality gates a public-task run under a new runtime-bound identity.
+Unrelated review defects (L1–L4, L6–L12) are not closed by these runs.
+Research branches and the all-variant 4B/27B comparisons wait for this serving
+path. No version tag or release is implied.
 
 ## 15. Glossary
 

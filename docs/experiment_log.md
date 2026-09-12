@@ -6,6 +6,281 @@ learned, negative results, and the decision that followed. Results produced in
 external notebooks are recorded here even when their raw artifacts live on
 Google Drive.
 
+## 2026-09-11: A100 pilot returned; native optimisation study prepared
+
+Archived the user's `pilot1-reports-1789113892245467172` reports byte-for-byte
+with a [reproducible audit and review](../research/results/native_pilot_2026_09_11/README.md).
+13 stages passed; the final 2048 timing stopped at 180 seconds. Completed
+128/512 results were 36.38/36.47 prefill tok/s and 19.86/19.84 decode tok/s,
+with 3450/3972 MiB sampled process VRAM. The partial 2048 result (one measured
+rep) was 36.45/19.73 tok/s and 5542 MiB. Retained parity was unchanged: 16/16
+top-1 positions, 4/4 short traces, KL 8.6674e-6 versus the saved quantized model.
+Active time 39.08 minutes included 27.14 minutes build/load. Cache publication
+was logged; a later-VM restoration has not yet been observed.
+
+Decision: correct the scheduling budget, then measure operator costs and test
+an opt-in weight-reuse prefill kernel with exact operator/reference and existing
+whole-model guards. The [new notebook/runbook](native_gpu_optimization.md) also
+implements same-native-bridge pinned BF16/UD-Q4 speed controls, identical prompt
+and replayed decode IDs, separate diagnostic profiles, targeted contexts, live
+progress and reports download. Default timing caps are 4/6/12 minutes, with a
+90-active-minute total allowance. There is no automatic kernel/recipe promotion.
+This implementation is not a new CUDA speedup or quality result; the next A100
+run must compile and validate the candidate. No cloud job was launched here.
+
+Local verification: **908 passed, 17 existing arm64 AVX2 skips, two existing
+SWIG warnings**; repository Ruff and whitespace checks pass. All 28 patched
+files match the contract after application to a fresh pinned llama.cpp tree.
+A fresh CPU library builds/loads; all 18 CPU operator cases pass and the tiny
+Qwen graph produces finite logits. Notebook cells execute top-to-bottom under
+explicit Colab/network/GPU mocks; mocked results are not shipped as data.
+Rendered Colab presentation and real CUDA candidate execution remain pending.
+
+## 2026-09-11: original native performance pilot preparation (historical)
+
+Built a [new end-to-end notebook/runbook](native_gpu_pilot.md) after reviewing
+the successful native W5/W6 run below. It uses the same saved recipe and gates,
+with private Drive persistence for exact-compatible compiled libraries and
+lossless exports. Cache hits are not correctness passes: imports, packed
+operators, whole-model/conversion and retained parity run fresh before timing.
+Original artifacts and the older correctness notebook are unchanged.
+
+The pilot separates 128/512/2048-input-token contexts into new processes,
+one warmup plus three measured repetitions of 32 cached steps each. Every
+context has a three-minute cap; 2 tok/s and 16 GiB default spending guards
+stop larger contexts. Raw partial timings, synchronous bridge rates and
+sampled per-process VRAM persist independently from the parity report.
+Full-vocabulary host copies/validation/argmax are included in timed calls;
+diagnostic writes/logging are excluded. No matched-baseline speedup is claimed.
+
+Local tests exercise cache integrity/restore, notebook cell execution under
+explicit mocks, denominators, warmup, cost gates and pipeline stop/resume.
+The timing loop also executes on an existing tiny two-layer Metal fixture at
+all three lengths (8 steps, 2 measured repetitions), with no fallback. The
+complete new Linux/CUDA cache/4B pilot remains unexecuted; no cloud job was
+launched. This is infrastructure preparation, not quantization quality evidence.
+Final local suite: 881 passed, 17 existing arm64 AVX2 skips, two existing SWIG
+warnings; lint and whitespace checks pass. The rendered notebook preview could
+not be opened under the browser URL policy; visual review remains pending.
+
+## 2026-09-10: full-model native execution and bounded Colab handoff
+
+### First retained 4B native CUDA pass
+
+Reviewed the user-supplied `run1-reports-1789072777350631702` bundle from clean
+`06a4379c7107` on A100-SXM4-40GB. All 11 stages passed in 32.2359 active minutes;
+26.9064 minutes were the build. The [byte-preserved archive and audit](../research/results/native_cuda_2026_09_10/README.md)
+contain all 38 supplied files. Available receipt hashes, producer/patch hashes,
+runtime/source/export bindings, reported guards and byte/time totals reconcile.
+Absent weights/binaries/probe tensors prevent an independent local GPU replay
+or recomputation of the raw logit metrics; these are reviewed user-run results.
+
+The retained W5/scale8 + shared W6/scale16 model (`b5_v6_s0`) matched all 16
+saved next-token argmax positions and all four eight-token greedy traces from
+64-token inputs. KL(saved quantized reference || native) was 8.6674e-6,
+max/mean absolute logit errors 0.0322266/0.00283652: all unchanged cross-engine
+guards passed. This is **not** 100% alignment with FP16/BF16 or a new quality win.
+Both 18-case operator suites, W6/W8 random whole-model checks and six offline
+conversion cases passed. Only W5/W6 has retained-4B CUDA evidence so far.
+
+The log records 33/33 GPU-offloaded layers and the no-CPU-compute-fallback
+guard was enabled. Sampled process VRAM was 3,446 MiB (3.3652 GiB), 38 samples,
+batch 1/context capacity 256/FP16 cache. Payload was 2.7683 GB text GGUF plus
+0.6671 GB non-text sidecar = 3.4354 GB; the sidecar is not executed by the text
+runtime. Neither small-context VRAM nor file bytes establish a general memory
+minimum, bandwidth reduction or speedup. Timing was disabled.
+
+Decision: proceed to persistent validated-runtime/export reuse and a bounded
+native speed/memory pilot, then W5/W8/longer-context conformance and a small
+same-runtime public-task comparison. No expensive sweep, recipe promotion or
+change to earlier saved model/quality evidence. Stage-local build/export
+validation flags remain untouched; later bound reports carry the CUDA pass.
+
+### Follow-up: pip-less Colab bootstrap
+
+The replacement notebook at `1507627bca7b/run1` failed in the environment
+stage: stdlib `venv` launched `ensurepip`, which exited 1. The user's log
+contains no underlying ensurepip stderr and no new build/numerical/model
+results. Earlier mocked setup tests did not catch this; the real local native
+run had explicitly used `--current-environment`, skipping managed installation.
+
+Removed ensurepip from the setup path. The driver now creates a pip-less venv
+and uses the base pip's explicit target-interpreter option. It checks virtual
+environment identity and inherited Torch location/version before and after
+installing, and always reapplies configuration when retrying a partial venv.
+No global dependency upgrade, checkpoint change or numerical-gate relaxation.
+
+The [new raw evidence](../research/results/native_gpu_bootstrap_2026_09_10/README.md)
+records **real** dependency installations on Linux aarch64/Python 3.13.15 with
+ensurepip disabled. The original command reproduces the error and leftover
+Python executable. Fresh setup, repair of that partial environment and repeat
+setup all pass the pinned Qwen/RotQuant import checks. The base distribution
+inventory and Torch entry-point hash are unchanged. A CPU-only CI job now
+exercises this path on x86-64. This is bootstrap evidence, not Colab/CUDA/4B
+parity; all production GPU gates remain pending. Final regression suite:
+849 passed, 17 existing arm64 AVX2 skips, two existing SWIG warnings; lint and
+whitespace checks pass. Historical receipts are preserved separately.
+
+### Replacement end-to-end notebook
+
+Replaced the old manual-repair/budget-extension flow with
+`notebooks/qwen35_4b_native_gpu_e2e_colab.ipynb` and an identical legacy alias.
+One driver owns dependency isolation, preflight, build/load, CPU/GPU operators,
+tiny whole-model checks, conversion, retained export and saved-probe parity.
+The source checkpoint is unchanged. No accuracy threshold or numerical
+execution semantics were relaxed. Each attempt has persistent logs and hashes;
+resume accepts only verified completed artifacts. Its cumulative 90-minute
+allowance counts active stages, not time spent waiting between notebook cells.
+It does not terminate Colab billing.
+
+The [handoff evidence](../research/results/native_gpu_e2e_2026_09_10/README.md)
+records an actual GCC/Linux aarch64/Python 3.13 shared-library build/load and
+local Apple M5 Max/Metal synthetic execution with the repaired loader. All
+eight local stages pass, including CPU/Metal operators, W6/W8 random Qwen
+graphs and offline HF conversion. Repeating the driver rechecks environment
+and binding load, and resumes the six unchanged completed stages. This uses
+cached native objects, not a measured cold CUDA build duration. The local
+test explicitly selects `--synthetic-only --current-environment
+--allow-dirty-local-test` and `GGML_METAL_TENSOR_DISABLE=1`; these are not the
+Colab defaults. The archived controls retain those limitations and file hashes.
+
+Notebook cells execute top-to-bottom under explicit mocked Colab/GPU/network
+operations; managed-environment command construction, interruption cleanup,
+hash invalidation and fail-closed ordering have regression tests. The actual
+Colab venv install, NVIDIA numerical execution, Drive checkpoint export and
+retained 4B parity remain unexecuted locally. A rendered HTML notebook preview
+was generated, but browser inspection was blocked by the tool's file-URL
+policy. To complete those checks, inspect the notebook in Colab, select a fresh
+CUDA runtime, verify the original `SOURCE_ROOT`, and choose Runtime → Run all.
+No pretrained quality result, recipe promotion, latency or VRAM claim follows
+from the synthetic checks.
+
+Final regression run: 840 passed, 17 expected arm64 AVX2 skips, two existing
+SWIG warnings; `ROTQUANT_REQUIRE_GIT_HISTORY=1` was enabled. Ruff, diff whitespace,
+clean pinned patch application, and all three native CTest suites pass.
+`validation.json` in the evidence directory records the exact commands and
+boundaries. Artifact hashing also has a regression with Python 3.11's
+`hashlib.file_digest` removed, protecting the project's Python 3.10 lane.
+
+### Colab follow-up: successful CUDA compilation, blocked library loading
+
+User-supplied logs from `dd87da217593/20260910T141143Z` show compilation/linking
+completed after roughly 26 minutes. The original test library SHA-256 was
+`96b71c3f765246b5b92ac146b88040a895e46c966c89768ba0fb6cbcf560dfb1`.
+The first CPU operator check then failed in `ctypes.CDLL`: `libllama.so.0`
+referenced an undefined `llama_model_loader::get_key<bool>(const std::string &,
+bool &, bool)`. This is user-log evidence, not a downloaded result bundle.
+There are **no CPU/CUDA numerical results or retained-model results from this
+Colab log**. Compilation must not be interpreted as a working runtime.
+
+The custom tied-embedding metadata call needs an explicit string-key boolean
+template instantiation in the loader translation unit; the patch provided
+float/uint32/string instantiations but omitted bool. Added that instantiation
+and a fresh-process binding-load gate before a successful build receipt.
+An opt-in exact-hash source repair can reuse existing CUDA object files; it
+does not reset a checkout or change weights, kernels, thresholds or old receipts.
+Local incremental Metal build/load succeeds and 28 targeted Python tests pass.
+At this initial repair step, Linux/CUDA reloading and numerical correctness
+still required confirmation; the later Linux-only check is recorded above.
+
+### Original local handoff evidence
+
+Implemented the experimental GGUF-v2/native-v3 Qwen graph, scalar CPU and packed
+Metal/CUDA operators, and an isolated reproducible llama.cpp build at
+`17252c769a63c1cb650ce98ae309cf4de0da7778`. The original v1 checkout is untouched.
+The [run guide](native_gpu_validation.md) and new native-GPU Colab notebook
+require build/operator/whole-model/export/parity gates before optional timing.
+No old checkpoint, notebook, score or experiment identity is overwritten.
+
+Local hardware: Apple M5 Max, 64 GiB unified memory; AppleClang 21; Torch 2.12.0.
+The [raw reports](../research/results/native_gpu_2026_09_10/) and build receipt
+retain model/library/patch hashes and execution settings. Results:
+
+- CPU and Metal: all 18 packed operator cases pass, including W5/scale8,
+  W6/W8 vocabulary, permutation maps and lookup. Maximum absolute error against
+  canonical Torch is at most 0.00048828125.
+- Full random two-layer Qwen graphs (one linear, one full-attention layer),
+  W6 and W8: all 1/4/17/64-token prompt and eight-step cached-decode checks pass
+  on Metal with `GGML_METAL_TENSOR_DISABLE=1`. Maximum absolute logit error is
+  0.001953125; mean KL is 6.52e-8 (W6) / 6.40e-8 (W8); all checked argmax IDs
+  and short greedy sequences match CPU. These are not pretrained-model scores.
+- An offline random Transformers model was quantized into a test checkpoint,
+  exported through the real pinned converter and run on CPU/Metal. All six
+  4/17/64-token comparisons against that canonical model pass. Its tokenizer is
+  explicitly fake, and evaluation uses frozen integer IDs. This test exposed
+  the converter's default-interval assumption; the exporter now preserves the
+  explicit hybrid layer map. It does not validate actual 4B conversion/tokenization.
+- Negative result: the same final runtime and W6 fixture with the M5 tensor API
+  left at its default fails numeric conformance (max error 0.1399393, mean
+  0.0056265, KL 7.70e-5), despite exact short generation. Intermediate checks
+  locate the first large discrepancy in dense alpha/beta matmul, not packed
+  embedding/first normalization. Explicit simdgroup Metal execution passes at
+  unchanged thresholds. The default M5 path remains unsupported by this gate.
+- The scheduler's strict GPU gate was tested negatively: a CPU model with
+  `ROTQUANT_REQUIRE_GPU=1` rejects execution. Successful Metal checks prohibit
+  CPU arithmetic fallback; allocated host staging memory is not hidden.
+- Release and separate ASan/UBSan native CTest builds pass all three suites.
+  The new loader-facing native-v3 validation ABI includes shape/malformed/null
+  rejection tests. A clean pinned checkout accepts the consolidated patch.
+- Final full Python run with `ROTQUANT_REQUIRE_GIT_HISTORY=1`: 813 passed,
+  17 expected AVX2 skips on arm64; ruff and both repository/patch whitespace
+  checks pass. Notebook nbformat/AST/source-regeneration checks pass. The Colab
+  CUDA/Drive cells were not executed locally. Two existing SWIG warnings remain.
+
+CUDA source is implemented but **not compiled or run here**. Original retained
+4B safetensors are absent locally; actual model parity, timings and VRAM remain
+to be measured in the new Colab. This step produces no 4B quality result,
+competitor speedup, recipe promotion, paid job, or claim of production readiness.
+
+## 2026-09-10: retained-model exporter preparation (earlier step)
+
+Added the experimental GGUF-v2 exporter/assembly helpers described in
+[the native-runtime contract](native_runtime_v3.md#gguf-v2-export-work-10-september).
+Saved W5/scale8 and W6/W8 codes/scales are preserved, GDN maps are separate,
+and non-text tensors are retained/countable. No checkpoint weights are present
+in the local retained-result bundles, so no actual 4B export or model execution
+was performed. This initial exporter-only step preceded the user's confirmation
+of the substantial private llama.cpp integration; execution work is recorded above.
+
+Local targeted tests: 26 passed (13 new export tests plus 13 frozen-result reuse
+tests), with `ROTQUANT_REQUIRE_GIT_HISTORY=1`; scoped ruff and diff checks clean.
+No paid run, artifact rewrite, new quality measurement or promotion occurred.
+
+## 2026-09-09: public-task run stopped; native serving takes priority
+
+The user stopped the run at `5a98b99eb2d178c2da9705a5cd8afcb1f0f3e026`
+because the tiled Python reference execution was too costly. Supplied log:
+`34a3046c-5239-4024-910b-02cbd197a670/pasted-text.txt`, SHA-256
+`94e764a311a771ffeedf10bfb202f0716b42ffbb21c75d5921becc49477e2e57`.
+This is log-derived partial evidence, not a completed checksummed result-bundle
+import; no direct inspection or mutation of Drive was performed.
+The [machine-readable partial observation](../research/results/qwen35_public_tasks_partial_5a98b99eb2d1.json)
+records the log hash, aggregation method and exact observed counts/times outside
+the frozen raw archive. It is not an imported complete evaluation receipt.
+
+In that log the source FP16 arm finished 384 prompts. The custom frozen subset
+scored 115/128 GSM8K, 42/128 CRUXEval-O, 101/128 IFEval, with 5/10/4 truncated
+responses respectively. These are this protocol's scores, not official
+leaderboard results. The first `b5_v6_s0` arm finished only 30 GSM8K prompts:
+27/30 passed, the same pass/fail outcomes as FP16 on those exact prompts, one
+truncation. It emitted 9,417 tokens over 185.39 minutes of logged generation +
+scoring (about 0.85 tokens/s), versus about 15.43 tokens/s on the matched source
+prompts. This roughly 18x observed slowdown is not a controlled kernel benchmark
+and does not establish where every second was spent. GPU activity was present;
+the process was making progress, not merely hung.
+
+There is **no complete RotQuant/provider public-task comparison or promotion**.
+Retain saved model files and the partial per-prompt receipts. New native execution
+must use a new runtime-bound root and cannot inherit old reference-path scores.
+
+Local next-stage preparation closes lossy-export defect L5 and establishes the
+[native-v3 matrix contract](native_runtime_v3.md), compiled CPU conformance and
+a bounded readiness check. Scale8 codes/offsets/steps are retained exactly; the
+new CPU matrix primitive is not a full-model runtime or new quality evidence.
+Full-model export/vocabulary operators, Metal/CUDA, and measured speed/memory/
+cost gates remain required before another paid sweep. No new model calibration,
+GPU run or archived-evidence rewrite is part of this work.
+
 ## 2026-09-09: every published Unsloth quant added to comparison scope
 
 The user requested the whole published size range, not only Dynamic Q4. Public

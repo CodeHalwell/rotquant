@@ -1,8 +1,13 @@
 # Qwen3.5-4B public-task release gate
 
-Status: implemented locally; CPU contract tests and pinned public-source/checker
-preflights are available. **No complete full-model CUDA run of this new protocol
-has been performed locally.** Publishing the code is a separate step.
+Status update, 9 September: **the user stopped the paid reference-path run**.
+FP16 completed in the supplied log; the first W5/W6 arm completed only 30/384
+prompts at roughly 0.85 generated tokens/s. There is no complete comparative
+task result. Do not launch this nine-arm reference-path sweep again by default.
+The next milestone is [native serving](native_runtime_v3.md), followed by model
+parity and a short measured speed/memory/cost check before a new run identity.
+The original runner/notebook remain unchanged for provenance. This warning is
+not an executable interlock in that historical notebook.
 
 Local preparation verified all 2,660 public gold records and exercised the
 checker on all 541 IFEval rows. The real pinned Qwen tokenizer froze the standard
@@ -11,8 +16,8 @@ checker on all 541 IFEval rows. The real pinned Qwen tokenizer froze the standar
 fixtures and sentence-table checks also pass. These checks neither load the
 saved full-model weights nor produce task accuracy measurements.
 
-Run [this new Colab](../notebooks/qwen35_4b_public_tasks_colab.ipynb), not the old
-allocator, vocabulary, packed-validation or fresh-quality notebooks. It does not
+The historical [public-task Colab](../notebooks/qwen35_4b_public_tasks_colab.ipynb), unlike the old
+allocator, vocabulary, packed-validation or fresh-quality notebooks, does not
 requantize, train adapters, adjust rotations or change the six saved checkpoints.
 Old [results](fresh_quality_results_2026-09-09.md) are neither overwritten nor reused
 as public benchmark scores.

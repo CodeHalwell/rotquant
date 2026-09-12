@@ -1,5 +1,21 @@
 # Native RotQuant GGUF for llama.cpp
 
+## Retained W5/scale8 models: use the new v2 integration
+
+The retained W5 backbone + shared W6/W8 vocabulary uses
+`rotquant-native-v2.patch`, **not** the historical v1 recipe below. Build with
+`scripts/build_rq3_runtime.py` and use
+`notebooks/qwen35_4b_native_gpu_validation_colab.ipynb` for the first CUDA checks.
+See [native GPU validation](../../docs/native_gpu_validation.md) for exact commands,
+validation boundaries, and the M5 tensor-API limitation. The v2 patch includes
+the prior v1 changes and applies to the same clean pinned base; do not apply
+both patches. The original `third_party/llama.cpp` checkout is left untouched.
+
+The v1 throughput/cache observations below are historical: they do not validate
+the retained W5/W6/W8 models or reinstate withdrawn KV quality claims.
+
+## Historical v1 implementation
+
 This integration preserves the deployed RotQuant representation instead of
 dequantizing it and asking llama.cpp to quantize it again. Each quantized
 projection is written as two GGUF tensors:

@@ -9,6 +9,96 @@ software.
 
 ## [Unreleased]
 
+### Colab pip-less environment bootstrap (2026-09-10)
+
+- Remove the native notebook's dependency on `ensurepip`: create the venv with
+  `--without-pip` and use base pip's explicit `--python` target, guarded by
+  `--require-virtualenv`. Do not install into the notebook environment.
+- Reapply configuration on retries instead of trusting a leftover Python
+  executable. Verify the target prefix and inherited Torch version/location
+  before and after installation; retain dependency-install receipts.
+- Add real Linux/Python 3.13 CPU install tests for a fresh target, a reproduced
+  failed-ensurepip target and a repeated setup, plus a dedicated CI job.
+  Pinned Qwen/RotQuant imports pass without changing the base package inventory.
+  No kernels, saved models or parity thresholds change; CUDA/4B remains pending.
+
+### End-to-end native GPU notebook (2026-09-10)
+
+- Replace the multi-cell repair workflow with one native-validation driver and
+  a new `qwen35_4b_native_gpu_e2e_colab.ipynb`; update the legacy notebook alias.
+- Isolate pinned dependencies from Colab, retain its CUDA Torch, and verify
+  original checkpoint/probe/tokenizer evidence before the long build.
+- Include the loader repair, strict Linux undefined-symbol linking, and fresh
+  binding-load gates. Keep every numerical and saved-model parity guard intact.
+- Persist attempt-scoped logs, exact artifact hashes, fail-closed gate status,
+  reports-only archives and verified resume. Charge cumulative active stage time,
+  not notebook idle time, against a declared 90-minute allowance.
+- Share bounded-memory SHA-256 hashing across the native workflow without
+  requiring Python 3.11's `hashlib.file_digest`; preserve hash values and the
+  project's Python 3.10 compatibility.
+- Validate Linux/Python 3.13 library loading, local Metal synthetic execution,
+  and mocked notebook/pipeline ordering and recovery. NVIDIA/actual-4B execution
+  is still an explicit external validation gap, not claimed as tested here.
+
+### Native CUDA library-loading repair (2026-09-10)
+
+- Explicitly instantiate the string-key boolean GGUF metadata reader used by
+  `rotquant.tied_embedding`. The first Colab build linked but could not load
+  `libllama.so` because this symbol was unresolved; no numerical test ran.
+- Check the actual Python/native binding in a fresh, bounded subprocess before
+  emitting a successful build receipt. A loaded library is still not GPU parity.
+- Add an opt-in `--repair-known-loader` for the exact original patched source,
+  validating all patched files before modifying the one loader file. Preserve
+  existing CUDA compilation outputs and reject unknown/user changes.
+
+### Retained-model export work (2026-09-10)
+
+- Add experimental GGUF-v2 assembly for the saved W5/scale8 backbone and shared
+  W6/W8 vocabulary without requantization, scale rounding or sign regeneration.
+  Keep Qwen GDN permutations separate from the original affine-scale payload.
+- Preserve/count non-text tensors in an auxiliary safetensors sidecar, verify
+  source integrity and record output/tensor hashes. Reject unsupported recipes
+  and existing output directories. Full-size export and model GPU execution
+  remain unvalidated. Preserve explicit hybrid layer topology as well as GDN
+  value-head maps; do not assume a default full-attention interval.
+- Add synthetic assembly/converter tests. Historical model/scorer/checkpoint
+  behavior and experiment receipts are unchanged.
+
+### Experimental full-model native GPU execution (2026-09-10)
+
+- Add a consolidated, pinned llama.cpp v2 integration for retained W5/scale8
+  backbones and shared W6/W8 vocabulary. Add scalar CPU, Metal and CUDA packed
+  rotation/matmul/embedding/head operators, one GPU-resident vocabulary owner,
+  strict payload/map validation and an actual scheduler-level no-CPU-fallback
+  gate. The historical v1 checkout/patch is preserved separately.
+- Add an isolated build with source/patch hashes, private whole-model bindings,
+  synthetic operator and cached-generation checks, and an offline random
+  Transformers-checkpoint export/conformance check. CPU/Metal execute locally;
+  CUDA compilation/execution and real retained-4B parity remain pending.
+- Add the native-GPU Colab notebook with streamed persistent logs, heartbeats,
+  time limits, immutable run identities, saved-probe verification and optional
+  bounded timings only after parity. No old experiment or artifact is rewritten.
+- Record the M5 upstream tensor-API failure and explicit simdgroup-only Metal
+  validation setting. Do not infer model quality or production speed from
+  synthetic conformance.
+
+### Native serving preparation (2026-09-09)
+
+- Fix L5: native-v2/GGUF-v1 exporters reject non-FP16 scale storage; they no
+  longer silently change scale8/32 weights by casting scales to FP16.
+- Add the independent native-v3 matrix wire format: original int32 code words,
+  exact affine uint8 scale codes/FP16 metadata or FP16 scales, FP32 scalar table,
+  strict version/shape/finite-value/tail validation. Existing formats unchanged.
+- Add the C++ scalar CPU decoder/streaming matmul, versioned C ABI and prepared
+  Python binding with one retained compact buffer, plus cross-language tests
+  and a native CTest suite. No full-model GGUF/Metal/CUDA support is claimed.
+- Add `scripts/check_native_v3.py`: bounded local progress/reporting and an
+  explicit blocked model-readiness result. Document CPU/model/accelerator parity
+  and speed/memory/cost gates before restarting a paid sweep.
+- Narrow the historical reuse audit only for reviewed exporter/matrix modules;
+  retain checkpoint, quantizer, model/scorer and receipt identity protections.
+  Existing notebooks, artifacts and archived results are not rewritten.
+
 ### Project review (2026-09-09)
 
 - `docs/project_review_2026-09-09.md` records the state of the evidence after
@@ -30,6 +120,10 @@ software.
   a missing layout; README line references updated; the evidence levels of
   the LoRA-QAT and vector arms preserved; the authored-task limitations stated
   precisely; the stale changelog sentence fixed.
+- Merged with the 10–11 September native runtime work: the notes' compatibility
+  matrix, next steps, timeline, decisions and open questions now record the L5
+  fix, the llama.cpp v2 integration, the A100 parity run and the throughput
+  pilot, with their stated limits.
 - Recorded here because commit `5a98b99` had no changelog entry: the
   public-task release gate (`scripts/run_qwen35_public_tasks.py`,
   `scripts/public_task_suite.py`, the generated

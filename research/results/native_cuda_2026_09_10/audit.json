@@ -1,0 +1,279 @@
+{
+  "protocol": "native-cuda-report-audit-v1",
+  "reviewed_revision": "06a4379c71074e4606116c835941388d1876599b",
+  "passed_with_caveats": true,
+  "stage_count": 11,
+  "bundle_file_count": 38,
+  "bundle_index": {
+    "launch-logs/end-to-end.log": {
+      "bytes": 317104,
+      "sha256": "60088afb90551a8b2fb14114c8e88ca41f90067015df854bca4883369c47c345"
+    },
+    "stages/binding-load/attempt-001/load.json": {
+      "bytes": 1622,
+      "sha256": "2eb8cda47da3094dd1cd2a7e702128729ebd510982de9a10795906ab01ec6173"
+    },
+    "stages/binding-load/attempt-001/logs/load-check.log": {
+      "bytes": 20,
+      "sha256": "33a1035e4b13adda2a630ddeedaf948e3d4a80b360c236132f3d094d54005b74"
+    },
+    "stages/environment/attempt-001/bootstrap-after.json": {
+      "bytes": 328,
+      "sha256": "2f9f18f489caf8b23d3f0f99fb48a74ed49f9e6f0f7d357fc2a6f782e557c0db"
+    },
+    "stages/environment/attempt-001/bootstrap-before.json": {
+      "bytes": 328,
+      "sha256": "2f9f18f489caf8b23d3f0f99fb48a74ed49f9e6f0f7d357fc2a6f782e557c0db"
+    },
+    "stages/environment/attempt-001/dependency-install.json": {
+      "bytes": 117016,
+      "sha256": "2d90322291a2967a892f8814098d0e641876be6d33dbc6d232f0597e62a5280b"
+    },
+    "stages/environment/attempt-001/environment.json": {
+      "bytes": 556,
+      "sha256": "fb1d24637c249581f29c1663dc58db31ce953e52c27f2733f9de3761fa1b0259"
+    },
+    "stages/environment/attempt-001/logs/check-installer.log": {
+      "bytes": 74,
+      "sha256": "da0d8285fd6b7f4d610434889868ae57919db05e201de2657bd016e45d0c01eb"
+    },
+    "stages/environment/attempt-001/logs/create-environment.log": {
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    "stages/environment/attempt-001/logs/dependencies.log": {
+      "bytes": 9871,
+      "sha256": "001ed00980a1256973108394108e166cef7a03b0e8345867e832dc5f9ab6a1ec"
+    },
+    "stages/environment/attempt-001/logs/install-rotquant.log": {
+      "bytes": 1141,
+      "sha256": "cac3519cdb8aee17be35e0b33c3573263f5a407c6ea88e721a10fe89bc090340"
+    },
+    "stages/environment/attempt-001/logs/preflight_native_gpu.log": {
+      "bytes": 502,
+      "sha256": "6cb274c6e131d4759728ef8afbf538f4b5baf0e70fac3a765fa9e8b683b6d60d"
+    },
+    "stages/environment/attempt-001/logs/verify-installed-target.log": {
+      "bytes": 312,
+      "sha256": "35648a53e953872d915a82d22bca733f720fc12b0916a80076173efe20a1595c"
+    },
+    "stages/environment/attempt-001/logs/verify-target.log": {
+      "bytes": 312,
+      "sha256": "35648a53e953872d915a82d22bca733f720fc12b0916a80076173efe20a1595c"
+    },
+    "stages/environment/attempt-001/rotquant-install.json": {
+      "bytes": 41098,
+      "sha256": "9c07b527826619f8ba09e636a5d9795fc95e594b36072d15c0237ace5ef240c4"
+    },
+    "stages/environment/attempt-001/torch-constraint.txt": {
+      "bytes": 20,
+      "sha256": "578e132db97b51ac5abd36546ec603631d0d196e67be74af2a2b94108a1481f9"
+    },
+    "stages/export-b5_v6_s0/attempt-001/export.json": {
+      "bytes": 154652,
+      "sha256": "415382124afab48543321eb39644c82e62aeac01256804cd3335867338fc899d"
+    },
+    "stages/export-b5_v6_s0/attempt-001/logs/export_rotquant_gguf_v2.log": {
+      "bytes": 45845,
+      "sha256": "b3d7e58e943def1544162592c73fa35c4b87e6a56c48676d968aa151a4f4ff34"
+    },
+    "stages/hf-conversion/attempt-001/logs/check_rq3_conversion.log": {
+      "bytes": 33206,
+      "sha256": "c44efca9461f15e417348ca56bcd4ac8db971aae76d6dbd0cee6a7b79d48a941"
+    },
+    "stages/hf-conversion/attempt-001/report.json": {
+      "bytes": 3833,
+      "sha256": "d11ce57f5cf9f1a2898e7cc714466f6e32b0253c9b736d8664437b90b7964be2"
+    },
+    "stages/native-build-and-load/attempt-001/build-receipt.json": {
+      "bytes": 2536,
+      "sha256": "ae77646360d328ac1b2deb2feeae1fcaa788c9e41ca0c67a9a623c56abee558e"
+    },
+    "stages/native-build-and-load/attempt-001/logs/build_rq3_runtime.log": {
+      "bytes": 40300,
+      "sha256": "6ea8a85f0deb01bb1e9c53856988420bf67dce5df84378fcf096255b337c1e96"
+    },
+    "stages/operators-CPU/attempt-001/logs/check_rq3_gpu.log": {
+      "bytes": 1904,
+      "sha256": "98548b8c4c8f95b962a8f4c4764e12e376733d6e9952dc824ed40b472df2dde9"
+    },
+    "stages/operators-CPU/attempt-001/report.json": {
+      "bytes": 4652,
+      "sha256": "e793baa502c198510f44b893071c1feb23ccc79217579f5aba1cbbc832bb9b0d"
+    },
+    "stages/operators-CUDA0/attempt-001/logs/check_rq3_gpu.log": {
+      "bytes": 1927,
+      "sha256": "c4e8d3666ba43e6e376cd7ca4cd9e71d713e40a936f23c2b649f4c9f2353b410"
+    },
+    "stages/operators-CUDA0/attempt-001/report.json": {
+      "bytes": 4677,
+      "sha256": "b788cf4347d2c756d38ffceadd818dcaa87222da12f06001db00199bbdb9a947"
+    },
+    "stages/retained-b5_v6_s0/attempt-001/logs/run_rq3_retained_gpu.log": {
+      "bytes": 96703,
+      "sha256": "b73bf9a1769624ed106c405464be22d5206f4263611f376467e4664535b76e5d"
+    },
+    "stages/retained-b5_v6_s0/attempt-001/retained/report.json": {
+      "bytes": 3666,
+      "sha256": "6345268dde5f38a60b514611e52ea01e26df826ce59a3e3019305949d09aff56"
+    },
+    "stages/source-b5_v6_s0/attempt-001/logs/preflight_native_gpu.log": {
+      "bytes": 461,
+      "sha256": "4fe490df48ebad88aee91a04970bdd86b3fbba138a72fec10ef95ce3012b2953"
+    },
+    "stages/source-b5_v6_s0/attempt-001/source.json": {
+      "bytes": 360,
+      "sha256": "5d50dfa0e2c1e5cf1afbfb91666f6d938490fefc4c20daa18695ed713669818c"
+    },
+    "stages/whole-model-w6/attempt-001/logs/check_rq3_model.log": {
+      "bytes": 33377,
+      "sha256": "ff66c2794468295c8811a55b1cc20f3b9fa4657e4f6e5bcbb92413beaeef0d76"
+    },
+    "stages/whole-model-w6/attempt-001/logs/make-fixture.log": {
+      "bytes": 141,
+      "sha256": "318b24218280ad40065c770387a7552449870339f4b46a09c30f444e7b220a76"
+    },
+    "stages/whole-model-w6/attempt-001/report.json": {
+      "bytes": 3246,
+      "sha256": "593b97f995ee25693886f9803e9b661db44eedb28f721e3c7bdb1aa8a7c90390"
+    },
+    "stages/whole-model-w8/attempt-001/logs/check_rq3_model.log": {
+      "bytes": 33376,
+      "sha256": "97a0ed29b95d894c40073ad7a771d8cec9d3243b6bad5e3f7866b8eb5b6c5405"
+    },
+    "stages/whole-model-w8/attempt-001/logs/make-fixture.log": {
+      "bytes": 141,
+      "sha256": "746178e7aa946610c192037686c982128a1dded759301d4c979f7092b0fdbfc7"
+    },
+    "stages/whole-model-w8/attempt-001/report.json": {
+      "bytes": 3247,
+      "sha256": "e004b6f31352169b0d4abe1368f467f7250d1c3b38869c6f6579b703cbe158c8"
+    },
+    "summary.json": {
+      "bytes": 1483,
+      "sha256": "4b7fc4bfe3d102919249a5f0b1c7e8f96a81e52b19e28f8bf546be8147e4910b"
+    },
+    "workflow.json": {
+      "bytes": 236238,
+      "sha256": "4c47c263ad3734f9ab238e80855ed8fee2c5a0312c2f4d23ba3eadc0a1072b7d"
+    }
+  },
+  "available_receipt_hashes_verified": 11,
+  "source_code_hashes_verified": 25,
+  "recorded_patched_source_hashes_matched": 28,
+  "recorded_external_artifacts_not_in_report_bundle": 38,
+  "active_minutes": 32.23588318618333,
+  "build_minutes": 26.906391579016667,
+  "non_build_minutes": 5.3294916071666645,
+  "environment": {
+    "python": "3.13.15 (main, Aug  6 2026, 11:06:22) [GCC 13.3.0]",
+    "platform": "Linux-6.6.122+-x86_64-with-glibc2.39",
+    "packages": {
+      "transformers": "5.9.0",
+      "safetensors": "0.8.0",
+      "sentencepiece": "0.2.1",
+      "scipy": "1.15.3",
+      "pyyaml": "6.0.3",
+      "ninja": "1.13.0",
+      "cmake": "3.31.10"
+    },
+    "torch": "2.11.0+cu128",
+    "torch_file": "/usr/local/lib/python3.13/dist-packages/torch/__init__.py",
+    "cuda": "12.8",
+    "backend": "CUDA",
+    "device": "NVIDIA A100-SXM4-40GB",
+    "total_vram_bytes": 42405855232,
+    "passed": true
+  },
+  "operators": {
+    "CPU": {
+      "cases": 18,
+      "max_abs": 0.00048828125
+    },
+    "CUDA0": {
+      "cases": 18,
+      "max_abs": 0.00048828125
+    }
+  },
+  "synthetic_models": {
+    "w6": {
+      "max_abs_error": 0.001953125,
+      "mean_abs_error": 0.0002509073431914051,
+      "mean_kl": 5.8658838863681457e-08,
+      "top1_agreement": 1.0
+    },
+    "w8": {
+      "max_abs_error": 0.001953125,
+      "mean_abs_error": 0.0002533188865830501,
+      "mean_kl": 5.8809089409281416e-08,
+      "top1_agreement": 1.0
+    }
+  },
+  "retained_parity": {
+    "max_abs_error": 0.0322265625,
+    "mean_abs_error": 0.002836523566979521,
+    "mean_kl": 8.667400892968748e-06,
+    "top1_agreement": 1.0,
+    "positions": 16,
+    "generation_probes": 4,
+    "exact_generation_probes": 4,
+    "thresholds": {
+      "max_abs_error": 0.125,
+      "mean_abs_error": 0.005,
+      "mean_kl": 0.0001,
+      "top1_agreement_min": 0.99
+    },
+    "guards": {
+      "max_abs_error": true,
+      "mean_abs_error": true,
+      "mean_kl": true,
+      "top1": true,
+      "exact_generation": true
+    },
+    "passed": true,
+    "comparison": "cross-engine-native-v3",
+    "boundary": "Bounded numerical probes, not task accuracy or full-suite equivalence."
+  },
+  "model_payload_bytes": 3435359712,
+  "model_payload_gb": 3.435359712,
+  "model_payload_gib": 3.199428051710129,
+  "text_gguf_bytes": 2768298560,
+  "auxiliary_bytes": 667061152,
+  "sampled_process_vram_mib": 3446.0,
+  "sampled_process_vram_gib": 3.365234375,
+  "vram_samples": 38,
+  "reserved_context": 256,
+  "probe_shapes": [
+    [
+      "p0",
+      "64",
+      "4",
+      "8"
+    ],
+    [
+      "p1",
+      "64",
+      "4",
+      "8"
+    ],
+    [
+      "p2",
+      "64",
+      "4",
+      "8"
+    ],
+    [
+      "p3",
+      "64",
+      "4",
+      "8"
+    ]
+  ],
+  "timing_requested": false,
+  "limits": [
+    "Reported aggregates and hashes checked; absent logits/trace tensors prevent independent numerical recomputation.",
+    "Weights, exported GGUF and native binaries are absent from the reports-only bundle; remote hashes are corroborated, not recomputed locally.",
+    "Four short text prompts, not task accuracy, full-precision agreement, W5/W8 retained-model parity or long-context coverage.",
+    "Sampled process VRAM at context capacity 256, not a transient peak, hardware minimum, multimodal requirement or throughput benchmark."
+  ]
+}

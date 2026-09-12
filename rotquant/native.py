@@ -11,6 +11,7 @@ import math
 from dataclasses import dataclass
 
 import numpy as np
+import torch
 
 from .format import PACKED_BIT_ORDER, validate_profile_bits
 from .pack import unpack_indices
@@ -251,6 +252,10 @@ def encode_quantized_weight(
         raise ValueError("native layout group size does not match the packed weight")
     if qweight.scales is None:
         raise ValueError("native v2 requires per-group scales")
+    if qweight.scale_bits_main != 16 or qweight.scales.dtype != torch.float16:
+        raise ValueError(
+            "native v2 requires stored 16-bit scales; use native v3 to preserve "
+            "8-bit scale codes/offsets/steps without rounding")
     if qweight.scale_group_size not in (None, qweight.group_size):
         raise ValueError("native v2 does not yet support per-row scales")
     if qweight.residual_packed is not None or qweight.sketch is not None:

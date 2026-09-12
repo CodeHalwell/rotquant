@@ -95,6 +95,10 @@ def _validate_qweight(qweight: QuantizedWeight) -> None:
         raise ValueError("native GGUF v1 requires input dimensions divisible by 128")
     if qweight.scales is None:
         raise ValueError("native GGUF v1 requires stored group scales")
+    if qweight.scale_bits_main != 16 or qweight.scales.dtype != torch.float16:
+        raise ValueError(
+            "native GGUF v1 requires stored 16-bit scales; compressed scales "
+            "need a new GGUF/operator contract, not a lossy conversion")
     if qweight.scale_group_size not in (None, GROUP_SIZE):
         raise ValueError("native GGUF v1 does not support per-row scales")
     if qweight.residual_packed is not None or qweight.sketch is not None:

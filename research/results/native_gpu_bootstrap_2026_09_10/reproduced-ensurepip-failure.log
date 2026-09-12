@@ -1,0 +1,1 @@
+Error: Command '['/tmp/rq3-bootstrap-test-release/partial/bin/python', '-m', 'ensurepip', '--upgrade', '--default-pip']' returned non-zero exit status 1.

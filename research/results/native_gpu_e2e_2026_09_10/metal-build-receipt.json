@@ -1,0 +1,33 @@
+{
+  "protocol": "rq3-native-build-v1",
+  "backend": "Metal",
+  "base_revision": "17252c769a63c1cb650ce98ae309cf4de0da7778",
+  "patch_sha256": "29d176717dc7ee1d0aa5cc211a9f1538aebf28388633297e9ccd66edf52de0eb",
+  "root_revision": "dd87da217593e39e8a8d5bd380578671d8640e4d",
+  "root_dirty": true,
+  "external_sources": {
+    "integrations/llama.cpp/rq3/model_bridge.cpp": "db075bbc8a7b6af3577404d545a96e45627d494b7ca030c5571891c578c2898d",
+    "integrations/llama.cpp/rq3/test_bridge.cpp": "80ba18cf53d56b1c02a0758462e70012eecc8d0de82ad006c394209004cf67be",
+    "integrations/llama.cpp/rq3/test_bridge.h": "b18bad7e2bc64e10dca2af63252b08953fe491d9b26ab10116e6349bfa32e5c6",
+    "native/CMakeLists.txt": "8b74a67bc931f083e5d8ffc79accd4d72f559e2a958d156186b68c0cc22348d9",
+    "native/include/rotquant/native_export.h": "42407749c867ec1e4e00f158f569966c1d73ab0e21a13ccb621a59d26f9e66bd",
+    "native/include/rotquant/native_v2.h": "7c0808a1140e22db67e28f42c146704bcd3d199a1ea173883aa976be7e9a0d0d",
+    "native/include/rotquant/native_v2_c.h": "4b4865b20517578edc9d5a73e54b69db89ff05b3cf071b603c22c9802f621374",
+    "native/include/rotquant/native_v3_c.h": "18c06b2472713dbeac85f551966cbb5b6c288ff825800731cb569b9d1c9ffb70",
+    "native/src/benchmark.cpp": "5665ac13b17fbd58e20c4ba37224709f8cb2574d9a3ab68fc8a8b7167c33264b",
+    "native/src/cli.cpp": "76249f2015a761c17d398a1ded12193c00b4d6044740fe33d47c59c488dfe1ad",
+    "native/src/native_v2.cpp": "9a41e4817046b4d5599ee1c0aba778ccfd9aacf5604915d22db39d8c6686608a",
+    "native/src/native_v2_avx2.cpp": "2b8acc858f136ac4e0fcff511b31095565255533b54cb162b2503cea24454d4b",
+    "native/src/native_v2_c.cpp": "1d75c5525c44ada57df99f60d9c986c0a6003bf517e07058d8aa5c0c467b93dd",
+    "native/src/native_v2_internal.h": "915826fc069fe90631a3dae3718dace1b9554d49d473187dbb8f5ccf648424b6",
+    "native/src/native_v3.cpp": "db69f41fdf8926f6f0d985fafdc131368cb17189dd502f06cbe8c2da6d5ffc68",
+    "native/tests/conformance.cpp": "998c3f50528138974b1bd00fde3f183fd3b53155cc78df104bed0fa7ef7a70ee",
+    "native/tests/v3_conformance.cpp": "32fbccb3789c7d148409fa7936750424ac57b094caf4003f5c91d15e46df0bdf"
+  },
+  "library": "/Users/danielhalwell/PythonProjects/rotquant/build/llama-rqv3-metal/bin/librotquant_ggml_test.dylib",
+  "library_sha256": "e782a5a502582ca5eaf0cc85a13bbdac27de4f82ef209b82389fdc627cb46ce4",
+  "compiler": "cmake version 4.4.3",
+  "load_validated": true,
+  "gpu_validated": false,
+  "boundary": "Build and binding load only; operator and whole-model conformance are separate gates."
+}

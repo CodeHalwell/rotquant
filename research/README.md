@@ -5,7 +5,11 @@ preserves 1,080 prompt records across nine arms and all 1,125 SHA-256 record
 pairs, byte-for-byte. Summary/oracle/paired-contrast reconciliation is repeatable
 with `scripts/archive_fresh_quality.py`. See the
 [results and limitations](../docs/fresh_quality_results_2026-09-09.md) and
-[next public-task protocol and sources](../docs/public_tasks_run_2026-09-09.md).
+[public-task protocol and sources](../docs/public_tasks_run_2026-09-09.md).
+The subsequent public-task run was stopped for reference-runtime cost; only
+partial progress is recorded in the [ledger](../docs/experiment_log.md), not a
+completed archive. [Native serving preparation](../docs/native_runtime_v3.md)
+now precedes another paid run. The fresh-quality archive above is unchanged.
 
 Future reading: [hybrid-attention quantisation and learned-rotation follow-up](../docs/hybrid_attention_quantization_research_2026-09-09.md)
 distinguishes external evidence from proposed 4B experiments and records the

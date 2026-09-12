@@ -1,0 +1,276 @@
+{
+  "protocol": "native-pilot-report-audit-v1",
+  "reviewed_revision": "1bc31d43acf62f669fe7e5d8af8a766e94698232",
+  "audit_passed": true,
+  "workflow_passed": false,
+  "passed_stages": 13,
+  "stopped_stages": 1,
+  "active_minutes": 39.076760113016675,
+  "build_minutes": 27.13989262748333,
+  "included_artifacts_verified": 15,
+  "external_artifacts_unavailable": 38,
+  "producer_sources_verified": 34,
+  "bundle_index": {
+    "launch-logs/native-performance-pilot.log": {
+      "bytes": 606251,
+      "sha256": "875f90bc2236393c4a6a0642de1391c79b576d08522bc917d4189d542d254ccd"
+    },
+    "stages/binding-load/attempt-001/load.json": {
+      "bytes": 1622,
+      "sha256": "6189237cad90b054fe09196202cbc0f09de4727c8701fb08a880e0b02a9661cb"
+    },
+    "stages/binding-load/attempt-001/logs/load-check.log": {
+      "bytes": 20,
+      "sha256": "33a1035e4b13adda2a630ddeedaf948e3d4a80b360c236132f3d094d54005b74"
+    },
+    "stages/environment/attempt-001/bootstrap-after.json": {
+      "bytes": 325,
+      "sha256": "23f9c709d1323ad1c56dc667397417adfb7c0591f19449b2252180cc39f9b25b"
+    },
+    "stages/environment/attempt-001/bootstrap-before.json": {
+      "bytes": 325,
+      "sha256": "23f9c709d1323ad1c56dc667397417adfb7c0591f19449b2252180cc39f9b25b"
+    },
+    "stages/environment/attempt-001/dependency-install.json": {
+      "bytes": 117016,
+      "sha256": "2d90322291a2967a892f8814098d0e641876be6d33dbc6d232f0597e62a5280b"
+    },
+    "stages/environment/attempt-001/environment.json": {
+      "bytes": 556,
+      "sha256": "fb1d24637c249581f29c1663dc58db31ce953e52c27f2733f9de3761fa1b0259"
+    },
+    "stages/environment/attempt-001/logs/check-installer.log": {
+      "bytes": 74,
+      "sha256": "da0d8285fd6b7f4d610434889868ae57919db05e201de2657bd016e45d0c01eb"
+    },
+    "stages/environment/attempt-001/logs/create-environment.log": {
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    "stages/environment/attempt-001/logs/dependencies.log": {
+      "bytes": 9798,
+      "sha256": "48b0eccb811da0c855d183c61621ae15381a66fd659f190e6a0596bf141068e8"
+    },
+    "stages/environment/attempt-001/logs/install-rotquant.log": {
+      "bytes": 1139,
+      "sha256": "1078d6975e6083f99e6e8beeef45fac80c7bdff1037df5131eda1341d1b3c441"
+    },
+    "stages/environment/attempt-001/logs/preflight_native_gpu.log": {
+      "bytes": 502,
+      "sha256": "6cb274c6e131d4759728ef8afbf538f4b5baf0e70fac3a765fa9e8b683b6d60d"
+    },
+    "stages/environment/attempt-001/logs/verify-installed-target.log": {
+      "bytes": 309,
+      "sha256": "ae4825ddd19a616a34b38be832f1dd9defae28914d66eb6b5a1a845701ffa081"
+    },
+    "stages/environment/attempt-001/logs/verify-target.log": {
+      "bytes": 309,
+      "sha256": "ae4825ddd19a616a34b38be832f1dd9defae28914d66eb6b5a1a845701ffa081"
+    },
+    "stages/environment/attempt-001/rotquant-install.json": {
+      "bytes": 41292,
+      "sha256": "1b2ea64f029fadea893a68d12abc76dcc905b36d3b071dfe62a9ecad268cda1d"
+    },
+    "stages/environment/attempt-001/torch-constraint.txt": {
+      "bytes": 20,
+      "sha256": "578e132db97b51ac5abd36546ec603631d0d196e67be74af2a2b94108a1481f9"
+    },
+    "stages/export-b5_v6_s0/attempt-001/cache.json": {
+      "bytes": 163251,
+      "sha256": "e1ee46e59143b60a4cd344ea96afde45029c53163357e074c70f4149cf419211"
+    },
+    "stages/export-b5_v6_s0/attempt-001/export.json": {
+      "bytes": 154652,
+      "sha256": "415382124afab48543321eb39644c82e62aeac01256804cd3335867338fc899d"
+    },
+    "stages/export-b5_v6_s0/attempt-001/logs/native_gpu_cache.log": {
+      "bytes": 46236,
+      "sha256": "9a937f8ab742b009b816947ebca649350d9a3dbe0b1bfb07b3081a27cac183c1"
+    },
+    "stages/hf-conversion/attempt-001/logs/check_rq3_conversion.log": {
+      "bytes": 33200,
+      "sha256": "5b05b32607a848c20d3b315955e5431e859bc24d64b708003dc02bc90add7cb5"
+    },
+    "stages/hf-conversion/attempt-001/report.json": {
+      "bytes": 3833,
+      "sha256": "9fa947ea23796b6a7775589f4fb17d64e9aa827c2d7a21d183541a1c2398d736"
+    },
+    "stages/native-build-and-load/attempt-001/build-receipt.json": {
+      "bytes": 2533,
+      "sha256": "1dd86810b47591554fa51f75b471201745e6d56614edf4c0bd654128cb3f3677"
+    },
+    "stages/native-build-and-load/attempt-001/cache.json": {
+      "bytes": 2981,
+      "sha256": "0a6e8a46f47a97587171980b1cb35660bf78ff8d67214d481fb8c77f3c84843b"
+    },
+    "stages/native-build-and-load/attempt-001/logs/native_gpu_cache.log": {
+      "bytes": 41535,
+      "sha256": "5a6cb178a22907cabcd41c0e8d74bf78dc53e3ae2982901af81b2a32cd73b631"
+    },
+    "stages/operators-CPU/attempt-001/logs/check_rq3_gpu.log": {
+      "bytes": 1904,
+      "sha256": "98548b8c4c8f95b962a8f4c4764e12e376733d6e9952dc824ed40b472df2dde9"
+    },
+    "stages/operators-CPU/attempt-001/report.json": {
+      "bytes": 4652,
+      "sha256": "a18a5e49badcc50c4408ce052ea20ea4c8579e8fdc8a4142c2282a2686127405"
+    },
+    "stages/operators-CUDA0/attempt-001/logs/check_rq3_gpu.log": {
+      "bytes": 1927,
+      "sha256": "c4e8d3666ba43e6e376cd7ca4cd9e71d713e40a936f23c2b649f4c9f2353b410"
+    },
+    "stages/operators-CUDA0/attempt-001/report.json": {
+      "bytes": 4677,
+      "sha256": "2d77c2db965e815a7728603fb440dd166a3393484557860d1c4d593cd736c66f"
+    },
+    "stages/pilot-b5_v6_s0-ctx128/attempt-001/logs/run_rq3_performance_pilot.log": {
+      "bytes": 94655,
+      "sha256": "d7a644bde90677baf205d03782504167b41b4c059744340fd7c683a00bdbb56f"
+    },
+    "stages/pilot-b5_v6_s0-ctx128/attempt-001/pilot/report.json": {
+      "bytes": 9000,
+      "sha256": "5e400abae58309b9ffc4d047fcfcb344574c955e5b95980620d5fe3e533cd004"
+    },
+    "stages/pilot-b5_v6_s0-ctx2048/attempt-001/logs/run_rq3_performance_pilot.log": {
+      "bytes": 95048,
+      "sha256": "2677b3aafe03027e241cf9fc8ec3a2c693c7420975ff9597a4f50ae1f1a24982"
+    },
+    "stages/pilot-b5_v6_s0-ctx2048/attempt-001/pilot/report.json": {
+      "bytes": 6460,
+      "sha256": "9c014701a70519ca4cbdec9a218d0253248c04a01bfb5646ddc0bcc164e1f284"
+    },
+    "stages/pilot-b5_v6_s0-ctx512/attempt-001/logs/run_rq3_performance_pilot.log": {
+      "bytes": 94657,
+      "sha256": "606ec344465bd7158c39655ab02089b43daa82c95aed6d84004c94c06efa52a7"
+    },
+    "stages/pilot-b5_v6_s0-ctx512/attempt-001/pilot/report.json": {
+      "bytes": 9012,
+      "sha256": "b821e4ce04dce93482b9fc522867ce342653606c7923a25307fb605426a1971d"
+    },
+    "stages/retained-b5_v6_s0/attempt-001/logs/run_rq3_retained_gpu.log": {
+      "bytes": 96701,
+      "sha256": "f871476df95e1c1ba1099d2c76cc45742e65046f7b8ddc08bd04511a16e3e321"
+    },
+    "stages/retained-b5_v6_s0/attempt-001/retained/report.json": {
+      "bytes": 3667,
+      "sha256": "f51d7a9a6b80d718e2b2abbcbc3c181809768cacc13cc9713dbf2cc2ed25edd6"
+    },
+    "stages/source-b5_v6_s0/attempt-001/logs/preflight_native_gpu.log": {
+      "bytes": 461,
+      "sha256": "4fe490df48ebad88aee91a04970bdd86b3fbba138a72fec10ef95ce3012b2953"
+    },
+    "stages/source-b5_v6_s0/attempt-001/source.json": {
+      "bytes": 360,
+      "sha256": "5d50dfa0e2c1e5cf1afbfb91666f6d938490fefc4c20daa18695ed713669818c"
+    },
+    "stages/whole-model-w6/attempt-001/logs/check_rq3_model.log": {
+      "bytes": 33371,
+      "sha256": "75e99476444a760c4aedb9d22434ffdf8a3d12cfd02001bb47016f0e943c8b77"
+    },
+    "stages/whole-model-w6/attempt-001/logs/make-fixture.log": {
+      "bytes": 141,
+      "sha256": "13e285580d0e84047d2264bc4b4947b5d6a1a80cd26a0b9517e385bd95af0243"
+    },
+    "stages/whole-model-w6/attempt-001/report.json": {
+      "bytes": 3246,
+      "sha256": "2b86b265cb1970a791bac70259cc9a5e100a77dbe7bc8032280a2f5403a1d2b0"
+    },
+    "stages/whole-model-w8/attempt-001/logs/check_rq3_model.log": {
+      "bytes": 33370,
+      "sha256": "ecb6ab5815e81d21aa1d661792440e60721108eb51ae320c00318b4f15574e1e"
+    },
+    "stages/whole-model-w8/attempt-001/logs/make-fixture.log": {
+      "bytes": 141,
+      "sha256": "cfa663d8d30f75654ff9a94ae4d763ddc4275d5d53eabb3e7b32423a526a1e3b"
+    },
+    "stages/whole-model-w8/attempt-001/report.json": {
+      "bytes": 3247,
+      "sha256": "9c996cb7c45a471d42285d67c5ed3fc7c44ccde0974809f4e87040373de27b4b"
+    },
+    "summary.json": {
+      "bytes": 2069,
+      "sha256": "54a423d2c4040429b9993c863263992aa3ff648c34294a4d2c2f8593fc0c6c0c"
+    },
+    "workflow.json": {
+      "bytes": 261408,
+      "sha256": "eea76f35110e7370407cd1357cda64ccdfe8ee8272fd3256f116ac330b5cc27c"
+    }
+  },
+  "retained_parity": {
+    "max_abs_error": 0.0322265625,
+    "mean_abs_error": 0.002836523566979521,
+    "mean_kl": 8.667400892968748e-06,
+    "top1_agreement": 1.0,
+    "positions": 16,
+    "generation_probes": 4,
+    "exact_generation_probes": 4,
+    "thresholds": {
+      "max_abs_error": 0.125,
+      "mean_abs_error": 0.005,
+      "mean_kl": 0.0001,
+      "top1_agreement_min": 0.99
+    },
+    "guards": {
+      "max_abs_error": true,
+      "mean_abs_error": true,
+      "mean_kl": true,
+      "top1": true,
+      "exact_generation": true
+    },
+    "passed": true,
+    "comparison": "cross-engine-native-v3",
+    "boundary": "Bounded numerical probes, not task accuracy or full-suite equivalence."
+  },
+  "payload_bytes": {
+    "auxiliary.safetensors": 667061152,
+    "model.gguf": 2768298560
+  },
+  "timing": [
+    {
+      "context": 128,
+      "status": "passed",
+      "measured_repetitions": 3,
+      "prefill_tokens_per_second": 36.376169418006086,
+      "decode_tokens_per_second": 19.863075720714875,
+      "median_prefill_seconds": 3.518847715999982,
+      "median_decode_step_ms": 50.04005549994872,
+      "decode_tps_min": 19.85047441566133,
+      "decode_tps_max": 19.881219900239394,
+      "boundary": "Warmup excluded. Rates are total tokens / total time; min/max are observed repetitions, not confidence intervals.",
+      "sampled_peak_process_vram_mib": 3450.0
+    },
+    {
+      "context": 512,
+      "status": "passed",
+      "measured_repetitions": 3,
+      "prefill_tokens_per_second": 36.47158019866809,
+      "decode_tokens_per_second": 19.841656040836238,
+      "median_prefill_seconds": 14.039164530000107,
+      "median_decode_step_ms": 50.09076950000235,
+      "decode_tps_min": 19.835378544453402,
+      "decode_tps_max": 19.846772324444164,
+      "boundary": "Warmup excluded. Rates are total tokens / total time; min/max are observed repetitions, not confidence intervals.",
+      "sampled_peak_process_vram_mib": 3972.0
+    },
+    {
+      "context": 2048,
+      "status": "stopped",
+      "measured_repetitions": 1,
+      "prefill_tokens_per_second": 36.446372095801046,
+      "decode_tokens_per_second": 19.732647367964642,
+      "median_prefill_seconds": 56.19214978700029,
+      "median_decode_step_ms": 50.2013430000261,
+      "decode_tps_min": 19.732647367964642,
+      "decode_tps_max": 19.732647367964642,
+      "boundary": "Warmup excluded. Rates are total tokens / total time; min/max are observed repetitions, not confidence intervals.",
+      "sampled_peak_process_vram_mib": 5542.0
+    }
+  ],
+  "limits": [
+    "2048 timing is one measured repetition only; it is not a completed context benchmark.",
+    "Missing binaries, weights and raw logits prevent independent GPU/numerical replay.",
+    "Rates include the synchronous private bridge, logit copies/checks and argmax; not pure kernels.",
+    "Sampled process VRAM may miss transients. Text inference does not load the auxiliary sidecar.",
+    "These are unchanged quantized-model parity probes, not new FP16/task quality evidence."
+  ]
+}

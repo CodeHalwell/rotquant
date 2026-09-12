@@ -1,0 +1,15 @@
+{
+  "date": "2026-09-10",
+  "pytest_command": "env ROTQUANT_REQUIRE_GIT_HISTORY=1 .venv/bin/pytest tests/ -q",
+  "pytest": {"passed": 849, "skipped": 17, "warnings": 2, "seconds": 97.47},
+  "skip_reason": "Existing arm64 AVX2 native cases",
+  "warning_reason": "Existing SWIG deprecation warnings",
+  "lint_command": ".venv/bin/ruff check .",
+  "lint": "passed",
+  "whitespace_command": "git diff --check",
+  "whitespace": "passed",
+  "real_bootstrap": "See bootstrap-regression.json: fresh, partial recovery, repeat all passed",
+  "notebook": "nbformat, alias and ordered-cell mocked orchestration tests passed; HTML generated, visual inspection unavailable",
+  "unexecuted": ["Colab end-to-end notebook", "CUDA numerical gates", "retained 4B checkpoint parity"],
+  "boundary": "No GPU job or model-quality experiment performed; no numerical implementation changed."
+}

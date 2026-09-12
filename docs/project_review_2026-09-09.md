@@ -1,5 +1,36 @@
 # Project review — 2026-09-09
 
+## Follow-up after the stopped public-task run
+
+The review below is the historical assessment at `85e1254`. The user has since
+stopped the reference-path public-task run for cost. Its log shows FP16 complete
+and only 30/384 prompts complete for the first W5/W6 arm, at about 0.85 generated
+tokens/s. **Do not follow §4A's instruction to run the entire sweep first.**
+The [roadmap](roadmap.md) and [native-v3 milestone](native_runtime_v3.md) now put
+exact export/model execution and a measured speed/memory/cost gate first.
+
+Corrections/qualifications to the original review:
+
+- Native-v2 CPU matrices already supported 1–8-bit codes, not only W4. The
+  W4 restriction belongs to GGUF-v1/model integration; neither supported the
+  retained W5/scale8 + shared W6/W8 full model.
+- L5 was a silent FP16 conversion, not a safe rejection of scale8. It is now
+  fixed by rejecting non-FP16 scales in the legacy exporters. The separate
+  native-v3 matrix contract preserves original codes and affine metadata, but
+  does not yet supply full-model GGUF/Metal/CUDA operators. L1–L4/L6–L12 remain
+  open; this is not a claim that the whole queue was cleared.
+- A push to remote `main` does not mutate a running pinned Colab checkout.
+  Pulling/re-checking-out code inside it changes identity. New native execution
+  needs new receipts regardless; preserve old evidence separately.
+- W5/W6 is an **under-budget** frontier point (−3.99%), not a strict ±1%
+  matched-size pair. W5/W8 is within that pairing window. Failure to detect a
+  task regression at n=128 does not establish equivalence; register a margin
+  and inspect paired uncertainty. A same-engine comparison reduces a confound
+  but does not remove artifact, dtype or tokenizer differences automatically.
+
+The original verification record below is not a record of tests for this new
+implementation. Current implementation verification belongs to its change set.
+
 Reviewed at `85e1254` (origin/main, 9 September 2026), the day the
 fresh-quality evidence was archived and the public-task gate was prepared.
 Fresh `uv sync --locked --extra dev --extra eval` environment (torch
