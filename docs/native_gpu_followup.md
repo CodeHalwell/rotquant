@@ -1,4 +1,4 @@
-# Native GPU follow-up: diagnostic repair and focused decode validation
+# Native GPU follow-up: focused decode4 bottleneck profiling
 
 ## Run next
 
@@ -6,15 +6,27 @@ Use [qwen35_4b_native_followup_colab.ipynb](../notebooks/qwen35_4b_native_follow
 on an **A100 40GB**, verify `SOURCE_ROOT`, then **Run all**. The notebook has
 persistent logs, per-phase caps, progress for every repetition, a results cell
 that also works after a stop, and a reports download cell. Use the new default
-`RUN_NAME = "followup3"`, not a repair cell in the failed run. Original checkpoints
+`RUN_NAME = "followup4-profile"`, not an edit to a completed run. Original checkpoints
 and past reports are never edited. There is no calibration or training.
 
 The [completed study evidence](../research/results/native_study_2026_09_11/README.md)
 supports tiled4's 3.30–3.35× prefill gain, not a decode gain. BF16/Unsloth speed
 comparisons were subsequently completed in [followup2](../research/results/native_followup_2026_09_13/README.md).
-The new run prioritizes the remaining candidate checks and matched timings.
+The [followup3 evidence](../research/results/native_decode4_2026_09_13/README.md)
+now confirms all 20 gates, ~60% faster decode and the retained prefill gain.
+The next run profiles the validated candidate at **128 tokens only**, alongside
+fresh reference/decode4 timing controls. It repeats neither conventional
+downloads nor 512/2048-token timings by default. `RUN_PROFILE = True` produces
+two separate diagnostic reports after correctness and throughput checks.
 
-## Current repair: cached-library diagnostic binding
+Profiles measure custom rotation, backbone matrix, vocabulary head and embedding
+CUDA-event time. They do not separately attribute non-custom attention/SSM,
+host transfers, CPU work or DRAM traffic. Profile mode disables CUDA graphs and
+synchronizes events; its wall throughput must not enter speed comparisons.
+Use absolute event milliseconds by phase to locate the next optimisation target,
+not old reference-kernel percentages. There is no new task-accuracy test.
+
+## Validated repair: cached-library diagnostic binding
 
 The uploaded followup2 bundle confirms exact private/public agreement on both
 CPU and CUDA for tiny BF16/Q4_0 models, reference retained-model parity, and all
@@ -39,8 +51,8 @@ Default `BASELINES = ()` avoids repeating the completed ~11.34 GB downloads
 and four timings. Fresh reference and decode4 measurements still run in pairs.
 Historical baselines remain archived, not imported as same-session results.
 To explicitly repeat baselines, select `("bf16", "ud_q4")`; this also restores
-the conventional preflight. Current diagnostics need fresh A100 verification;
-the Linux regression is a loader test, not proof of CUDA speed or model parity.
+the conventional preflight. Followup3 verified the repaired dispatch and bounded
+CUDA parity/timing. The Linux regression remains a loader test, not GPU evidence.
 
 ## What changed
 
@@ -109,25 +121,30 @@ quality, or the unexecuted decode4 candidate. No new GPU success is claimed.
   permutations, widths through 11008 and token boundaries. Fresh tiny-model
   and retained parity follow. Dispatch counters must prove the requested
   decode and tiled paths were used. No successful CPU test authorizes CUDA
-  execution, and no speed improvement is claimed before the Colab measurements.
+  execution. Followup3 subsequently established the measured short-context
+  speed improvement; other shapes/devices still require their own evidence.
 
 ## Bounded controls
 
 | Control | Default | Alternative |
 |---|---|---|
 | `ARMS` | `("b5_v6_s0",)` | Keep the tested recipe for this follow-up |
-| `CONTEXTS` | `(128, 512)` | Explicitly add 2048 with a new run name |
+| `RUN_NAME` | `"followup4-profile"` | A new name for changed controls |
+| `CONTEXTS` | `(128,)` | Explicitly add longer contexts with a new run name |
 | `CANDIDATE` | `"decode4"` | `"none"`: fresh reference + baselines only |
 | `BASELINES` | `()` | Opt in to BF16/UD-Q4 reruns; empty only with a candidate |
-| `RUN_PROFILE` | `False` | Optional diagnostic runs with a candidate |
+| `RUN_PROFILE` | `True` | `False` skips this run's profiling question |
 | Measurements | 3 repetitions + 1 warmup | 32 cached decode steps each |
-| Active allowance | 90 minutes | Includes builds/downloads/checks, not idle setup |
+| Active allowance | 60 minutes | Maximum, not expected duration; includes builds/checks |
 
 Baseline-only mode deliberately still runs fresh reference timing and all
 applicable correctness checks. It skips candidate gates/timings and profiles.
 It does **not** import old timings from an incompatible native binary. The CLI
 equivalent is `--performance-study --study-candidate none --skip-profile`.
-The normal decode follow-up uses `--study-candidate decode4 --skip-profile`.
+The focused profile uses `--study-candidate decode4` without `--skip-profile`.
+Both reference and candidate profiles run at the smallest selected context.
+With default controls, each uninstrumented process has a four-minute cap and
+each diagnostic process an eight-minute cap, inside the overall allowance.
 Selected phases have their own context-aware caps; failures preserve partial
 measurements and prevent ratios from incomplete or instrumented reports.
 
@@ -169,8 +186,15 @@ reference retained-model parity. The repair's real Linux loader test runs
 without CUDA: `python tests/check_cuda_diagnostic_loader.py --work-dir /tmp/rq3-loader-test`
 (choose a new empty directory). It reproduces old-alias zero counters and
 repaired execution counters after an actual cache round trip.
-The repaired dispatch probe, candidate CUDA model parity/speed and rendered
-Colab outputs remain unvalidated locally. Open the notebook on A100 40GB,
-verify `SOURCE_ROOT`, leave `followup3` defaults, choose **Runtime → Run all**, then inspect Results
-and download the reports before disconnecting/deleting the runtime to close
-those gaps. No GPU session was provisioned or billed by this development task.
+Followup3 then passed repaired dispatch, candidate CUDA model parity and speed.
+This notebook configuration has local top-to-bottom mocked execution coverage,
+not a new GPU profile result. The focused local suite passed 100 tests; the
+saved notebook matches its generator and contains no fabricated outputs.
+An HTML preview was generated, but browser policy blocked local visual inspection.
+Open it on A100 40GB, verify `SOURCE_ROOT`, keep
+`followup4-profile` defaults, choose **Runtime → Run all**, then inspect Results.
+Expect fresh reference/decode4 throughput plus two completed diagnostic groups:
+`profile-reference-b5_v6_s0-ctx128` and `profile-decode4-b5_v6_s0-ctx128`.
+Missing/stopped profiles leave this question unanswered even if timing passed.
+Download reports and disconnect/delete the runtime. No GPU session was
+provisioned or billed by this development task.

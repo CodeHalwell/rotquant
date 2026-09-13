@@ -22,7 +22,7 @@ See the [evidence and caveats](../research/results/native_cuda_2026_09_10/README
 This verifies native reproduction of the quantized checkpoint, not FP16/BF16
 quality recovery. W5/W8 is covered by synthetic tests, not a retained-model run.
 
-**Next gate: validate repaired dispatch tracking, then optimise single-token decoding.**
+**Next gate: profile validated decode4, then choose the next measured optimisation.**
 The [September 11 A100 study](../research/results/native_study_2026_09_11/README.md)
 completed all three reference/tiled4 timing pairs: 3.30–3.35× faster prefill,
 unchanged ~19.8–19.9 decode tok/s and bounded saved-model parity. The 2048 timing
@@ -33,7 +33,8 @@ The [targeted follow-up](native_gpu_followup.md) fixes ordinary embedding GPU
 placement, tests tiny BF16/Q4_0 graphs first, and collects missing same-bridge
 BF16/UD-Q4 controls before testing opt-in `decode4`. Profiles implicate backbone
 matrix operations (~75% of custom decode event time), then the head (~22%);
-these are not shares of full wall time. Candidate CUDA performance is unmeasured.
+these are not shares of full wall time. At that stage candidate CUDA performance
+was unmeasured; followup3 below closes the short-context timing gate.
 Then proceed to retained W5/W8/longer-context parity and transfer/DRAM profiling.
 September 13 preflight repair: the `2c4037e76f71` follow-up passed ordinary BF16
 but stopped on Q4_0 CPU/CUDA numerical drift with matching greedy traces, before
@@ -51,6 +52,18 @@ A CPU-only Linux regression reproduces that mechanism. The repair binds the
 execution dependency and adds an early fresh-counter gate. `followup3` skips
 conventional downloads/timing by default, preserves their historical results,
 and requires fresh reference/candidate pairs. No candidate promotion yet.
+September 13 followup3: [all 20 stages passed](../research/results/native_decode4_2026_09_13/README.md).
+At 128/512 tokens decode4 reaches 31.92/31.89 decode tok/s versus 19.94/19.91
+reference, a ~60% throughput gain; prefill improves 3.30–3.34× and sampled VRAM
+is unchanged. Retained parity remains bounded to the saved quantized model;
+no new teacher/task-accuracy result or automatic promotion is implied.
+`followup4-profile` now targets one 128-token context with fresh timing controls
+and separate reference/decode4 event profiles. It keeps original weights,
+private build reuse, all correctness gates and no conventional downloads.
+Use the new custom-event breakdown to choose backbone versus head work; do not
+reuse old bottleneck shares or mistake event times for whole-model wall time or
+DRAM bandwidth. Follow with longer context, retained W5/W8 and cost-bounded
+native task evaluation after the next candidate is validated.
 Resume public tasks under a new runtime-bound
 identity only after cost/quality gates; no speed ratio substitutes for quality.
 No new allocator/recovery sweep, requantization or promotion. Existing

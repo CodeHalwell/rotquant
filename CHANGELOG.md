@@ -9,6 +9,19 @@ software.
 
 ## [Unreleased]
 
+### Focused decode4 profiling notebook (2026-09-13)
+
+- Archive and independently audit followup3: 20 gates passed, ~60% faster
+  decode, retained 3.3× prefill gain and unchanged sampled VRAM. Keep this
+  bounded runtime evidence separate from teacher/task accuracy.
+- Configure the follow-up notebook as `followup4-profile`: one 128-token
+  context, fresh reference/decode4 timings, separate CUDA-event profiles,
+  no conventional downloads and a 60-active-minute maximum. Preserve all gates,
+  native sources and compatible build caches; no kernel/recipe promotion.
+- Update the runbook and roadmap to require the new bottleneck evidence before
+  selecting the next optimisation. Notebook orchestration is tested with explicit
+  mocks; no new GPU profile is claimed.
+
 ### Cached CUDA diagnostic binding (2026-09-13)
 
 - Resolve diagnostic counters through the executing library's dependency

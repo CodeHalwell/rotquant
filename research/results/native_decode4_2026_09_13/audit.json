@@ -1,0 +1,116 @@
+{
+  "revision": "445a436e9f0c4ddc4f8ba9c2e7955e38dd837b06",
+  "checks": {
+    "included_artifact_references": 22,
+    "external_artifacts_absent": 48,
+    "producer_files": 42,
+    "candidate_operator_cases": 42,
+    "exact_reference_decode_cases": 54
+  },
+  "passed_stages": 20,
+  "active_minutes": 10.621857020949998,
+  "runtime_build_revision": "2c4037e76f71a8a05a4615df932717270dc12f56",
+  "timings": [
+    {
+      "label": "pilot",
+      "context": 128,
+      "measured_repetitions": 3,
+      "prefill_tokens_per_second": 36.33071686713525,
+      "decode_tokens_per_second": 19.938259716648975,
+      "median_prefill_seconds": 3.5228052200000093,
+      "median_decode_step_ms": 49.85302750000642,
+      "decode_tps_min": 19.927501271888456,
+      "decode_tps_max": 19.947393909950687,
+      "boundary": "Warmup excluded. Rates are total tokens / total time; min/max are observed repetitions, not confidence intervals.",
+      "sampled_peak_mib": 3450
+    },
+    {
+      "label": "decode4",
+      "context": 128,
+      "measured_repetitions": 3,
+      "prefill_tokens_per_second": 119.99806821859286,
+      "decode_tokens_per_second": 31.9156481228911,
+      "median_prefill_seconds": 1.0667027910000115,
+      "median_decode_step_ms": 31.034156000032453,
+      "decode_tps_min": 31.872938784520066,
+      "decode_tps_max": 31.992637182494274,
+      "boundary": "Warmup excluded. Rates are total tokens / total time; min/max are observed repetitions, not confidence intervals.",
+      "sampled_peak_mib": 3450
+    },
+    {
+      "label": "pilot",
+      "context": 512,
+      "measured_repetitions": 3,
+      "prefill_tokens_per_second": 36.42762685517576,
+      "decode_tokens_per_second": 19.90514468288335,
+      "median_prefill_seconds": 14.054819634000069,
+      "median_decode_step_ms": 49.907045000054495,
+      "decode_tps_min": 19.877705609094406,
+      "decode_tps_max": 19.934733421131995,
+      "boundary": "Warmup excluded. Rates are total tokens / total time; min/max are observed repetitions, not confidence intervals.",
+      "sampled_peak_mib": 3972
+    },
+    {
+      "label": "decode4",
+      "context": 512,
+      "measured_repetitions": 3,
+      "prefill_tokens_per_second": 121.81540754797571,
+      "decode_tokens_per_second": 31.88605275649616,
+      "median_prefill_seconds": 4.202560492000089,
+      "median_decode_step_ms": 31.06145800001059,
+      "decode_tps_min": 31.845772135682676,
+      "decode_tps_max": 31.934729054363963,
+      "boundary": "Warmup excluded. Rates are total tokens / total time; min/max are observed repetitions, not confidence intervals.",
+      "sampled_peak_mib": 3972
+    }
+  ],
+  "comparisons": [
+    {
+      "label": "decode4",
+      "context": 128,
+      "reference_report_sha256": "18f9a9a5baac130075b2cc06fc424dc92354f0d10634407caff5ca21e9ff102f",
+      "candidate_report_sha256": "12f246d1381f8fae80c367963e7a0d1c4b0f8bb56478c0594fe59c24f8a26b43",
+      "prefill_rate_ratio_to_reference": 3.302936979125316,
+      "decode_rate_ratio_to_reference": 1.6007238633891747,
+      "sampled_vram_ratio_to_reference": 1,
+      "boundary": "Within-run fixed-token bridge rates. Not task accuracy, a pure-kernel rate, or an equal-quality/size claim."
+    },
+    {
+      "label": "decode4",
+      "context": 512,
+      "reference_report_sha256": "371cffec2d21dc28b965a3a123c58350eacc7f885abfa23180d4fa39ec1e8d69",
+      "candidate_report_sha256": "9e3353144ee78eef712aa3f32157c8fdea8a6695fef352ed1de9b5bbe67d5a0c",
+      "prefill_rate_ratio_to_reference": 3.3440390732087386,
+      "decode_rate_ratio_to_reference": 1.6019000748040442,
+      "sampled_vram_ratio_to_reference": 1,
+      "boundary": "Within-run fixed-token bridge rates. Not task accuracy, a pure-kernel rate, or an equal-quality/size claim."
+    }
+  ],
+  "retained_parity": {
+    "max_abs_error": 0.0322265625,
+    "mean_abs_error": 0.002836523566979521,
+    "mean_kl": 0.000008667400892968748,
+    "top1_agreement": 1,
+    "positions": 16,
+    "generation_probes": 4,
+    "exact_generation_probes": 4,
+    "thresholds": {
+      "max_abs_error": 0.125,
+      "mean_abs_error": 0.005,
+      "mean_kl": 0.0001,
+      "top1_agreement_min": 0.99
+    },
+    "guards": {
+      "max_abs_error": true,
+      "mean_abs_error": true,
+      "mean_kl": true,
+      "top1": true,
+      "exact_generation": true
+    },
+    "passed": true,
+    "comparison": "cross-engine-native-v3",
+    "boundary": "Bounded numerical probes, not task accuracy or full-suite equivalence."
+  },
+  "complete_model_payload_bytes": 3435359712,
+  "boundary": "Offline receipt/hash/arithmetic and reported-guard audit. Binaries, model tensors and raw parity logits are absent; no GPU replay, new quality measurement, or automatic promotion."
+}

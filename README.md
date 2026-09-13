@@ -1,14 +1,13 @@
 # rotquant-eval
 
-**Next Colab run:** [Focused decode validation after cache repair](notebooks/qwen35_4b_native_followup_colab.ipynb).
-The [runbook](docs/native_gpu_followup.md) covers early dispatch checks and fresh
-reference/decode4 pairs on unchanged W5/W6 weights. The completed
+**Next Colab run:** [Focused decode4 bottleneck profile](notebooks/qwen35_4b_native_followup_colab.ipynb).
+[Followup3 passed all 20 gates](research/results/native_decode4_2026_09_13/README.md):
+~60% faster decode (~19.9 → 31.9 tok/s), 3.3× faster prefill, unchanged sampled
+VRAM and bounded saved-model parity. The [runbook](docs/native_gpu_followup.md)
+now defaults to `followup4-profile`: one 128-token context, fresh reference/decode4
+timings and separate diagnostic profiles on unchanged W5/W6 weights. The completed
 [BF16/Unsloth baselines](research/results/native_followup_2026_09_13/README.md)
-are archived; the default `followup3` skips repeating those downloads/timings.
-The [A100 study](research/results/native_study_2026_09_11/README.md)
-confirmed 3.30–3.35× faster prefill; reference decode remains ~20 tok/s versus
-Unsloth's ~113–127 tok/s in followup2. Candidate full-model CUDA validation and
-speed remain pending after repairing a cached-library diagnostic counter bug.
+remain historical; there is no repeat download or same-run comparison by default.
 
 A GPU-oriented assessment harness for **TurboQuant-style rotation + weight
 compression**. The implemented experiment cells test the following hypotheses on
@@ -158,7 +157,7 @@ common-FP16 KL by 55.6–57.9% versus the pinned Unsloth UD-Q4_K_XL; W5/W8 by
 W4 models or evidence of general task/serving superiority. The authored tasks
 exposed seed sensitivity and two oracle/format interpretation limitations.
 
-**Next: targeted native GPU baseline completion and decode optimisation.** The public-task run was
+**Next: profile the validated decode4 path before further optimisation.** The public-task run was
 stopped after the W5/W6 Python reference path proved too slow. Native full-model
 execution now passes the user's [A100 W5/W6 saved-probe checks](research/results/native_cuda_2026_09_10/README.md),
 and the [same-run A100 study](research/results/native_study_2026_09_11/README.md)
@@ -166,9 +165,10 @@ confirms tiled4 prefill gains and bounded parity. The [new notebook](notebooks/q
 now repairs cached-library diagnostic binding and tests dispatch before
 full-model work. The [baseline follow-up](research/results/native_followup_2026_09_13/README.md)
 completed conventional comparisons and confirmed public/private API agreement.
-Fresh candidate parity and timing are next. See the
-[runbook](docs/native_gpu_followup.md); decode speedup/CUDA conformance are still
-unmeasured. Saved checkpoints and partial results are preserved;
+[Followup3](research/results/native_decode4_2026_09_13/README.md) completed candidate
+parity and timing; the current notebook isolates the remaining custom-operator
+bottleneck at 128 tokens. See the [runbook](docs/native_gpu_followup.md).
+Saved checkpoints and partial results are preserved;
 no re-quantization or training is required before a new runtime-bound
 [public-task run](docs/public_tasks_run_2026-09-09.md). The
 [project deep dive of 8 September](docs/project_deep_dive_2026-09-08.md) records

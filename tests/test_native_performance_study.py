@@ -300,7 +300,7 @@ def test_optimization_notebook_executes_top_to_bottom_with_explicit_mocks(tmp_pa
     notebook = followup_notebook() if followup else build_notebook()
     nbformat.validate(notebook)
     suffix = "followup" if followup else "optimization"
-    run_name = "followup3" if followup else "study1"
+    run_name = "followup4-profile" if followup else "study1"
     saved = nbformat.read(Path(__file__).resolve().parents[1] / f"notebooks/qwen35_4b_native_{suffix}_colab.ipynb", as_version=4)
     assert [(c.cell_type, c.source) for c in notebook.cells] == [(c.cell_type, c.source) for c in saved.cells]
     content = str(tmp_path / "content")
@@ -354,14 +354,21 @@ def test_optimization_notebook_executes_top_to_bottom_with_explicit_mocks(tmp_pa
     finally:
         sys.path[:] = old_path
     assert len(launches) == 1 and "--performance-study" in launches[0]
-    assert launches[0].count("--context") == (2 if followup else 3)
+    assert launches[0].count("--context") == (1 if followup else 3)
     assert launches[0].count("--baseline") == (0 if followup else 2)
     assert len(downloads) == 1 and downloads[0].endswith(f"{run_name}-reports-123.zip")
     if followup:
         assert "--no-baselines" in launches[0]
         assert "Early dispatch preflight" in notebook.cells[5].source
         assert "2c4037e76f71" in notebook.cells[5].source
-        assert "--skip-profile" in launches[0]
+        assert "--skip-profile" not in launches[0]
+        assert scope["RUN_PROFILE"] is True
+        assert scope["ACTIVE_BUDGET_MINUTES"] == 60
+        assert launches[0][launches[0].index("--active-minutes") + 1] == "60"
+        assert launches[0][launches[0].index("--context") + 1] == "128"
+        assert "profile-decode4-b5_v6_s0-ctx128" in notebook.cells[7].source
+        assert all(not cell.get("outputs") and cell.get("execution_count") is None
+                   for cell in saved.cells if cell.cell_type == "code")
         assert launches[0][launches[0].index("--study-candidate") + 1] == "decode4"
 
 
