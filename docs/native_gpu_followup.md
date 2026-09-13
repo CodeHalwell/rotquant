@@ -1,6 +1,14 @@
 # Native GPU follow-up: focused decode4 bottleneck profiling
 
-## Run next
+## Completed profile; next run
+
+The uploaded followup4 profile completed successfully. See its
+[audit and findings](../research/results/native_decode4_profile_2026_09_13/README.md).
+Use the **[W5 backbone experiment](native_backbone_experiment.md)** next, not
+another unchanged profile. The instructions below preserve the prior profile's
+reproducible controls and diagnostic boundaries.
+
+## Historical profile run
 
 Use [qwen35_4b_native_followup_colab.ipynb](../notebooks/qwen35_4b_native_followup_colab.ipynb)
 on an **A100 40GB**, verify `SOURCE_ROOT`, then **Run all**. The notebook has

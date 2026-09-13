@@ -5,6 +5,7 @@
 #include "ggml-backend.h"
 #include "ggml-alloc.h"
 #include <cmath>
+#include <chrono>
 #include <cstring>
 #include <memory>
 #include <stdexcept>
@@ -14,18 +15,20 @@
 static thread_local std::string error;
 extern "C" const char * rq3_test_error() { return error.c_str(); }
 
-extern "C" int rq3_test_eval(const char * device, const uint8_t * data, size_t size,
+static int rq3_test_impl(const char * device, const uint8_t * data, size_t size,
         int64_t rows, int64_t cols, int64_t tokens, int mode, const void * input,
-        const int8_t * signs, const int32_t * row_map, const int32_t * col_map, float * output) {
+        const int8_t * signs, const int32_t * row_map, const int32_t * col_map, float * output,
+        int repeats, int iterations, double * seconds) {
     error.clear();
     try {
         if (rq_native_v3_validate(data, size, rows, cols) || cols % 128 || !input || !signs || !output ||
-            tokens < 1 || tokens > 65535 || mode < 0 || mode > 2) { throw std::runtime_error("invalid operator fixture"); }
+            tokens < 1 || tokens > 65535 || mode < 0 || mode > 2 || repeats < 0 || repeats > 20 ||
+            iterations < 1 || iterations > 100 || (repeats && !seconds)) { throw std::runtime_error("invalid operator fixture"); }
         if (data[20] != 128 || data[21] || data[22] || data[23]) { throw std::runtime_error("operator fixture requires g128"); }
         for (int64_t i = 0; i < cols; ++i) {
             if (signs[i] != 1 && signs[i] != -1) { throw std::runtime_error("invalid sign"); }
         }
-        for (const auto pair : {std::make_pair(row_map, rows), std::make_pair(col_map, cols)}) {
+        for (const auto & pair : {std::make_pair(row_map, rows), std::make_pair(col_map, cols)}) {
             if (!pair.first) { continue; }
             std::vector<bool> seen(pair.second, false);
             for (int64_t i = 0; i < pair.second; ++i) {
@@ -68,10 +71,37 @@ extern "C" int rq3_test_eval(const char * device, const uint8_t * data, size_t s
         if (cp) { ggml_backend_tensor_set(cp, col_map, 0, cols * 4); }
         if (ggml_backend_graph_compute(backend.get(), graph) != GGML_STATUS_SUCCESS) { throw std::runtime_error("GPU graph execution failed"); }
         ggml_backend_synchronize(backend.get());
+        // Resident synthetic graph: allocation, uploads, one warmup and the
+        // final output copy are outside timing. Each repetition includes graph
+        // launch/compute and completion synchronization, not just matrix time.
+        for (int r = 0; r < repeats; ++r) {
+            const auto begin = std::chrono::steady_clock::now();
+            for (int i = 0; i < iterations; ++i) {
+                if (ggml_backend_graph_compute(backend.get(), graph) != GGML_STATUS_SUCCESS) {
+                    throw std::runtime_error("benchmark graph execution failed");
+                }
+            }
+            ggml_backend_synchronize(backend.get());
+            seconds[r] = std::chrono::duration<double>(std::chrono::steady_clock::now() - begin).count() / iterations;
+        }
         ggml_backend_tensor_get(y, output, 0, ggml_nbytes(y));
         for (int64_t i = 0; i < ggml_nelements(y); ++i) {
             if (!std::isfinite(output[i])) { throw std::runtime_error("non-finite operator output"); }
         }
         return 0;
     } catch (const std::exception & e) { error = e.what(); return 1; }
+}
+
+extern "C" int rq3_test_eval(const char * device, const uint8_t * data, size_t size,
+        int64_t rows, int64_t cols, int64_t tokens, int mode, const void * input,
+        const int8_t * signs, const int32_t * row_map, const int32_t * col_map, float * output) {
+    return rq3_test_impl(device, data, size, rows, cols, tokens, mode, input, signs, row_map, col_map, output, 0, 1, nullptr);
+}
+
+extern "C" int rq3_test_benchmark(const char * device, const uint8_t * data, size_t size,
+        int64_t rows, int64_t cols, int64_t tokens, int mode, const void * input,
+        const int8_t * signs, const int32_t * row_map, const int32_t * col_map, float * output,
+        int repeats, int iterations, double * seconds) {
+    return rq3_test_impl(device, data, size, rows, cols, tokens, mode, input, signs, row_map, col_map, output,
+                         repeats, iterations, seconds);
 }

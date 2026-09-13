@@ -46,12 +46,13 @@ def summarize(rows):
         "boundary": "Warmup excluded. Rates are total tokens / total time; min/max are observed repetitions, not confidence intervals."}
 
 
-def reference_tokens(reference):
+def reference_tokens(reference, expected_kernel="reference"):
     """Require a complete, deterministic uninstrumented reference receipt."""
     rows = reference.get("rows", [])
     controls = reference.get("controls", {})
     if (reference.get("passed") is not True or reference.get("measurement_kind") != "throughput"
-            or reference.get("settings", {}).get("rq3_kernel") != "reference"
+            or expected_kernel not in ("reference", "decode4")
+            or reference.get("settings", {}).get("rq3_kernel") != expected_kernel
             or reference.get("settings", {}).get("rq3_profile") is not False
             or controls.get("repetitions", 0) < 2
             or len(rows) != controls["repetitions"] + 1):
@@ -193,7 +194,8 @@ def run(args):
         reference = getattr(args, "replay_report", None)
         if reference:
             source = json.loads(reference.read_text())
-            fixed = reference_tokens(source)
+            report["replay_kernel"] = getattr(args, "replay_kernel", "reference")
+            fixed = reference_tokens(source, report["replay_kernel"])
             if (source.get("passed") is not True or source.get("measurement_kind") != "throughput"
                     or source["runtime_files"] != identity or source["context"] != args.context
                     or source.get("prompt_ids_sha256") != report["prompt_ids_sha256"]
@@ -218,10 +220,18 @@ def run(args):
                         memory=memory, persist=persist, forced_decode=fixed, diagnostics=diagnostics)
                 if diagnostics:
                     report["native_diagnostics"] = diagnostics.snapshot()
-                    if report["settings"]["rq3_kernel"] in ("tiled4", "decode4") and not report["native_diagnostics"]["tiled_host_dispatches"]:
+                    from scripts.native_kernel_candidates import (
+                        DECODE_KERNELS,
+                        TILED_KERNELS,
+                        W5_TILES,
+                    )
+                    kernel = report["settings"]["rq3_kernel"]
+                    if kernel in TILED_KERNELS and not report["native_diagnostics"]["tiled_host_dispatches"]:
                         raise ValueError("Requested tiled kernel was not dispatched")
-                    if report["settings"]["rq3_kernel"] == "decode4" and not report["native_diagnostics"]["decode_host_dispatches"]:
+                    if kernel in DECODE_KERNELS and not report["native_diagnostics"]["decode_host_dispatches"]:
                         raise ValueError("Requested decode kernel was not dispatched")
+                    if kernel in W5_TILES and not report["native_diagnostics"].get("w5_host_dispatches", {}).get(str(W5_TILES[kernel])):
+                        raise ValueError("Requested W5 candidate was not dispatched")
                 report["gpu_custom_ops"] = model.custom_ops
                 if model.custom_ops <= 0:
                     raise ValueError("No packed native operations observed")
@@ -252,6 +262,8 @@ def main():
     parser.add_argument("--min-decode-tps", type=float, default=2.)
     parser.add_argument("--max-vram-mib", type=float, default=16384.)
     parser.add_argument("--replay-report", type=Path, help="Replay the validated reference's decode IDs")
+    parser.add_argument("--replay-kernel", choices=("reference", "decode4"), default="reference",
+                        help="Explicit expected kernel of the replay receipt")
     args = parser.parse_args()
     def terminate(signum, frame):
         raise KeyboardInterrupt("Pilot phase interrupted; partial measurements preserved")

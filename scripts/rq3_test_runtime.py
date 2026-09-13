@@ -35,7 +35,7 @@ class NativeTests:
         self.lib.rq3_model_close.argtypes = [C.c_void_p]
         self.lib.rq3_model_close.restype = None
 
-    def operator(self, backend, matrix: NativeV3Matrix, signs, inputs, mode=0, rows=None, columns=None):
+    def operator(self, backend, matrix: NativeV3Matrix, signs, inputs, mode=0, rows=None, columns=None, *, benchmark=None):
         matrix.validate()
         if matrix.layout.group_size != 128 or matrix.layout.in_features % 128:
             raise ValueError("operator tests require g128/aligned inputs")
@@ -58,10 +58,27 @@ class NativeTests:
         raw = np.frombuffer(matrix.to_bytes(), dtype=np.uint8)
         output = np.empty((len(inputs), matrix.layout.in_features if mode == 2 else matrix.layout.out_features), dtype=np.float32)
         ptr = lambda x: None if x is None else x.ctypes.data
-        status = self.lib.rq3_test_eval(backend.encode(), ptr(raw), raw.nbytes, matrix.layout.out_features,
-            matrix.layout.in_features, len(inputs), mode, ptr(inputs), ptr(signs), ptr(rows), ptr(columns), ptr(output))
+        arguments = [backend.encode(), ptr(raw), raw.nbytes, matrix.layout.out_features,
+            matrix.layout.in_features, len(inputs), mode, ptr(inputs), ptr(signs), ptr(rows), ptr(columns), ptr(output)]
+        seconds = None
+        if benchmark is not None:
+            repeats, iterations = benchmark
+            if (type(repeats) is not int or type(iterations) is not int
+                    or not 1 <= repeats <= 20 or not 1 <= iterations <= 100):
+                raise ValueError("bounded integer benchmark repetitions/iterations required")
+            function = self.lib.rq3_test_benchmark  # Required only for the new screen; old bindings still load.
+            function.argtypes = [*self.lib.rq3_test_eval.argtypes, C.c_int, C.c_int, C.c_void_p]
+            function.restype = C.c_int
+            seconds = np.empty(repeats, dtype=np.float64)
+            status = function(*arguments, repeats, iterations, ptr(seconds))
+        else:
+            status = self.lib.rq3_test_eval(*arguments)
         if status:
             raise RuntimeError(self.lib.rq3_test_error().decode())
+        if seconds is not None:
+            if not np.isfinite(seconds).all() or (seconds <= 0).any():
+                raise RuntimeError("invalid native benchmark durations")
+            return output, seconds.tolist()
         return output
 
     def model(self, path: Path, backend: str, context=512):

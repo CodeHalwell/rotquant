@@ -9,6 +9,23 @@ software.
 
 ## [Unreleased]
 
+### W5 backbone kernel screen and confirmation (2026-09-13)
+
+- Archive/audit the completed followup4 profile. Keep custom CUDA-event shares
+  separate from full-model wall time, DRAM traffic and accuracy.
+- Add opt-in `w5s8`, `w5s8-tile8`, `w5s8-tile16` CUDA paths. Preserve the
+  reference accumulation/rounding contract, packed weights, vocabulary and
+  rotation arithmetic. Other scalar/scale formats retain generic arithmetic.
+- Add a resident synthetic-graph benchmark with uploads/allocation/readback
+  excluded, paired AB/BA measurements and a fail-closed shortlist. Separate
+  tile dispatch counters prevent silent fallback to the old candidate.
+- Prepare `qwen35_4b_native_backbone_colab.ipynb`: screen before model export;
+  at most two finalists; fresh unchanged numerical gates; explicit decode4
+  replay and paired uninstrumented model timings; persistent progress and caps.
+- Compile-check CUDA for A100 locally and exercise the native CPU benchmark.
+  Compilation, CPU checks and notebook mocks are not CUDA numerical/performance
+  validation. Default kernels and quantization recipes are not promoted.
+
 ### Focused decode4 profiling notebook (2026-09-13)
 
 - Archive and independently audit followup3: 20 gates passed, ~60% faster

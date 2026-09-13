@@ -5,6 +5,8 @@ extern "C" {
 const char * rq3_test_error();
 int rq3_test_eval(const char *, const uint8_t *, size_t, int64_t, int64_t, int64_t, int,
                   const void *, const int8_t *, const int32_t *, const int32_t *, float *);
+int rq3_test_benchmark(const char *, const uint8_t *, size_t, int64_t, int64_t, int64_t, int,
+                  const void *, const int8_t *, const int32_t *, const int32_t *, float *, int, int, double *);
 const char * rq3_model_error();
 void * rq3_model_open(const char *, const char *, uint32_t);
 int rq3_model_vocab(void *);

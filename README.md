@@ -1,13 +1,15 @@
 # rotquant-eval
 
-**Next Colab run:** [Focused decode4 bottleneck profile](notebooks/qwen35_4b_native_followup_colab.ipynb).
-[Followup3 passed all 20 gates](research/results/native_decode4_2026_09_13/README.md):
-~60% faster decode (~19.9 → 31.9 tok/s), 3.3× faster prefill, unchanged sampled
-VRAM and bounded saved-model parity. The [runbook](docs/native_gpu_followup.md)
-now defaults to `followup4-profile`: one 128-token context, fresh reference/decode4
-timings and separate diagnostic profiles on unchanged W5/W6 weights. The completed
-[BF16/Unsloth baselines](research/results/native_followup_2026_09_13/README.md)
-remain historical; there is no repeat download or same-run comparison by default.
+**Next Colab run:** [W5 backbone kernel experiment](notebooks/qwen35_4b_native_backbone_colab.ipynb).
+[Followup4 passed all 20 gates](research/results/native_decode4_profile_2026_09_13/README.md)
+and reproduced ~60% faster decode. Backbone matrices remain the largest custom
+operator cost, followed by the vocabulary head. The [new runbook](docs/native_backbone_experiment.md)
+screens W5/scale8 specialization and 8/16-token prefill tiles against **decode4**,
+then validates at most two finalists on the unchanged W5/W6 checkpoint. It stops
+before model export if none qualifies. Live logs, bounded phases and report
+downloads are built in. These candidates have **no measured GPU win yet**.
+The [BF16/Unsloth baselines](research/results/native_followup_2026_09_13/README.md)
+remain historical; there are no conventional downloads in this run.
 
 A GPU-oriented assessment harness for **TurboQuant-style rotation + weight
 compression**. The implemented experiment cells test the following hypotheses on

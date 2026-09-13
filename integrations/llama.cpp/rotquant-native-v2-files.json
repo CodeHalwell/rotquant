@@ -1,11 +1,11 @@
 {
   "base_revision": "17252c769a63c1cb650ce98ae309cf4de0da7778",
-  "patch_sha256": "8a090ad8e731f300f2ed9383021a0ca446b8e99300593faf1afe52a0bbc8b3dc",
+  "patch_sha256": "72ba69cc60652575c3d363e5ae6c5bcdcf668a8a46515cebfbab7f4295e4ef3f",
   "files_sha256": {
     "ggml/src/ggml-backend.cpp": "8197d695b87077912739324f414859f6db7e606ac12798e84924e94844addfd0",
     "ggml/src/ggml-cuda/CMakeLists.txt": "029b62d2189ea25962fdd1a2064aa699c010481081c7d68ec9f3aeaab5198939",
     "ggml/src/ggml-cuda/ggml-cuda.cu": "2d90d7a946f8931d6e2806f2a3180977bccdef553cfe93578599a71dc41c0c73",
-    "ggml/src/ggml-cuda/rq3.cu": "bf7241a1ea3dca75f812c6f9fac66527f1743cfdc73d73088e65d8e9e1f695f4",
+    "ggml/src/ggml-cuda/rq3.cu": "1fd60b85174789e25dcb59d3994aadeb4fd6c92c6a044d915dcddd5c043b25a5",
     "ggml/src/ggml-metal/CMakeLists.txt": "ef65986ed9f4d318c29ed49ad419066b9f4cf7d977cdbb62c8602ce6d32305b2",
     "ggml/src/ggml-metal/ggml-metal-device.cpp": "bd550f5a0c0ac24f1ad1165bd9665cdee9c3b9466155aa577d4c1bf724c459ef",
     "ggml/src/ggml-metal/ggml-metal-device.h": "7b792f7593738cc6282ee3348ecb26b73143f8400f4a510b458d6e3129352c07",

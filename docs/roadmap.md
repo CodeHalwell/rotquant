@@ -22,7 +22,21 @@ See the [evidence and caveats](../research/results/native_cuda_2026_09_10/README
 This verifies native reproduction of the quantized checkpoint, not FP16/BF16
 quality recovery. W5/W8 is covered by synthetic tests, not a retained-model run.
 
-**Next gate: profile validated decode4, then choose the next measured optimisation.**
+**Next gate: W5 backbone kernel screen, then retained-model confirmation against decode4.**
+The [completed followup4 profile](../research/results/native_decode4_profile_2026_09_13/README.md)
+passes all 20 stages, reproducing 32.17 versus 20.04 decode tok/s at 128 tokens.
+Backbone matrices are 57.8% of measured custom decode event time and 98.7% of
+custom prefill time; the unchanged vocabulary head is 37.0% of custom decode.
+These are not whole-model wall-time or DRAM-bandwidth shares.
+The [new backbone experiment](native_backbone_experiment.md) implements three
+opt-in W5/scale8/tile candidates and a cheap exact-parity/synthetic-speed screen.
+At most two candidates proceed to fresh full-model gates and same-run decode4
+timings. No eligible candidate stops the run before export/model work. GPU
+candidate correctness and speed remain unmeasured; compile success is not a win.
+Keep vocabulary-head optimization separate; then validate longer context/W5-W8,
+repeat conventional controls and resume cost-bounded native task evaluation.
+
+Historical sequence leading to this decision:
 The [September 11 A100 study](../research/results/native_study_2026_09_11/README.md)
 completed all three reference/tiled4 timing pairs: 3.30–3.35× faster prefill,
 unchanged ~19.8–19.9 decode tok/s and bounded saved-model parity. The 2048 timing

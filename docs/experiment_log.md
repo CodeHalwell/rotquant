@@ -6,6 +6,33 @@ learned, negative results, and the decision that followed. Results produced in
 external notebooks are recorded here even when their raw artifacts live on
 Google Drive.
 
+## 2026-09-13: decode4 profiling completed; backbone candidates prepared
+
+The [followup4 archive and offline audit](../research/results/native_decode4_profile_2026_09_13/README.md)
+preserve all 61 uploaded files. All 20 stages passed in 11.5882 active minutes.
+Fresh A100 128-token measurements reproduce 20.0399 → 32.1672 decode tok/s and
+36.3489 → 120.1012 prefill tok/s, with 3450 MiB sampled process allocation.
+Original retained-quantized-model parity thresholds pass; no new task quality
+or full-precision alignment is established.
+
+Separate event profiles put backbone matrices at 57.8% of custom decode time
+and 98.7% of custom prefill time. The vocabulary head is unchanged in absolute
+time and now 37.0% of custom decode; rotations are 5.1%. These are not full
+wall-time shares or a diagnosis of memory-bandwidth saturation.
+
+Decision: implement opt-in W5/scale8 specialization plus 8/16-token prefill
+tiles, test exact operator parity and resident synthetic-graph performance
+first, then send at most two finalists through unchanged full-model gates and
+timings against decode4. The [new notebook/runbook](native_backbone_experiment.md)
+uses original saved weights, fresh measurements, persistent logs and a hard
+active-time allowance. No promising candidate skips expensive model work.
+Vocabulary-head optimization remains an independent follow-on experiment.
+
+Local CUDA 12.8 compile-only checking for `sm_80` succeeded with no spills;
+the real CPU library built/loaded and the repeated benchmark entry point
+matched ordinary CPU outputs. Neither result establishes GPU numerical parity
+or a speedup. No paid GPU execution or automatic kernel promotion occurred.
+
 ## 2026-09-11: A100 pilot returned; native optimisation study prepared
 
 Archived the user's `pilot1-reports-1789113892245467172` reports byte-for-byte

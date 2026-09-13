@@ -73,7 +73,7 @@ new file mode 100644
 index 000000000..bf054b443
 --- /dev/null
 +++ b/ggml/src/ggml-cuda/rq3.cu
-@@ -0,0 +1,269 @@
+@@ -0,0 +1,359 @@
 +#include "common.cuh"
 +#include "rotquant-v3.h"
 +#include "ggml-cuda.h"
@@ -224,6 +224,20 @@ index 000000000..bf054b443
 +// combine 64 then 32 before the warp tree to preserve the reference FP32 order.
 +// Hoist group scales, share the small codebook, and remove block-wide barriers
 +// from the matrix loop. No dense expansion or vocabulary/rotation change.
++// W5/scale8/block256 specialization is opt-in; other formats retain the
++// generic arithmetic. Column widths are g128 aligned, so rows are byte aligned.
++__device__ __forceinline__ uint rq3_code5(rq3_view v, rq3_ulong row, rq3_ulong col) {
++    const rq3_ulong byte = ((row * v.cols + col) * 5) >> 3;
++    const uint shift = (uint(col) * 5) & 7;
++    uint code = v.codes[byte] >> shift;
++    if (shift > 3) { code |= uint(v.codes[byte + 1]) << (8 - shift); }
++    return code & 31u;
++}
++__device__ __forceinline__ float rq3_scale8_256(rq3_view v, rq3_ulong index) {
++    const float product = float(v.scales[index]) * rq3_half(v.steps + (index >> 8) * 2);
++    return rq3_half(v.offsets + (index >> 8) * 2) + product;
++}
++template <bool W5 = false>
 +static __global__ void kernel_rq3_decode4(rq3_args a, const uchar * src0,
 +        const uchar * src1, const uchar * src2, float * out) {
 +    const uint tid = threadIdx.x, lane = tid % 32, warp = tid / 32;
@@ -243,7 +257,9 @@ index 000000000..bf054b443
 +        float scale = 0;
 +        if (lane == 0) {
 +            const rq3_ulong index = row * v.groups + start / 128;
-+            if (v.sbits == 8) {
++            if (W5 && v.bits == 5 && v.sbits == 8 && v.block == 256) {
++                scale = rq3_scale8_256(v, index);
++            } else if (v.sbits == 8) {
 +                const float product = float(v.scales[index]) * rq3_half(v.steps + index / v.block * 2);
 +                scale = rq3_half(v.offsets + index / v.block * 2) + product;
 +            } else { scale = rq3_half(v.scales + index * 2); }
@@ -252,11 +268,16 @@ index 000000000..bf054b443
 +        #pragma unroll
 +        for (uint part = 0; part < 4; ++part) {
 +            const rq3_ulong col = start + lane + part * 32;
-+            const rq3_ulong bit = (row * v.cols + col) * v.bits;
-+            const uint shift = bit % 8;
-+            uint code = v.codes[bit / 8] >> shift;
-+            if (shift + v.bits > 8) { code |= uint(v.codes[bit / 8 + 1]) << (8 - shift); }
-+            code &= (1u << v.bits) - 1;
++            uint code;
++            if (W5 && v.bits == 5 && v.sbits == 8 && v.block == 256) {
++                code = rq3_code5(v, row, col);
++            } else {
++                const rq3_ulong bit = (row * v.cols + col) * v.bits;
++                const uint shift = bit % 8;
++                code = v.codes[bit / 8] >> shift;
++                if (shift + v.bits > 8) { code |= uint(v.codes[bit / 8 + 1]) << (8 - shift); }
++                code &= (1u << v.bits) - 1;
++            }
 +            sums[part] += rq3_round(book[code] * scale) * rq3_round(input[col]);
 +        }
 +    }
@@ -268,6 +289,55 @@ index 000000000..bf054b443
 +    if (lane == 0) { out[target] = rq3_round(sum); }
 +}
 +
++// Independent prefill tile sizes. One decoded weight feeds T token sums;
++// preserve every token's original 128-lane reduction and FP16 boundaries.
++template <int T>
++static __global__ void kernel_rq3_w5_tiled(rq3_args a, const uchar * src0,
++        const uchar * src1, const uchar * src2, float * out) {
++    const uint lane = threadIdx.x;
++    const rq3_ulong first = rq3_ulong(blockIdx.y) * T;
++    const rq3_view v = rq3_parse(src1);
++    const bool specialized = v.bits == 5 && v.sbits == 8 && v.block == 256;
++    const rq3_ulong row = a.permutation ? ((const int *) src2)[blockIdx.x] : blockIdx.x;
++    const float * input = (const float *) src0;
++    __shared__ float book[32], tile[T][128];
++    if (specialized && lane < 32) { book[lane] = __uint_as_float(rq3_u32(v.book + lane * 4)); }
++    __syncthreads();
++    float sums[T] = {};
++    for (rq3_ulong start = 0; start < v.cols; start += 128) {
++        const rq3_ulong col = start + lane;
++        float w;
++        if (specialized) {
++            float scale = 0;
++            if (lane % 32 == 0) { scale = rq3_scale8_256(v, row * v.groups + start / 128); }
++            scale = __shfl_sync(0xffffffffu, scale, 0);
++            w = rq3_round(book[rq3_code5(v, row, col)] * scale);
++        } else { w = rq3_round(rq3_weight(v, row, col)); }
++        #pragma unroll
++        for (int t = 0; t < T; ++t) {
++            if (first + t < rq3_ulong(a.tokens)) {
++                sums[t] += w * rq3_round(input[(first + t) * v.cols + col]);
++            }
++        }
++    }
++    #pragma unroll
++    for (int t = 0; t < T; ++t) { tile[t][lane] = sums[t]; }
++    __syncthreads();
++    for (uint stride = 64; stride > 0; stride /= 2) {
++        if (lane < stride) {
++            #pragma unroll
++            for (int t = 0; t < T; ++t) { tile[t][lane] += tile[t][lane + stride]; }
++        }
++        __syncthreads();
++    }
++    if (lane == 0) {
++        #pragma unroll
++        for (int t = 0; t < T; ++t) {
++            if (first + t < rq3_ulong(a.tokens)) { out[(first + t) * v.rows + blockIdx.x] = rq3_round(tile[t][0]); }
++        }
++    }
++}
++
 +// Process-local diagnostics. Counts describe host dispatches, not CUDA graph
 +// replays. Timings require graphs disabled and intentionally synchronize each
 +// custom op; never include these runs in the uninstrumented speed table.
@@ -276,6 +346,11 @@ index 000000000..bf054b443
 +static uint64_t rq3_profile_calls[4] = {};
 +static uint64_t rq3_tiled_dispatches = 0;
 +static uint64_t rq3_decode_dispatches = 0;
++static uint64_t rq3_w5_dispatches[3] = {};
++extern "C" GGML_BACKEND_API uint64_t ggml_cuda_rq3_w5_dispatches(int tile) {
++    std::lock_guard<std::mutex> guard(rq3_profile_mutex);
++    return tile == 4 ? rq3_w5_dispatches[0] : tile == 8 ? rq3_w5_dispatches[1] : tile == 16 ? rq3_w5_dispatches[2] : 0;
++}
 +extern "C" GGML_BACKEND_API uint64_t ggml_cuda_rq3_decode_dispatches() {
 +    std::lock_guard<std::mutex> guard(rq3_profile_mutex);
 +    return rq3_decode_dispatches;
@@ -298,9 +373,11 @@ index 000000000..bf054b443
 +    const int64_t groups = tag == RQ3_ROTATE || tag == RQ3_ROWS ? inputs / 128 : op->ne[0];
 +    GGML_ASSERT(groups > 0 && groups <= INT32_MAX && tokens > 0 && tokens <= 65535);
 +    const char * variant = getenv("ROTQUANT_RQ3_KERNEL");
-+    GGML_ASSERT(!variant || strcmp(variant, "reference") == 0 || strcmp(variant, "tiled4") == 0 || strcmp(variant, "decode4") == 0);
-+    const bool decode = variant && strcmp(variant, "decode4") == 0 && tag == RQ3_MATMUL && tokens == 1;
-+    const bool tiled = variant && (strcmp(variant, "tiled4") == 0 || strcmp(variant, "decode4") == 0) && tag == RQ3_MATMUL && tokens >= 4;
++    const int w5_tile = !variant ? 0 : strcmp(variant, "w5s8") == 0 ? 4 :
++        strcmp(variant, "w5s8-tile8") == 0 ? 8 : strcmp(variant, "w5s8-tile16") == 0 ? 16 : 0;
++    GGML_ASSERT(!variant || w5_tile || strcmp(variant, "reference") == 0 || strcmp(variant, "tiled4") == 0 || strcmp(variant, "decode4") == 0);
++    const bool decode = variant && (w5_tile || strcmp(variant, "decode4") == 0) && tag == RQ3_MATMUL && tokens == 1;
++    const bool tiled = variant && (w5_tile || strcmp(variant, "tiled4") == 0 || strcmp(variant, "decode4") == 0) && tag == RQ3_MATMUL && tokens >= 4;
 +    const char * enabled = getenv("ROTQUANT_RQ3_PROFILE");
 +    const bool profile = enabled && strcmp(enabled, "1") == 0;
 +    cudaEvent_t begin = nullptr, end = nullptr;
@@ -313,10 +390,22 @@ index 000000000..bf054b443
 +        CUDA_CHECK(cudaEventCreate(&end));
 +        CUDA_CHECK(cudaEventRecord(begin, ctx.stream()));
 +    }
-+    if (decode) {
-+        kernel_rq3_decode4<<<dim3((groups + 3) / 4), 128, 0, ctx.stream()>>>(a,
++    if (decode && w5_tile) {
++        kernel_rq3_decode4<true><<<dim3((groups + 3) / 4), 128, 0, ctx.stream()>>>(a,
 +            (const uchar *) op->src[0]->data, (const uchar *) op->src[1]->data,
 +            (const uchar *) op->src[2]->data, (float *) op->data);
++    } else if (decode) {
++        kernel_rq3_decode4<false><<<dim3((groups + 3) / 4), 128, 0, ctx.stream()>>>(a,
++            (const uchar *) op->src[0]->data, (const uchar *) op->src[1]->data,
++            (const uchar *) op->src[2]->data, (float *) op->data);
++    } else if (tiled && w5_tile) {
++        const dim3 grid(groups, (tokens + w5_tile - 1) / w5_tile);
++        const auto * x = (const uchar *) op->src[0]->data;
++        const auto * w = (const uchar *) op->src[1]->data;
++        const auto * p = (const uchar *) op->src[2]->data;
++        if (w5_tile == 4) { kernel_rq3_w5_tiled<4><<<grid, 128, 0, ctx.stream()>>>(a, x, w, p, (float *) op->data); }
++        if (w5_tile == 8) { kernel_rq3_w5_tiled<8><<<grid, 128, 0, ctx.stream()>>>(a, x, w, p, (float *) op->data); }
++        if (w5_tile == 16) { kernel_rq3_w5_tiled<16><<<grid, 128, 0, ctx.stream()>>>(a, x, w, p, (float *) op->data); }
 +    } else if (tiled) {
 +        kernel_rq3_tiled4<<<dim3(groups, (tokens + 3) / 4), 128, 0, ctx.stream()>>>(a,
 +            (const uchar *) op->src[0]->data, (const uchar *) op->src[1]->data,
@@ -342,6 +431,7 @@ index 000000000..bf054b443
 +    rq3_profile_calls[index]++;
 +    if (tiled) { rq3_tiled_dispatches++; }
 +    if (decode) { rq3_decode_dispatches++; }
++    if (w5_tile && (decode || tiled)) { rq3_w5_dispatches[w5_tile == 4 ? 0 : w5_tile == 8 ? 1 : 2]++; }
 +}
 diff --git a/ggml/src/ggml-metal/CMakeLists.txt b/ggml/src/ggml-metal/CMakeLists.txt
 index 140c5d809..a17adbe6a 100644

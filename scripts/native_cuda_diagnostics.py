@@ -45,6 +45,12 @@ class CudaDiagnostics:
             raise RuntimeError("CUDA diagnostic symbols are not owned by this runtime's CUDA dependency")
         self.binding = {"lookup": "execution-library dependency handle", "library": str(path),
                         "provider": str(provider), "provider_sha256": digest(provider)}
+        self.w5_calls = getattr(self.library, "ggml_cuda_rq3_w5_dispatches", None)
+        if self.w5_calls is not None:
+            self.w5_calls.argtypes = [C.c_int]
+            self.w5_calls.restype = C.c_uint64
+            if symbol_owner(self.w5_calls) != provider:
+                raise RuntimeError("W5 diagnostic provider mismatch")
 
     def snapshot(self):
         ms, calls, tiled = (C.c_double * 4)(), (C.c_uint64 * 4)(), C.c_uint64()
@@ -54,6 +60,7 @@ class CudaDiagnostics:
                               for i, name in enumerate(NAMES)},
                 "tiled_host_dispatches": tiled.value,
                 "decode_host_dispatches": self.decode_calls(),
+                "w5_host_dispatches": {str(t): self.w5_calls(t) for t in (4, 8, 16)} if self.w5_calls else {},
                 "binding": self.binding,
                 "instrumented": os.environ.get("ROTQUANT_RQ3_PROFILE") == "1"}
 
@@ -63,4 +70,6 @@ def difference(before, after):
                                 for key in ("milliseconds", "host_dispatches")} for name in NAMES},
             "tiled_host_dispatches": after["tiled_host_dispatches"] - before["tiled_host_dispatches"],
             "decode_host_dispatches": after.get("decode_host_dispatches", 0) - before.get("decode_host_dispatches", 0),
+            "w5_host_dispatches": {key: value - before.get("w5_host_dispatches", {}).get(key, 0)
+                                   for key, value in after.get("w5_host_dispatches", {}).items()},
             "instrumented": after["instrumented"]}

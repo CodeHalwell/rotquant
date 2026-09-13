@@ -1,0 +1,196 @@
+{
+  "revision": "53b8dac6cecf316c22070b2931fee800155072f8",
+  "passed_stages": 20,
+  "active_minutes": 11.588237234883332,
+  "checks": {
+    "included_artifact_references": 22,
+    "external_artifacts_absent": 48,
+    "producer_files": 42
+  },
+  "timings": [
+    {
+      "kernel": "reference",
+      "measured_repetitions": 3,
+      "prefill_tokens_per_second": 36.34894004314167,
+      "decode_tokens_per_second": 20.039924535479745,
+      "median_prefill_seconds": 3.5212096359999805,
+      "median_decode_step_ms": 49.58995600003391,
+      "decode_tps_min": 20.032923220350547,
+      "decode_tps_max": 20.04644862377864,
+      "boundary": "Warmup excluded. Rates are total tokens / total time; min/max are observed repetitions, not confidence intervals.",
+      "sampled_peak_mib": 3450
+    },
+    {
+      "kernel": "decode4",
+      "measured_repetitions": 3,
+      "prefill_tokens_per_second": 120.1012114677332,
+      "decode_tokens_per_second": 32.16719879455385,
+      "median_prefill_seconds": 1.0658608280000408,
+      "median_decode_step_ms": 30.721832499978063,
+      "decode_tps_min": 32.10338078354962,
+      "decode_tps_max": 32.22514938470098,
+      "boundary": "Warmup excluded. Rates are total tokens / total time; min/max are observed repetitions, not confidence intervals.",
+      "sampled_peak_mib": 3450
+    }
+  ],
+  "comparisons": [
+    {
+      "label": "decode4",
+      "context": 128,
+      "reference_report_sha256": "544ebd767fa844a683f8750a8399078c0498934e14ed52fae67b2e33b1577003",
+      "candidate_report_sha256": "ab558250fa8b8e69560efdf879e2674fa1b9f12f65269eac96f159838a29e949",
+      "prefill_rate_ratio_to_reference": 3.304118671003556,
+      "decode_rate_ratio_to_reference": 1.6051556849729316,
+      "sampled_vram_ratio_to_reference": 1,
+      "boundary": "Within-run fixed-token bridge rates. Not task accuracy, a pure-kernel rate, or an equal-quality/size claim."
+    }
+  ],
+  "profiles": [
+    {
+      "kernel": "reference",
+      "phase": "prefill",
+      "operator": "rotation",
+      "mean_gpu_ms_per_repetition": 2.8794880403826633,
+      "share_of_custom_event_percent": 0.08209553544485736
+    },
+    {
+      "kernel": "reference",
+      "phase": "prefill",
+      "operator": "matrix",
+      "mean_gpu_ms_per_repetition": 3494.1102062066398,
+      "share_of_custom_event_percent": 99.61869758061391
+    },
+    {
+      "kernel": "reference",
+      "phase": "prefill",
+      "operator": "vocabulary_head",
+      "mean_gpu_ms_per_repetition": 10.475861231486002,
+      "share_of_custom_event_percent": 0.29867164752334774
+    },
+    {
+      "kernel": "reference",
+      "phase": "prefill",
+      "operator": "embedding",
+      "mean_gpu_ms_per_repetition": 0.01877333347996076,
+      "share_of_custom_event_percent": 0.0005352364179006733
+    },
+    {
+      "kernel": "reference",
+      "phase": "decode",
+      "operator": "rotation",
+      "mean_gpu_ms_per_repetition": 45.54410736976812,
+      "share_of_custom_event_percent": 3.026635267108405,
+      "mean_gpu_ms_per_decode_step": 1.4232533553052538
+    },
+    {
+      "kernel": "reference",
+      "phase": "decode",
+      "operator": "matrix",
+      "mean_gpu_ms_per_repetition": 1123.6437266555924,
+      "share_of_custom_event_percent": 74.67178362174688,
+      "mean_gpu_ms_per_decode_step": 35.113866457987264
+    },
+    {
+      "kernel": "reference",
+      "phase": "decode",
+      "operator": "vocabulary_head",
+      "mean_gpu_ms_per_repetition": 335.1934283574422,
+      "share_of_custom_event_percent": 22.275291144316792,
+      "mean_gpu_ms_per_decode_step": 10.474794636170069
+    },
+    {
+      "kernel": "reference",
+      "phase": "decode",
+      "operator": "embedding",
+      "mean_gpu_ms_per_repetition": 0.3956053393582503,
+      "share_of_custom_event_percent": 0.026289966827912063,
+      "mean_gpu_ms_per_decode_step": 0.012362666854945322
+    },
+    {
+      "kernel": "decode4",
+      "phase": "prefill",
+      "operator": "rotation",
+      "mean_gpu_ms_per_repetition": 2.8651520436008773,
+      "share_of_custom_event_percent": 0.2722643633599652
+    },
+    {
+      "kernel": "decode4",
+      "phase": "prefill",
+      "operator": "matrix",
+      "mean_gpu_ms_per_repetition": 1038.9817975560825,
+      "share_of_custom_event_percent": 98.73043850708977
+    },
+    {
+      "kernel": "decode4",
+      "phase": "prefill",
+      "operator": "vocabulary_head",
+      "mean_gpu_ms_per_repetition": 10.475519816080729,
+      "share_of_custom_event_percent": 0.9954483008885741
+    },
+    {
+      "kernel": "decode4",
+      "phase": "prefill",
+      "operator": "embedding",
+      "mean_gpu_ms_per_repetition": 0.01945599913597107,
+      "share_of_custom_event_percent": 0.0018488286616823973
+    },
+    {
+      "kernel": "decode4",
+      "phase": "decode",
+      "operator": "rotation",
+      "mean_gpu_ms_per_repetition": 46.19229932036251,
+      "share_of_custom_event_percent": 5.1064888897907075,
+      "mean_gpu_ms_per_decode_step": 1.4435093537613284
+    },
+    {
+      "kernel": "decode4",
+      "phase": "decode",
+      "operator": "matrix",
+      "mean_gpu_ms_per_repetition": 522.8533717431128,
+      "share_of_custom_event_percent": 57.80065017501413,
+      "mean_gpu_ms_per_decode_step": 16.339167866972275
+    },
+    {
+      "kernel": "decode4",
+      "phase": "decode",
+      "operator": "vocabulary_head",
+      "mean_gpu_ms_per_repetition": 335.13574345906574,
+      "share_of_custom_event_percent": 37.04875002381755,
+      "mean_gpu_ms_per_decode_step": 10.472991983095804
+    },
+    {
+      "kernel": "decode4",
+      "phase": "decode",
+      "operator": "embedding",
+      "mean_gpu_ms_per_repetition": 0.3990186732262373,
+      "share_of_custom_event_percent": 0.044110911377615726,
+      "mean_gpu_ms_per_decode_step": 0.012469333538319916
+    }
+  ],
+  "retained_parity": {
+    "max_abs_error": 0.0322265625,
+    "mean_abs_error": 0.002836523566979521,
+    "mean_kl": 0.000008667400892968748,
+    "top1_agreement": 1,
+    "positions": 16,
+    "generation_probes": 4,
+    "exact_generation_probes": 4,
+    "thresholds": {
+      "max_abs_error": 0.125,
+      "mean_abs_error": 0.005,
+      "mean_kl": 0.0001,
+      "top1_agreement_min": 0.99
+    },
+    "guards": {
+      "max_abs_error": true,
+      "mean_abs_error": true,
+      "mean_kl": true,
+      "top1": true,
+      "exact_generation": true
+    },
+    "passed": true,
+    "comparison": "cross-engine-native-v3",
+    "boundary": "Bounded numerical probes, not task accuracy or full-suite equivalence."
+  },
+  "boundary": "Offline hash/arithmetic and reported-gate audit; no GPU replay. Profiles are custom-op CUDA event time with graphs disabled, not whole-model wall shares, bandwidth or task accuracy."
+}

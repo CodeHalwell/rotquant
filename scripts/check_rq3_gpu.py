@@ -17,6 +17,7 @@ from rotquant.quantize import QuantConfig, Quantizer
 from rotquant.rotate import RandomizedHadamard
 from scripts.check_rq3_model import execution_settings, runtime_identity
 from scripts.native_hashing import digest
+from scripts.native_kernel_candidates import DECODE_KERNELS, TILED_KERNELS, W5_TILES
 from scripts.rq3_test_runtime import NativeTests
 
 
@@ -58,7 +59,7 @@ def check_decode_tails(runtime, backend, generator):
 def check(library, backend):
     runtime = NativeTests(library)
     dispatch = None
-    if backend == "CUDA0" and os.environ.get("ROTQUANT_RQ3_KERNEL") in ("tiled4", "decode4"):
+    if backend == "CUDA0" and os.environ.get("ROTQUANT_RQ3_KERNEL") in TILED_KERNELS:
         from scripts.check_rq3_dispatch import check as check_dispatch
         dispatch = check_dispatch(library, os.environ["ROTQUANT_RQ3_KERNEL"])
     generator = torch.Generator().manual_seed(3701)
@@ -74,8 +75,10 @@ def check(library, backend):
             weights = torch.from_numpy(decode_native_v3_rows(native))
             vocabulary = rotation.inverse_activation(weights).half()
             variant = os.environ.get("ROTQUANT_RQ3_KERNEL", "reference")
-            candidate = variant in ("tiled4", "decode4")
-            for tokens in ((1, 2, 3, 4, 5, 7, 33) if candidate else (1, 7, 33)):
+            candidate = variant in TILED_KERNELS
+            lengths = (1, 2, 3, 4, 5, 7, 8, 9, 15, 16, 17, 31, 32, 33) if variant in W5_TILES else (
+                (1, 2, 3, 4, 5, 7, 33) if candidate else (1, 7, 33))
+            for tokens in lengths:
                 x = torch.randn(tokens, width, generator=generator).half()
                 rows = np.random.default_rng(13).permutation(137).astype(np.int32) if bits == 5 else None
                 columns = np.random.default_rng(17).permutation(width).astype(np.int32) if bits == 5 else None
@@ -103,9 +106,29 @@ def check(library, backend):
                           "max_abs": float(np.max(np.abs(actual - expected))), "passed": True}
                 print(json.dumps(report), flush=True)
                 reports.append(report)
-    extra = check_decode_tails(runtime, backend, generator) if os.environ.get("ROTQUANT_RQ3_KERNEL") == "decode4" else []
+    extra = check_decode_tails(runtime, backend, generator) if os.environ.get("ROTQUANT_RQ3_KERNEL") in DECODE_KERNELS else []
+    fallbacks = []
+    if os.environ.get("ROTQUANT_RQ3_KERNEL") in W5_TILES:
+        from scripts.native_performance_study import kernel_environment
+        from scripts.run_rq3_kernel_screen import fixture
+        rng = np.random.default_rng(9021)
+        # Tile tails, all scalar formats, and a non-specialized metadata block.
+        # Inputs/row maps exercise the same native semantics, not a new oracle.
+        for bits in range(1, 9):
+            for sbits, block in ((8, 256), (8, 7), (16, 0)):
+                native = fixture(5, 512, bits=bits, scale_bits=sbits, block=block)
+                signs = rng.choice(np.array([-1, 1], dtype=np.int8), 512)
+                for tokens in (4, 7, 8, 9, 15, 16, 17):
+                    inputs = rng.normal(0, .5, (tokens, 512)).astype(np.float16).astype(np.float32)
+                    actual = runtime.operator(backend, native, signs, inputs)
+                    with kernel_environment():
+                        reference = runtime.operator(backend, native, signs, inputs)
+                    np.testing.assert_array_equal(actual, reference)
+                    fallbacks.append({"bits": bits, "scale_bits": sbits, "block": block,
+                                      "tokens": tokens, "exact_reference": True, "passed": True})
+        print(f"Prefill format/tile fallback cases: {len(fallbacks)} passed", flush=True)
     diagnostics = None
-    if backend == "CUDA0" and os.environ.get("ROTQUANT_RQ3_KERNEL") == "decode4":
+    if backend == "CUDA0" and os.environ.get("ROTQUANT_RQ3_KERNEL") in DECODE_KERNELS:
         from scripts.native_cuda_diagnostics import CudaDiagnostics
         diagnostics = CudaDiagnostics(library).snapshot()
         if not diagnostics["decode_host_dispatches"] or not diagnostics["tiled_host_dispatches"]:
@@ -113,6 +136,7 @@ def check(library, backend):
     return {"protocol": "rq3-packed-operator-check-v1", "backend": backend,
             "library_sha256": digest(library), "runtime_files": runtime_identity(library),
             "settings": execution_settings(), "cases": reports, "decode_cases": extra,
+            "prefill_format_cases": fallbacks,
             "native_diagnostics": diagnostics, "passed": True,
             "dispatch_probe": dispatch,
             "scope": "synthetic operators; not retained-model quality or serving performance"}

@@ -8,14 +8,15 @@ import os
 from pathlib import Path
 
 from scripts.native_gpu_workflow import digest, fingerprint, write_json
+from scripts.native_kernel_candidates import TILED_KERNELS
 from scripts.native_pilot_controls import phase_minutes
 
 
 @contextlib.contextmanager
-def kernel_environment(kernel="reference", *, profile=False):
+def kernel_environment(kernel="reference", *, profile=False, graphs_disabled=False):
     values = {"ROTQUANT_RQ3_KERNEL": kernel,
               "ROTQUANT_RQ3_PROFILE": "1" if profile else None,
-              "GGML_CUDA_DISABLE_GRAPHS": "1" if profile else None}
+              "GGML_CUDA_DISABLE_GRAPHS": "1" if profile or graphs_disabled else None}
     previous = {key: os.environ.get(key) for key in values}
     try:
         for key, value in values.items():
@@ -51,7 +52,12 @@ def comparison(reference, candidate):
             raise ValueError("Invalid measured rates or process memory")
         if r["settings"].get("rq3_profile") is not False or r["settings"].get("cuda_graphs_disabled") is not False:
             raise ValueError("Instrumented settings cannot enter a throughput comparison")
-    for key in ("context", "context_capacity", "runtime_files", "backend", "prompt_ids_sha256", "controls"):
+    keys = ("context", "context_capacity", "runtime_files", "backend", "prompt_ids_sha256", "controls")
+    # Kernel candidates must execute the identical artifact. Conventional
+    # GGUFs intentionally have different weights and their own pinned receipts.
+    if candidate.get("baseline") not in ("bf16", "ud_q4"):
+        keys += ("export_sha256", "probe_sha256")
+    for key in keys:
         if reference[key] != candidate[key]:
             raise ValueError(f"Comparison mismatch: {key}")
     a, b = dict(reference["settings"]), dict(candidate["settings"])
@@ -70,11 +76,16 @@ def comparison(reference, candidate):
 
 def run_study(workflow, command, *, arm, library, runtime, source, build_dir, exported,
               source_arm, parity, references, controls, environment, baselines, profile,
-              candidate="tiled4"):
-    if candidate not in ("tiled4", "decode4", "none"):
+              candidate="tiled4", baseline_kernel="reference", screen_sha256=None):
+    if candidate not in (*TILED_KERNELS, "none"):
         raise ValueError("Unknown study candidate")
+    if baseline_kernel not in ("reference", "decode4") or (baseline_kernel != "reference" and baselines):
+        raise ValueError("Conventional controls require the original reference study")
     if candidate == "none" and (not baselines or profile):
         raise ValueError("Baseline-only follow-up requires baselines and --skip-profile")
+    for path in references.values():
+        if json.loads(Path(path).read_text()).get("settings", {}).get("rq3_kernel") != baseline_kernel:
+            raise ValueError("Study reference kernel mismatch")
     def read(path):
         return json.loads(Path(path).read_text())
     def require(path, kernel):
@@ -87,9 +98,11 @@ def run_study(workflow, command, *, arm, library, runtime, source, build_dir, ex
                  "export": exported["receipt"], "controls": controls}
     options = [item for key, value in controls.items() for item in ("--" + key.replace("_", "-"), value)]
     result = {"protocol": "rq3-native-performance-study-v2", "arm": arm, "completed": False,
-              "candidate": candidate, "environment": environment, "comparisons": [], "profiles": [],
+              "candidate": candidate, "baseline_kernel": baseline_kernel, "environment": environment, "comparisons": [], "profiles": [],
+              "screen_sha256": screen_sha256,
               "boundary": "No automatic kernel or recipe promotion. CUDA profiling is diagnostic only."}
-    destination = workflow.root / f"comparison-{arm}.json"
+    suffix = f"-{candidate}" if baseline_kernel != "reference" else ""
+    destination = workflow.root / f"comparison-{arm}{suffix}.json"
     write_json(destination, result)
     # Finish conventional controls first. A speculative kernel failure must not
     # prevent the missing baseline evidence from being collected and saved.
@@ -157,7 +170,8 @@ def run_study(workflow, command, *, arm, library, runtime, source, build_dir, ex
                 command(stage, "run_rq3_performance_pilot.py", "--library", library,
                         "--export", exported["directory"], "--parity-report", candidate_gate["report_path"],
                         "--probes", source_arm / "packed_probes.safetensors", "--context", context,
-                        "--replay-report", reference_path, "--output-dir", output, *options)
+                        "--replay-report", reference_path, "--replay-kernel", baseline_kernel,
+                        "--output-dir", output, *options)
                 path = output / "report.json"
                 return {"path": str(path), "report": require(path, candidate)}, [path]
             measured = workflow.stage(f"{candidate}-{arm}-ctx{context}", timing, signature=signature,
@@ -170,14 +184,15 @@ def run_study(workflow, command, *, arm, library, runtime, source, build_dir, ex
     if profile:
         # The smallest SELECTED context only; a targeted 2048 run remains 2048.
         context = min(references)
-        for variant, gate in (("reference", parity), (candidate, candidate_gate)):
+        for variant, gate in ((baseline_kernel, parity), (candidate, candidate_gate)):
             with kernel_environment(variant, profile=True):
                 def diagnostic(stage, variant=variant, gate=gate):
                     output = stage.directory / "profile"
                     command(stage, "run_rq3_performance_pilot.py", "--library", library,
                             "--export", exported["directory"], "--parity-report", gate["report_path"],
                             "--probes", source_arm / "packed_probes.safetensors", "--context", context,
-                            "--replay-report", references[context], "--output-dir", output, *options)
+                            "--replay-report", references[context], "--replay-kernel", baseline_kernel,
+                            "--output-dir", output, *options)
                     path = output / "report.json"
                     r = require(path, variant)
                     if r.get("measurement_kind") != "diagnostic":

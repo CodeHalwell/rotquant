@@ -57,6 +57,8 @@ def repository_identity(allow_dirty=False):
                 ROOT / "scripts/run_rq3_retained_gpu.py", ROOT / "scripts/rq3_test_runtime.py",
                 ROOT / "scripts/check_rq3_model.py", ROOT / "scripts/check_rq3_gpu.py",
                 ROOT / "scripts/check_rq3_dispatch.py",
+                ROOT / "scripts/native_kernel_candidates.py", ROOT / "scripts/native_kernel_sweep.py",
+                ROOT / "scripts/run_rq3_kernel_screen.py",
                 ROOT / "scripts/make_rq3_model_fixture.py",
                 ROOT / "scripts/build_conventional_control.py", ROOT / "scripts/check_conventional_model.py",
                 ROOT / "scripts/native_controls/conventional_probe.cpp",
@@ -69,10 +71,20 @@ def repository_identity(allow_dirty=False):
 def run_pipeline(args):
     cache_dir = getattr(args, "persistent_cache_dir", None)
     study = getattr(args, "performance_study", False)
+    sweep = getattr(args, "kernel_sweep", False)
+    sweep_candidates = getattr(args, "kernel_candidate", None) or ["w5s8", "w5s8-tile8", "w5s8-tile16"]
+    maximum_finalists = getattr(args, "kernel_finalists", 2)
+    if sweep:
+        from scripts.native_kernel_sweep import validate_candidates
+        validate_candidates(sweep_candidates, maximum_finalists)
+        if study or args.synthetic_only or args.timing or args.backend != "CUDA":
+            raise ValueError("Kernel sweep requires CUDA retained evidence; do not combine with study/synthetic/legacy timing")
+    elif getattr(args, "kernel_candidate", None) or maximum_finalists != 2:
+        raise ValueError("Kernel candidate controls require --kernel-sweep")
     candidate = getattr(args, "study_candidate", "tiled4")
     if candidate not in ("tiled4", "decode4", "none") or (not study and candidate != "tiled4"):
         raise ValueError("Study candidate requires --performance-study")
-    pilot = getattr(args, "performance_pilot", False) or study
+    pilot = getattr(args, "performance_pilot", False) or study or sweep
     from scripts.native_pilot_controls import phase_minutes, selected_contexts
     contexts = selected_contexts(getattr(args, "context", None))
     baselines = [] if getattr(args, "no_baselines", False) else (getattr(args, "baseline", None) or ["bf16", "ud_q4"])
@@ -129,6 +141,9 @@ def run_pipeline(args):
         controls.update(performance_study=True, conventional_baselines=baselines,
                         study_candidate=candidate,
                         diagnostic_profiles=not getattr(args, "skip_profile", False))
+    if sweep:
+        controls.update(kernel_sweep=True, kernel_candidates=sweep_candidates,
+                        kernel_maximum_finalists=maximum_finalists, baseline_kernel="decode4")
     args.work_dir.mkdir(parents=True, exist_ok=True)
     source = args.work_dir / "llama-source"
     build_dir = args.work_dir / "llama-build"
@@ -141,12 +156,12 @@ def run_pipeline(args):
     cuda_keys = ("ROTQUANT_RQ3_KERNEL", "ROTQUANT_RQ3_PROFILE", "GGML_CUDA_DISABLE_GRAPHS")
     old_cuda = {key: os.environ.get(key) for key in cuda_keys}
     try:
-        if study:
+        if study or sweep:
             # The orchestrator, not stale notebook environment variables, owns
             # variant selection and instrumented-vs-throughput separation.
             for key in cuda_keys:
                 os.environ.pop(key, None)
-            os.environ["ROTQUANT_RQ3_KERNEL"] = "reference"
+            os.environ["ROTQUANT_RQ3_KERNEL"] = "decode4" if sweep else "reference"
         with Workflow(args.output_dir, ROOT, controls, args.active_minutes) as workflow:
             def command(stage, name, *values, label=None):
                 return stage.command([python, "-u", ROOT / "scripts" / name, *values], label or Path(name).stem)
@@ -222,6 +237,13 @@ def run_pipeline(args):
                 write_json(report, {"passed": True, "runtime_files": runtime})
                 return passed(report, runtime), [report]
             workflow.stage("binding-load", load_gate, minutes=2, reuse=False)
+
+            if sweep:
+                from scripts.native_kernel_sweep import run_screen
+                finalists = run_screen(workflow, command, library, runtime, sweep_candidates, maximum_finalists)
+                if not finalists:
+                    print("No candidate cleared the synthetic screen; full-model/export work skipped. Download reports and stop the GPU.", flush=True)
+                    return
 
             if study and candidate != "none":
                 def dispatch_gate(stage):
@@ -342,8 +364,17 @@ def run_pipeline(args):
                                   references=references, controls=pilot_controls, environment=environment,
                                   baselines=baselines, profile=not getattr(args, "skip_profile", False),
                                   candidate=candidate)
+                    if sweep:
+                        from scripts.native_performance_study import run_study
+                        for selected in finalists:
+                            run_study(workflow, command, arm=arm, library=library, runtime=runtime,
+                                      source=source, build_dir=build_dir, exported=exported,
+                                      source_arm=args.source_root / arm, parity=parity,
+                                      references=references, controls=pilot_controls, environment=environment,
+                                      baselines=[], profile=False, candidate=selected, baseline_kernel="decode4",
+                                      screen_sha256=digest(workflow.root / "kernel-shortlist.json"))
     finally:
-        if study:
+        if study or sweep:
             for key, value in old_cuda.items():
                 if value is None:
                     os.environ.pop(key, None)
@@ -368,6 +399,9 @@ def main():
     parser.add_argument("--persistent-cache-dir", type=Path, help="Private Drive build/export cache; no cached GPU passes")
     parser.add_argument("--performance-pilot", action="store_true", help="Fresh parity, then three independently bounded timing contexts")
     parser.add_argument("--performance-study", action="store_true", help="Reference + gated tiled kernel + diagnostics + matched conventional GGUFs")
+    parser.add_argument("--kernel-sweep", action="store_true", help="W5 kernel screen, then at most two gated finalists versus decode4")
+    parser.add_argument("--kernel-candidate", action="append", choices=("w5s8", "w5s8-tile8", "w5s8-tile16"))
+    parser.add_argument("--kernel-finalists", type=int, default=2, choices=(1, 2))
     parser.add_argument("--study-candidate", choices=("tiled4", "decode4", "none"), default="tiled4",
                         help="Opt-in candidate; none runs only fresh reference + conventional controls")
     parser.add_argument("--skip-profile", action="store_true", help="Skip diagnostic-only CUDA event runs")
