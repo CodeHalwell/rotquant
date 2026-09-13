@@ -21,18 +21,23 @@ def build_notebook():
         The September 11 study confirmed **3.30–3.35× faster prefill** with tiled4,
         but decode remained about **19.8–19.9 tok/s**. BF16 stopped because its
         ordinary input embedding was placed on CPU. This run fixes placement
-        without weakening the all-GPU gate and tests it on tiny BF16 and Q4_0
-        models before downloading or timing the 4B controls.
+        without weakening the all-GPU gate. The subsequent Q4_0 preflight
+        stopped on CPU/CUDA numerical drift despite matching greedy tokens.
+        This revision adds a separately compiled **public llama API caller**
+        to distinguish bridge disagreement from shared-backend behaviour.
+        It uses the same verified native libraries, not an independent kernel
+        implementation. Tiny tests run before downloading the 4B controls.
 
         First finish the **BF16 and Unsloth UD-Q4** comparison. Then test the
         opt-in **decode4** kernel: one warp per output row, shared codebook,
         hoisted group scales and the same floating-point reduction order.
         It retains tiled4 for prefill. **No decode speedup or CUDA correctness
-        is claimed yet.** Exact operator and retained-model gates precede timing.
+        is claimed yet.** Exact operator and bounded retained-model numerical
+        gates precede timing; their thresholds are unchanged.
         No calibration, requantization, adapters or training are run.
         ''')
     controls = notebook.cells[2]
-    controls.source = controls.source.replace('RUN_NAME = "study1"', 'RUN_NAME = "followup1"')
+    controls.source = controls.source.replace('RUN_NAME = "study1"', 'RUN_NAME = "followup2"')
     controls.source = controls.source.replace('CONTEXTS = (128, 512, 2048)', 'CONTEXTS = (128, 512)')
     controls.source = controls.source.replace('RUN_PROFILE = True', 'RUN_PROFILE = False')
     controls.source += '\nCANDIDATE = "decode4"  # "none" runs only fresh reference + BF16/UD-Q4\n'
@@ -44,8 +49,15 @@ def build_notebook():
     notebook.cells[5] = md('''
         ## Steps and checks
         1. Verify saved evidence; build/restore the hash-checked native library.
-        2. **Tiny ordinary BF16 + Q4_0 all-GPU preflight**, including cached decode.
-           CPU fallback remains a hard failure. No 4B baseline download yet.
+        2. Compile the small public-API caller against the verified libraries.
+           **Tiny BF16 + Q4_0 preflight:** compare private/public callers on
+           CPU and CUDA separately, including eight cached decode steps.
+           Same-backend numerical disagreement, CPU fallback and CPU/GPU
+           token/greedy-trace disagreement remain hard failures. BF16 also
+           retains its CPU/GPU numerical gate. Q4_0 CPU/GPU numerical drift
+           keeps the original thresholds and pass flags as a **diagnostic**;
+           it cannot establish bridge correctness without the new control.
+           Raw logits/traces are saved. No 4B baseline download yet.
         3. Fresh RQ3 operators, W6/W8 tiny-model, conversion and saved-model parity.
         4. Fresh reference timings at **128 and 512 tokens**, three measurements
            plus one excluded warmup, on this runtime/GPU.
@@ -63,9 +75,11 @@ def build_notebook():
         2048 to `CONTEXTS` or set `RUN_PROFILE = True` with a candidate and a new
         run name. Controls cannot change inside an existing result directory.
 
-        The changed bridge/kernel requires a compatible new binary, usually a
-        **cold build (~27 minutes previously)**; older cached binaries are not
-        valid. Original weights are reused, never trained or requantized.
+        This preflight repair leaves native kernels and the binary-cache key
+        unchanged from **2c4037e76f71**. Its cached CUDA build can be restored
+        when hardware/toolchain checks match; only the small caller is compiled.
+        A cache miss still needs a cold build (~27 minutes previously).
+        Original weights are reused, never trained or requantized.
         Baseline downloads total ~11.34 GB. The private Drive cache is retained.
         Every phase prints a persistent log, cap and heartbeat; every repetition
         prints timing and progress. The **90 active-minute** allowance and phase
@@ -80,6 +94,24 @@ def build_notebook():
     launch.source = launch.source.replace('if not RUN_PROFILE:',
         'command.extend(["--study-candidate", CANDIDATE])\nif not RUN_PROFILE:')
     launch.source = launch.source.replace('"native-performance-study"', '"native-followup"')
+    notebook.cells[7].source += '''
+
+The conventional preflight summary below separates **required bridge gates**
+from cross-backend numerical diagnostics. A Q4_0 diagnostic `False` is not
+silently changed to `True`; BF16 still requires those numerical limits.
+These tiny shared-library tests do not validate upstream kernels independently.
+'''
+    notebook.cells[8].source += '''
+
+for path in sorted(RESULT_ROOT.glob("stages/conventional-preflight-*/attempt-*/report.json")):
+    report = json.loads(path.read_text())
+    print("Conventional preflight:", path.parent.parent.name, path.parent.name,
+          {k: report.get(k) for k in ("format", "passed", "gpu_executed", "cross_backend_numerics_role", "error")})
+    for device, result in report.get("same_backend", {}).items():
+        print("  Required private/public agreement", device, result["passed"], result["metrics"])
+    for caller, result in report.get("cross_backend", {}).items():
+        print("  CPU/GPU", caller, "original numerical + trace limits passed:", result["passed"], result["metrics"])
+'''
     return notebook
 
 

@@ -9,6 +9,22 @@ software.
 
 ## [Unreleased]
 
+### Conventional GPU preflight controls (2026-09-13)
+
+- Add a separately compiled public llama API caller for tiny ordinary BF16/Q4_0
+  fixtures, with explicit positions/sequence IDs and strict same-backend
+  private/public numerical and greedy-trace checks. It shares verified backend
+  libraries; it is not an independent upstream kernel audit.
+- Preserve original Q4 CPU/GPU numerical thresholds and failing flags as
+  diagnostics. Require cross-backend tokens/traces for both formats and retain
+  BF16 cross-backend numerical limits. RotQuant gates and native code are unchanged.
+- Save raw bounded probes and control/runtime hashes. Update the end-to-end
+  follow-up notebook to `followup2`, explain the changed gate contract, and show
+  diagnostics after stops. Compatible prior CUDA build caches remain reusable.
+- Compile/run both CPU callers locally with identical outputs; test failure
+  paths and mocked notebook execution. New CUDA caller conformance and decode4
+  performance still require the Colab run.
+
 ### Test environment (2026-09-12)
 
 - The two notebook-execution tests for the native GPU pilot and the native

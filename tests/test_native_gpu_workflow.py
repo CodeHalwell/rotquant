@@ -150,6 +150,13 @@ def fake_pipeline(tmp_path, monkeypatch, fail=None):
             support.write_json(option("--output"), {"passed": True, "checkpoint_bytes": 1})
         elif script == "make_rq3_model_fixture.py":
             option("--output").write_bytes(b"fixture")
+        elif script == "build_conventional_control.py":
+            destination = option("--output-dir")
+            destination.mkdir(parents=True)
+            executable = destination / "conventional-probe"
+            executable.write_bytes(b"mock public API control, never executed")
+            support.write_json(destination / "build.json", {"passed": True,
+                "runtime_files": pipeline.runtime_files(library), "executable": str(executable)})
         elif script == "export_rotquant_gguf_v2.py":
             destination = Path(cli[1])
             destination.mkdir(parents=True)
@@ -161,7 +168,12 @@ def fake_pipeline(tmp_path, monkeypatch, fail=None):
             if fail and fail in script:
                 raise subprocess.CalledProcessError(1, cmd)
             out = option("--output-dir") / "report.json" if script in {"run_rq3_retained_gpu.py", "run_rq3_performance_pilot.py"} else option("--report" if "--report" in cli else "--output")
-            support.write_json(out, {"passed": True, "runtime_files": pipeline.runtime_files(library)})
+            result = {"passed": True, "runtime_files": pipeline.runtime_files(library)}
+            if script == "check_conventional_model.py":
+                probes = out.parent / "probes.json"
+                support.write_json(probes, {"mocked": True})
+                result["probes_file"] = str(probes)
+            support.write_json(out, result)
     monkeypatch.setattr(support.Stage, "command", command)
     return args, commands
 
@@ -199,14 +211,14 @@ def test_numerical_failure_prevents_export_and_retained_execution(tmp_path, monk
 
 
 def test_conventional_preflight_fails_before_export_or_full_model_timings(tmp_path, monkeypatch):
-    args, commands = fake_pipeline(tmp_path, monkeypatch, fail="check_rq3_model")
+    args, commands = fake_pipeline(tmp_path, monkeypatch, fail="check_conventional_model")
     args.performance_study = True
     args.study_candidate = "none"
     args.skip_profile = True
     with pytest.raises(subprocess.CalledProcessError):
         pipeline.run_pipeline(args)
     names = [name for name, _ in commands]
-    assert "check_rq3_model.py" in names
+    assert "check_conventional_model.py" in names
     assert not set(names) & {"run_native_gguf_baseline.py", "export_rotquant_gguf_v2.py", "run_rq3_performance_pilot.py"}
     fixture = next(cli for name, cli in commands if name == "make_rq3_model_fixture.py")
     assert fixture[fixture.index("--conventional") + 1] == "bf16"
@@ -223,7 +235,14 @@ def test_study_preflight_and_candidate_wiring(tmp_path, monkeypatch):
     fixtures = [cli for name, cli in commands if name == "make_rq3_model_fixture.py" and "--conventional" in cli]
     assert [cli[cli.index("--conventional") + 1] for cli in fixtures] == ["bf16", "q4_0"]
     names = [row["name"] for row in pipeline.read(args.output_dir / "workflow.json")["attempts"]]
+    assert names.index("conventional-control-build") < names.index("conventional-preflight-bf16")
     assert names.index("conventional-preflight-q4_0") < names.index("export-b5_v6_s0")
+    checks = [cli for name, cli in commands if name == "check_conventional_model.py"]
+    assert [cli[cli.index("--format") + 1] for cli in checks] == ["bf16", "q4_0"]
+    assert all("--control-receipt" in cli for cli in checks)
+    build = next(cli for name, cli in commands if name == "build_conventional_control.py")
+    assert Path(build[build.index("--output-dir") + 1]).is_relative_to(args.work_dir)
+    assert all(Path(cli[cli.index("--control-receipt") + 1]).is_relative_to(args.output_dir) for cli in checks)
     assert len(studies) == 1 and studies[0]["candidate"] == "decode4" and not studies[0]["profile"]
     assert set(studies[0]["references"]) == {128}
 

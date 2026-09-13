@@ -1,9 +1,10 @@
 # rotquant-eval
 
 **Next Colab run:** [GPU baseline completion and decode optimisation](notebooks/qwen35_4b_native_followup_colab.ipynb).
-The [runbook](docs/native_gpu_followup.md) covers fresh tiny BF16/Q4_0 placement
-checks, matched baselines first, and an opt-in single-token kernel on unchanged
-W5/W6 weights. The [A100 study](research/results/native_study_2026_09_11/README.md)
+The [runbook](docs/native_gpu_followup.md) covers independent public/private API
+checks for tiny BF16/Q4_0 models, matched baselines first, and an opt-in
+single-token kernel on unchanged W5/W6 weights.
+The [A100 study](research/results/native_study_2026_09_11/README.md)
 confirmed 3.30–3.35× faster prefill; decode remains ~19.8–19.9 tok/s and the
 BF16/Unsloth comparison is unfinished. The new decode candidate is unvalidated on CUDA.
 
@@ -160,7 +161,8 @@ stopped after the W5/W6 Python reference path proved too slow. Native full-model
 execution now passes the user's [A100 W5/W6 saved-probe checks](research/results/native_cuda_2026_09_10/README.md),
 and the [same-run A100 study](research/results/native_study_2026_09_11/README.md)
 confirms tiled4 prefill gains and bounded parity. The [new notebook](notebooks/qwen35_4b_native_followup_colab.ipynb)
-fixes ordinary embedding placement, tests tiny conventional models first, then
+fixes ordinary embedding placement, isolates bridge errors from Q4 CPU/CUDA
+drift with a public-API control, tests tiny conventional models first, then
 collects matched baselines before a gated opt-in decode candidate. See the
 [runbook](docs/native_gpu_followup.md); decode speedup/CUDA conformance are still
 unmeasured. Saved checkpoints and partial results are preserved;

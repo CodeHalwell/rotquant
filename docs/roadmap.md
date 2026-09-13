@@ -35,6 +35,13 @@ BF16/UD-Q4 controls before testing opt-in `decode4`. Profiles implicate backbone
 matrix operations (~75% of custom decode event time), then the head (~22%);
 these are not shares of full wall time. Candidate CUDA performance is unmeasured.
 Then proceed to retained W5/W8/longer-context parity and transfer/DRAM profiling.
+September 13 preflight repair: the `2c4037e76f71` follow-up passed ordinary BF16
+but stopped on Q4_0 CPU/CUDA numerical drift with matching greedy traces, before
+any retained timing or decode4 execution. The updated notebook requires an
+independent public-API caller to match the private bridge on each backend;
+Q4 cross-backend drift is separately reported. BF16 numerical and all RotQuant
+gates stay unchanged. See the [exact contract and limitations](native_gpu_followup.md).
+Native binaries are unchanged, allowing compatible cached builds to be reused.
 Resume public tasks under a new runtime-bound
 identity only after cost/quality gates; no speed ratio substitutes for quality.
 No new allocator/recovery sweep, requantization or promotion. Existing

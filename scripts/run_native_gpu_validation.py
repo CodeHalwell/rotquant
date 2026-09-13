@@ -57,6 +57,8 @@ def repository_identity(allow_dirty=False):
                 ROOT / "scripts/run_rq3_retained_gpu.py", ROOT / "scripts/rq3_test_runtime.py",
                 ROOT / "scripts/check_rq3_model.py", ROOT / "scripts/check_rq3_gpu.py",
                 ROOT / "scripts/make_rq3_model_fixture.py",
+                ROOT / "scripts/build_conventional_control.py", ROOT / "scripts/check_conventional_model.py",
+                ROOT / "scripts/native_controls/conventional_probe.cpp",
                 ROOT / "scripts/check_rq3_conversion.py", ROOT / "scripts/export_rotquant_gguf_v2.py",
                 ROOT / "scripts/preflight_native_gpu.py",
                 ROOT / "scripts/build_rq3_runtime.py", ROOT / "requirements/native-gpu.txt",
@@ -227,13 +229,29 @@ def run_pipeline(args):
             # RQ3-only fixtures cannot catch ordinary token_embd.weight falling
             # back to CPU. Fail before retained export/timing or 4B downloads.
             if study and baselines:
+                def control_build(stage):
+                    # Execute only from local VM disk, never a Drive/FUSE mount.
+                    # Persist the build receipt with the reports, not executable code.
+                    destination = build_dir / f"public-api-control-{fingerprint(str(stage.directory))[:12]}"
+                    command(stage, "build_conventional_control.py", "--library", library,
+                            "--llama-dir", source, "--output-dir", destination)
+                    record = passed(destination / "build.json", runtime)
+                    path = stage.directory / "build.json"
+                    write_json(path, record)
+                    return {"receipt": str(path)}, [path, Path(record["executable"])]
+                control = workflow.stage("conventional-control-build", control_build,
+                    signature={"runtime": runtime, "environment": environment}, minutes=2, reuse=False)
                 for kind in ("bf16", "q4_0"):
                     def ordinary(stage, kind=kind):
                         fixture = build_dir / f"ordinary-{kind}-{fingerprint(str(stage.directory))[:12]}.gguf"
                         command(stage, "make_rq3_model_fixture.py", "--output", fixture,
                                 "--llama-dir", source, "--conventional", kind)
-                        return numerical(stage, "check_rq3_model.py", lambda out: [
-                            "--model", fixture, "--backend", backend, "--conventional", "--output", out])
+                        report = stage.directory / "report.json"
+                        command(stage, "check_conventional_model.py", "--library", library,
+                                "--model", fixture, "--backend", backend, "--format", kind,
+                                "--llama-dir", source, "--control-receipt", control["receipt"], "--output", report)
+                        record = passed(report, runtime)
+                        return record, [report, Path(record["probes_file"])]
                     workflow.stage(f"conventional-preflight-{kind}", ordinary,
                         signature={"runtime": runtime, "environment": environment}, minutes=5, reuse=False)
             gates = []
