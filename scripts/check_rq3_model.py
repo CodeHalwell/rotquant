@@ -43,7 +43,7 @@ def execution_settings():
             "GGML_METAL_TENSOR_ENABLE": os.environ.get("GGML_METAL_TENSOR_ENABLE")}
 
 
-def check_model(library, model_path, backend):
+def check_model(library, model_path, backend, *, conventional=False):
     if backend == "CPU":
         raise ValueError("choose a GPU backend; the CPU is always the reference")
     runtime = NativeTests(library)
@@ -66,7 +66,9 @@ def check_model(library, model_path, backend):
                         results.append(logits.copy())
                     traces.append(generated)
                     print(f"{device}: {len(prompt)} prompt tokens + 8 cached steps completed", flush=True)
-                if model.custom_ops == 0:
+                if conventional and model.custom_ops != 0:
+                    raise ValueError("conventional fixture unexpectedly executed RQ3 operators")
+                if not conventional and model.custom_ops == 0:
                     raise ValueError("fixture did not execute native-v3 operators")
                 captured[device] = {"logits": np.stack(results), "traces": traces, "custom_ops": model.custom_ops}
     finally:
@@ -81,7 +83,7 @@ def check_model(library, model_path, backend):
     guards = {k: metrics[k] >= v if k == "top1_agreement" else metrics[k] <= v for k, v in thresholds.items()}
     guards["exact_generation"] = captured[backend]["traces"] == captured["CPU"]["traces"]
     model_digest = digest(model_path)
-    return {"protocol": "rq3-synthetic-model-check-v1", "backend": backend,
+    return {"protocol": "rq3-synthetic-model-check-v1", "backend": backend, "conventional": conventional,
             "runtime_files": runtime_identity(library), "settings": execution_settings(), "model_sha256": model_digest,
             "metrics": metrics, "by_prompt_length": by_prompt, "thresholds": thresholds, "guards": guards, "passed": all(guards.values()),
             "gpu_custom_ops": captured[backend]["custom_ops"], "cpu_fallback_forbidden": True,
@@ -94,12 +96,13 @@ if __name__ == "__main__":
     parser.add_argument("--model", type=Path, required=True)
     parser.add_argument("--backend", required=True)
     parser.add_argument("--output", type=Path, required=True)
+    parser.add_argument("--conventional", action="store_true")
     args = parser.parse_args()
     if args.output.exists():
         raise FileExistsError(args.output)
     args.output.parent.mkdir(parents=True, exist_ok=True)
     try:
-        report = check_model(args.library, args.model, args.backend)
+        report = check_model(args.library, args.model, args.backend, conventional=args.conventional)
     except BaseException as error:
         args.output.write_text(json.dumps({"passed": False, "backend": args.backend,
             "settings": execution_settings(), "error": f"{type(error).__name__}: {error}"}, indent=2) + "\n")

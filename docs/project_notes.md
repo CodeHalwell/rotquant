@@ -988,8 +988,9 @@ graph and the packed GPU path are implemented, and the A100 W5/W6 probe run
 and throughput pilot have passed their correctness stages. Next is the
 [native optimisation study](native_gpu_optimization.md): corrected context
 budgets, separate operator profiles, an opt-in four-token weight-reuse prefill
-kernel gated on exact operator and whole-model parity, and pinned BF16 and
-UD-Q4 controls through the same native bridge. Then retained W5/W8 and
+kernel gated on exact candidate/reference operator outputs and bounded,
+tolerance-based whole-model probes with exact short generations, and pinned
+BF16 and UD-Q4 controls through the same native bridge. Then retained W5/W8 and
 longer-context parity, transfer and DRAM profiling, and only after the cost
 and quality gates a public-task run under a new runtime-bound identity.
 Unrelated review defects (L1–L4, L6–L12) are not closed by these runs.

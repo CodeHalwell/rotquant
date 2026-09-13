@@ -22,17 +22,20 @@ See the [evidence and caveats](../research/results/native_cuda_2026_09_10/README
 This verifies native reproduction of the quantized checkpoint, not FP16/BF16
 quality recovery. W5/W8 is covered by synthetic tests, not a retained-model run.
 
-**Next gate: native optimisation and matched-engine performance before tasks.**
-The [September 11 A100 pilot](../research/results/native_pilot_2026_09_11/README.md)
-measured ~36.4 prefill / 19.8 decode tok/s with completed 128/512-token trials;
-2048 has one measured repetition because the three-minute cap was too short.
-13 stages passed, including unchanged retained parity. Sampled process VRAM
-was 3450/3972/5542 MiB; these are not hardware minima or transient peak bounds.
-The [next study](native_gpu_optimization.md) implements context-aware budgets,
-targeted reruns, isolated CUDA operator profiles, a gated opt-in four-token
-weight-reuse kernel and same-bridge pinned BF16/UD-Q4 controls. No candidate
-CUDA result is available yet. Then proceed to retained W5/W8/longer-context
-parity and transfer/DRAM profiling. Resume public tasks under a new runtime-bound
+**Next gate: finish matched baselines, then optimise single-token decoding.**
+The [September 11 A100 study](../research/results/native_study_2026_09_11/README.md)
+completed all three reference/tiled4 timing pairs: 3.30–3.35× faster prefill,
+unchanged ~19.8–19.9 decode tok/s and bounded saved-model parity. The 2048 timing
+now has all three measurements. Sampled process VRAM remained 3450/3972/5542 MiB;
+these are not hardware minima or transient peak bounds. 24 stages passed before
+ordinary BF16 input embeddings triggered the CPU-fallback gate.
+The [targeted follow-up](native_gpu_followup.md) fixes ordinary embedding GPU
+placement, tests tiny BF16/Q4_0 graphs first, and collects missing same-bridge
+BF16/UD-Q4 controls before testing opt-in `decode4`. Profiles implicate backbone
+matrix operations (~75% of custom decode event time), then the head (~22%);
+these are not shares of full wall time. Candidate CUDA performance is unmeasured.
+Then proceed to retained W5/W8/longer-context parity and transfer/DRAM profiling.
+Resume public tasks under a new runtime-bound
 identity only after cost/quality gates; no speed ratio substitutes for quality.
 No new allocator/recovery sweep, requantization or promotion. Existing
 checkpoint and evaluation receipts remain unchanged.

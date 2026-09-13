@@ -1,5 +1,11 @@
 # Native GPU optimisation study — 11 September 2026
 
+**Study completed with a partial workflow:** [archived results](../research/results/native_study_2026_09_11/README.md)
+confirm a 3.30–3.35× same-run prefill gain; the BF16 placement gate stopped the
+baseline comparison. Use the [targeted follow-up](native_gpu_followup.md) next.
+The protocol below describes the original study and its pre-run hypotheses;
+it is retained for provenance, not a request to repeat the full experiment.
+
 ## Run next
 
 Open [the end-to-end notebook](https://colab.research.google.com/github/CodeHalwell/rotquant/blob/main/notebooks/qwen35_4b_native_optimization_colab.ipynb),

@@ -69,7 +69,12 @@ def comparison(reference, candidate):
 
 
 def run_study(workflow, command, *, arm, library, runtime, source, build_dir, exported,
-              source_arm, parity, references, controls, environment, baselines, profile):
+              source_arm, parity, references, controls, environment, baselines, profile,
+              candidate="tiled4"):
+    if candidate not in ("tiled4", "decode4", "none"):
+        raise ValueError("Unknown study candidate")
+    if candidate == "none" and (not baselines or profile):
+        raise ValueError("Baseline-only follow-up requires baselines and --skip-profile")
     def read(path):
         return json.loads(Path(path).read_text())
     def require(path, kernel):
@@ -81,40 +86,72 @@ def run_study(workflow, command, *, arm, library, runtime, source, build_dir, ex
     signature = {"runtime": runtime, "environment": environment, "arm": arm,
                  "export": exported["receipt"], "controls": controls}
     options = [item for key, value in controls.items() for item in ("--" + key.replace("_", "-"), value)]
+    result = {"protocol": "rq3-native-performance-study-v2", "arm": arm, "completed": False,
+              "candidate": candidate, "environment": environment, "comparisons": [], "profiles": [],
+              "boundary": "No automatic kernel or recipe promotion. CUDA profiling is diagnostic only."}
+    destination = workflow.root / f"comparison-{arm}.json"
+    write_json(destination, result)
+    # Finish conventional controls first. A speculative kernel failure must not
+    # prevent the missing baseline evidence from being collected and saved.
+    with kernel_environment():
+        for baseline in baselines:
+            def prepare(stage, baseline=baseline):
+                path = stage.directory / "baseline.json"
+                command(stage, "run_native_gguf_baseline.py", "prepare", "--baseline", baseline,
+                        "--artifact-dir", build_dir.parent / "conventional-ggufs", "--output", path)
+                receipt = read(path)
+                if receipt.get("passed") is not True:
+                    raise ValueError("Baseline preparation failed")
+                return {"path": str(path)}, [path, Path(receipt["path"])]
+            prepared = workflow.stage(f"prepare-{baseline}", prepare, signature=signature, minutes=12)
+            for context, reference_path in references.items():
+                def conventional(stage, reference_path=reference_path, prepared=prepared, baseline=baseline):
+                    output = stage.directory / "pilot"
+                    command(stage, "run_native_gguf_baseline.py", "run", "--baseline", baseline,
+                            "--baseline-receipt", prepared["path"], "--library", library,
+                            "--export", exported["directory"], "--parity-report", parity["report_path"],
+                            "--probes", source_arm / "packed_probes.safetensors", "--reference-report", reference_path,
+                            "--llama-dir", source, "--output-dir", output)
+                    path = output / "report.json"
+                    return {"path": str(path), "report": require(path, "reference")}, [path]
+                info = workflow.stage(f"{baseline}-{arm}-ctx{context}", conventional, signature=signature,
+                    minutes=phase_minutes(context, controls["decode_steps"], controls["repetitions"]), reuse=False)
+                result["comparisons"].append({"label": baseline, "context": context,
+                    "reference_report_sha256": digest(reference_path), "candidate_report_sha256": digest(info["path"]),
+                    **comparison(read(reference_path), info["report"])})
+                write_json(destination, result)
+    if candidate == "none":
+        result["completed"] = True
+        write_json(destination, result)
+        return
     # Every invocation revalidates the candidate. Neither an old reference pass
     # nor a build cache hit authorizes executing an untested candidate on 4B.
-    with kernel_environment("tiled4"):
+    with kernel_environment(candidate):
         def operators(stage):
             report = stage.directory / "report.json"
             command(stage, "check_rq3_gpu.py", "--library", library, "--backend", "CUDA0", "--output", report)
-            return require(report, "tiled4"), [report]
-        workflow.stage("tiled4-operators-CUDA0", operators, signature=signature, minutes=5, reuse=False)
+            return require(report, candidate), [report]
+        workflow.stage(f"{candidate}-operators-CUDA0", operators, signature=signature, minutes=5, reuse=False)
         for bits in (6, 8):
             def synthetic(stage, bits=bits):
-                fixture = build_dir / f"tiled4-w{bits}-{fingerprint(str(stage.directory))[:12]}.gguf"
+                fixture = build_dir / f"{candidate}-w{bits}-{fingerprint(str(stage.directory))[:12]}.gguf"
                 report = stage.directory / "report.json"
                 command(stage, "make_rq3_model_fixture.py", "--output", fixture, "--llama-dir", source,
                         "--vocabulary-bits", bits)
                 command(stage, "check_rq3_model.py", "--library", library, "--model", fixture,
                         "--backend", "CUDA0", "--output", report)
-                return require(report, "tiled4"), [report]
-            workflow.stage(f"tiled4-whole-model-w{bits}", synthetic, signature=signature, minutes=5, reuse=False)
+                return require(report, candidate), [report]
+            workflow.stage(f"{candidate}-whole-model-w{bits}", synthetic, signature=signature, minutes=5, reuse=False)
         def retained(stage):
             output = stage.directory / "retained"
             command(stage, "run_rq3_retained_gpu.py", "--library", library, "--backend", "CUDA0",
                     "--source-arm", source_arm, "--export", exported["directory"], "--output-dir", output)
             path = output / "report.json"
-            return {**require(path, "tiled4"), "report_path": str(path)}, [path]
-        candidate_gate = workflow.stage(f"tiled4-retained-{arm}", retained, signature=signature, minutes=10, reuse=False)
-
-    result = {"protocol": "rq3-native-performance-study-v1", "arm": arm, "completed": False,
-              "environment": environment, "comparisons": [], "profiles": [],
-              "boundary": "No automatic kernel or recipe promotion. CUDA profiling is diagnostic only."}
-    destination = workflow.root / f"comparison-{arm}.json"
-    write_json(destination, result)
+            return {**require(path, candidate), "report_path": str(path)}, [path]
+        candidate_gate = workflow.stage(f"{candidate}-retained-{arm}", retained, signature=signature, minutes=10, reuse=False)
     for context, reference_path in references.items():
         reference = read(reference_path)
-        with kernel_environment("tiled4"):
+        with kernel_environment(candidate):
             def timing(stage, context=context, reference_path=reference_path):
                 output = stage.directory / "pilot"
                 command(stage, "run_rq3_performance_pilot.py", "--library", library,
@@ -122,10 +159,10 @@ def run_study(workflow, command, *, arm, library, runtime, source, build_dir, ex
                         "--probes", source_arm / "packed_probes.safetensors", "--context", context,
                         "--replay-report", reference_path, "--output-dir", output, *options)
                 path = output / "report.json"
-                return {"path": str(path), "report": require(path, "tiled4")}, [path]
-            measured = workflow.stage(f"tiled4-{arm}-ctx{context}", timing, signature=signature,
+                return {"path": str(path), "report": require(path, candidate)}, [path]
+            measured = workflow.stage(f"{candidate}-{arm}-ctx{context}", timing, signature=signature,
                 minutes=phase_minutes(context, controls["decode_steps"], controls["repetitions"]), reuse=False)
-        result["comparisons"].append({"label": "tiled4", "context": context,
+        result["comparisons"].append({"label": candidate, "context": context,
             "reference_report_sha256": digest(reference_path), "candidate_report_sha256": digest(measured["path"]),
             **comparison(reference, measured["report"])})
         write_json(destination, result)
@@ -133,7 +170,7 @@ def run_study(workflow, command, *, arm, library, runtime, source, build_dir, ex
     if profile:
         # The smallest SELECTED context only; a targeted 2048 run remains 2048.
         context = min(references)
-        for variant, gate in (("reference", parity), ("tiled4", candidate_gate)):
+        for variant, gate in (("reference", parity), (candidate, candidate_gate)):
             with kernel_environment(variant, profile=True):
                 def diagnostic(stage, variant=variant, gate=gate):
                     output = stage.directory / "profile"
@@ -151,32 +188,5 @@ def run_study(workflow, command, *, arm, library, runtime, source, build_dir, ex
                 result["profiles"].append({"kernel": variant, "context": context, **info})
                 write_json(destination, result)
 
-    with kernel_environment():
-        for baseline in baselines:
-            def prepare(stage, baseline=baseline):
-                path = stage.directory / "baseline.json"
-                command(stage, "run_native_gguf_baseline.py", "prepare", "--baseline", baseline,
-                        "--artifact-dir", build_dir.parent / "conventional-ggufs", "--output", path)
-                receipt = read(path)
-                if receipt.get("passed") is not True:
-                    raise ValueError("Baseline preparation failed")
-                return {"path": str(path)}, [path, Path(receipt["path"])]
-            prepared = workflow.stage(f"prepare-{baseline}", prepare, signature=signature, minutes=12)
-            for context, reference_path in references.items():
-                def conventional(stage, baseline=baseline, reference_path=reference_path, prepared=prepared):
-                    output = stage.directory / "pilot"
-                    command(stage, "run_native_gguf_baseline.py", "run", "--baseline", baseline,
-                            "--baseline-receipt", prepared["path"], "--library", library,
-                            "--export", exported["directory"], "--parity-report", parity["report_path"],
-                            "--probes", source_arm / "packed_probes.safetensors", "--reference-report", reference_path,
-                            "--llama-dir", source, "--output-dir", output)
-                    path = output / "report.json"
-                    return {"path": str(path), "report": require(path, "reference")}, [path]
-                info = workflow.stage(f"{baseline}-{arm}-ctx{context}", conventional, signature=signature,
-                    minutes=phase_minutes(context, controls["decode_steps"], controls["repetitions"]), reuse=False)
-                result["comparisons"].append({"label": baseline, "context": context,
-                    "reference_report_sha256": digest(reference_path), "candidate_report_sha256": digest(info["path"]),
-                    **comparison(read(reference_path), info["report"])})
-                write_json(destination, result)
     result["completed"] = True
     write_json(destination, result)

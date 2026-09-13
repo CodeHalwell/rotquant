@@ -56,6 +56,7 @@ def repository_identity(allow_dirty=False):
                 ROOT / "scripts/run_native_gguf_baseline.py",
                 ROOT / "scripts/run_rq3_retained_gpu.py", ROOT / "scripts/rq3_test_runtime.py",
                 ROOT / "scripts/check_rq3_model.py", ROOT / "scripts/check_rq3_gpu.py",
+                ROOT / "scripts/make_rq3_model_fixture.py",
                 ROOT / "scripts/check_rq3_conversion.py", ROOT / "scripts/export_rotquant_gguf_v2.py",
                 ROOT / "scripts/preflight_native_gpu.py",
                 ROOT / "scripts/build_rq3_runtime.py", ROOT / "requirements/native-gpu.txt",
@@ -65,12 +66,17 @@ def repository_identity(allow_dirty=False):
 def run_pipeline(args):
     cache_dir = getattr(args, "persistent_cache_dir", None)
     study = getattr(args, "performance_study", False)
+    candidate = getattr(args, "study_candidate", "tiled4")
+    if candidate not in ("tiled4", "decode4", "none") or (not study and candidate != "tiled4"):
+        raise ValueError("Study candidate requires --performance-study")
     pilot = getattr(args, "performance_pilot", False) or study
     from scripts.native_pilot_controls import phase_minutes, selected_contexts
     contexts = selected_contexts(getattr(args, "context", None))
     baselines = [] if getattr(args, "no_baselines", False) else (getattr(args, "baseline", None) or ["bf16", "ud_q4"])
     if len(set(baselines)) != len(baselines) or set(baselines) - {"bf16", "ud_q4"}:
         raise ValueError("Choose unique pinned BF16/UD-Q4 controls")
+    if study and candidate == "none" and (not baselines or not getattr(args, "skip_profile", False)):
+        raise ValueError("Baseline-only follow-up requires baselines and --skip-profile")
     if study and args.backend != "CUDA":
         raise ValueError("The tiled-kernel study and conventional comparison require CUDA")
     pilot_controls = {"decode_steps": getattr(args, "decode_steps", 32),
@@ -118,6 +124,7 @@ def run_pipeline(args):
                         pilot_contexts=contexts)
     if study:
         controls.update(performance_study=True, conventional_baselines=baselines,
+                        study_candidate=candidate,
                         diagnostic_profiles=not getattr(args, "skip_profile", False))
     args.work_dir.mkdir(parents=True, exist_ok=True)
     source = args.work_dir / "llama-source"
@@ -217,6 +224,18 @@ def run_pipeline(args):
                 report = stage.directory / "report.json"
                 command(stage, script, "--library", library, *extra(report))
                 return passed(report, runtime), [report]
+            # RQ3-only fixtures cannot catch ordinary token_embd.weight falling
+            # back to CPU. Fail before retained export/timing or 4B downloads.
+            if study and baselines:
+                for kind in ("bf16", "q4_0"):
+                    def ordinary(stage, kind=kind):
+                        fixture = build_dir / f"ordinary-{kind}-{fingerprint(str(stage.directory))[:12]}.gguf"
+                        command(stage, "make_rq3_model_fixture.py", "--output", fixture,
+                                "--llama-dir", source, "--conventional", kind)
+                        return numerical(stage, "check_rq3_model.py", lambda out: [
+                            "--model", fixture, "--backend", backend, "--conventional", "--output", out])
+                    workflow.stage(f"conventional-preflight-{kind}", ordinary,
+                        signature={"runtime": runtime, "environment": environment}, minutes=5, reuse=False)
             gates = []
             for device in ("CPU", backend):
                 gates.append(workflow.stage(f"operators-{device}",
@@ -293,7 +312,8 @@ def run_pipeline(args):
                                   source=source, build_dir=build_dir, exported=exported,
                                   source_arm=args.source_root / arm, parity=parity,
                                   references=references, controls=pilot_controls, environment=environment,
-                                  baselines=baselines, profile=not getattr(args, "skip_profile", False))
+                                  baselines=baselines, profile=not getattr(args, "skip_profile", False),
+                                  candidate=candidate)
     finally:
         if study:
             for key, value in old_cuda.items():
@@ -320,6 +340,8 @@ def main():
     parser.add_argument("--persistent-cache-dir", type=Path, help="Private Drive build/export cache; no cached GPU passes")
     parser.add_argument("--performance-pilot", action="store_true", help="Fresh parity, then three independently bounded timing contexts")
     parser.add_argument("--performance-study", action="store_true", help="Reference + gated tiled kernel + diagnostics + matched conventional GGUFs")
+    parser.add_argument("--study-candidate", choices=("tiled4", "decode4", "none"), default="tiled4",
+                        help="Opt-in candidate; none runs only fresh reference + conventional controls")
     parser.add_argument("--skip-profile", action="store_true", help="Skip diagnostic-only CUDA event runs")
     group = parser.add_mutually_exclusive_group()
     group.add_argument("--baseline", action="append", choices=("bf16", "ud_q4"))

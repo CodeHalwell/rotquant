@@ -218,8 +218,10 @@ def run(args):
                         memory=memory, persist=persist, forced_decode=fixed, diagnostics=diagnostics)
                 if diagnostics:
                     report["native_diagnostics"] = diagnostics.snapshot()
-                    if report["settings"]["rq3_kernel"] == "tiled4" and not report["native_diagnostics"]["tiled_host_dispatches"]:
+                    if report["settings"]["rq3_kernel"] in ("tiled4", "decode4") and not report["native_diagnostics"]["tiled_host_dispatches"]:
                         raise ValueError("Requested tiled kernel was not dispatched")
+                    if report["settings"]["rq3_kernel"] == "decode4" and not report["native_diagnostics"]["decode_host_dispatches"]:
+                        raise ValueError("Requested decode kernel was not dispatched")
                 report["gpu_custom_ops"] = model.custom_ops
                 if model.custom_ops <= 0:
                     raise ValueError("No packed native operations observed")

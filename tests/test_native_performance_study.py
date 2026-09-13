@@ -17,6 +17,7 @@ import pytest
 from scripts import native_performance_study as study
 from scripts import run_native_gguf_baseline as baseline
 from scripts import run_rq3_performance_pilot as pilot
+from scripts.build_qwen35_native_followup_notebook import build_notebook as followup_notebook
 from scripts.build_qwen35_native_optimization_notebook import build_notebook
 from scripts.native_cuda_diagnostics import NAMES, difference
 from scripts.native_gpu_workflow import digest, write_json
@@ -184,7 +185,8 @@ def test_study_operator_failure_stops_candidate_model_execution(tmp_path):
     assert calls == ["tiled4-operators-CUDA0"]
 
 
-def test_targeted_study_order_and_no_profile_rate_comparisons(tmp_path):
+@pytest.mark.parametrize("candidate", ["tiled4", "decode4", "none"])
+def test_targeted_study_order_and_no_profile_rate_comparisons(tmp_path, candidate):
     from scripts.native_gpu_workflow import Workflow
     reference_path = tmp_path / "reference.json"
     write_json(reference_path, receipt())
@@ -210,13 +212,20 @@ def test_targeted_study_order_and_no_profile_rate_comparisons(tmp_path):
         study.run_study(workflow, command, arm="test", library=tmp_path / "lib", runtime={"lib": "test"},
             source=tmp_path, build_dir=tmp_path, exported={"receipt": {}, "directory": tmp_path},
             source_arm=tmp_path, parity={"report_path": reference_path}, references={128: reference_path},
-            controls=controls, environment={}, baselines=["bf16", "ud_q4"], profile=True)
+            controls=controls, environment={}, baselines=["bf16", "ud_q4"],
+            profile=candidate != "none", candidate=candidate)
     result = json.loads((tmp_path / "reports/comparison-test.json").read_text())
-    assert result["completed"] and len(result["comparisons"]) == 3 and len(result["profiles"]) == 2
+    assert result["completed"] and len(result["comparisons"]) == (2 if candidate == "none" else 3)
+    assert len(result["profiles"]) == (0 if candidate == "none" else 2)
     assert all(r["context"] == 128 for r in result["comparisons"])
-    assert commands[0][:2] == ("check_rq3_gpu.py", "tiled4")
+    assert commands[0][:2] == ("run_native_gguf_baseline.py", "reference")
     names = [name for name, _, _ in commands]
-    assert names.index("run_rq3_retained_gpu.py") < names.index("run_rq3_performance_pilot.py")
+    if candidate == "none":
+        assert set(names) == {"run_native_gguf_baseline.py"}
+    else:
+        assert ("check_rq3_gpu.py", candidate, None) in commands
+        assert names.index("run_rq3_retained_gpu.py") < names.index("run_rq3_performance_pilot.py")
+        assert max(i for i, n in enumerate(names) if n == "run_native_gguf_baseline.py") < names.index("check_rq3_gpu.py")
 
 
 def test_conventional_run_same_bridge_replays_tokens(tmp_path, monkeypatch):
@@ -285,11 +294,14 @@ def test_summary_keeps_latest_partial_and_profiles_separate(tmp_path):
     assert "matrix" in diagnostic and "7.00" in diagnostic
 
 
-def test_optimization_notebook_executes_top_to_bottom_with_explicit_mocks(tmp_path, monkeypatch):
+@pytest.mark.parametrize("followup", [False, True])
+def test_optimization_notebook_executes_top_to_bottom_with_explicit_mocks(tmp_path, monkeypatch, followup):
     from scripts import colab_runtime
-    notebook = build_notebook()
+    notebook = followup_notebook() if followup else build_notebook()
     nbformat.validate(notebook)
-    saved = nbformat.read(Path(__file__).resolve().parents[1] / "notebooks/qwen35_4b_native_optimization_colab.ipynb", as_version=4)
+    suffix = "followup" if followup else "optimization"
+    run_name = "followup1" if followup else "study1"
+    saved = nbformat.read(Path(__file__).resolve().parents[1] / f"notebooks/qwen35_4b_native_{suffix}_colab.ipynb", as_version=4)
     assert [(c.cell_type, c.source) for c in notebook.cells] == [(c.cell_type, c.source) for c in saved.cells]
     content = str(tmp_path / "content")
     arm = Path(content) / "drive/MyDrive/rotquant/qwen35_packed_validation/8f10ee60fc7f/b5_v6_s0"
@@ -324,7 +336,7 @@ def test_optimization_notebook_executes_top_to_bottom_with_explicit_mocks(tmp_pa
         launches.append(cmd)
         root = Path(cmd[cmd.index("--output-dir") + 1])
         write_json(root / "summary.json", {"status": "mocked-only", "active_minutes": 0, "stages": []})
-        (root.parent / "study1-reports-123.zip").touch()
+        (root.parent / f"{run_name}-reports-123.zip").touch()
     monkeypatch.setattr(colab_runtime, "run_live", launch)
     scope, old_path = {}, list(sys.path)
     try:
@@ -335,5 +347,33 @@ def test_optimization_notebook_executes_top_to_bottom_with_explicit_mocks(tmp_pa
     finally:
         sys.path[:] = old_path
     assert len(launches) == 1 and "--performance-study" in launches[0]
-    assert launches[0].count("--context") == 3 and launches[0].count("--baseline") == 2
-    assert len(downloads) == 1 and downloads[0].endswith("study1-reports-123.zip")
+    assert launches[0].count("--context") == (2 if followup else 3) and launches[0].count("--baseline") == 2
+    assert len(downloads) == 1 and downloads[0].endswith(f"{run_name}-reports-123.zip")
+    if followup:
+        assert "--skip-profile" in launches[0]
+        assert launches[0][launches[0].index("--study-candidate") + 1] == "decode4"
+
+
+def test_decode4_preserves_128_lane_reduction_order_in_float32():
+    # Arithmetic model, not execution of the CUDA kernel. Adversarial magnitudes
+    # make a different association observable even when rounded inputs match.
+    rng = np.random.default_rng(7041)
+    products = (rng.standard_normal((19, 86, 128)) * rng.choice([.0001, 1., 10000.], (19, 86, 128))).astype(np.float32)
+    accumulated = np.zeros((19, 128), dtype=np.float32)
+    for group in range(products.shape[1]):
+        accumulated += products[:, group]
+    reference = accumulated.copy()
+    for stride in (64, 32, 16, 8, 4, 2, 1):
+        reference[:, :stride] += reference[:, stride:2 * stride]
+    candidate = (accumulated[:, :32] + accumulated[:, 64:96]) + (accumulated[:, 32:64] + accumulated[:, 96:128])
+    for stride in (16, 8, 4, 2, 1):
+        candidate[:, :stride] += candidate[:, stride:2 * stride]
+    np.testing.assert_array_equal(candidate[:, 0].view(np.uint32), reference[:, 0].view(np.uint32))
+
+
+@pytest.mark.parametrize("baselines,profile", [([], False), (["bf16"], True)])
+def test_baseline_only_rejects_unusable_controls(baselines, profile):
+    with pytest.raises(ValueError, match="Baseline-only"):
+        study.run_study(None, None, arm=None, library=None, runtime=None, source=None,
+            build_dir=None, exported=None, source_arm=None, parity=None, references=None,
+            controls=None, environment=None, baselines=baselines, profile=profile, candidate="none")

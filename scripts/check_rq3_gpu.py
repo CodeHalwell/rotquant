@@ -20,6 +20,41 @@ from scripts.native_hashing import digest
 from scripts.rq3_test_runtime import NativeTests
 
 
+def check_decode_tails(runtime, backend, generator):
+    """One-token matmul across row tails, formats and longer reduction widths."""
+    from scripts.native_performance_study import kernel_environment
+    results = []
+    shapes = [(rows, 256) for rows in (1, 2, 3, 4, 5, 136, 137)]
+    shapes += [(5, width) for width in (512, 2048, 4096, 11008)]
+    formats = [(bits, sbits) for bits in range(1, 9) for sbits in (8, 16)]
+    for index, (rows, width) in enumerate(shapes + [(5, 512)] * len(formats)):
+        bits, sbits = (5, 8) if index < len(shapes) else formats[index - len(shapes)]
+        q = Quantizer(QuantConfig(bits=bits, group_size=128, scale="rms", scale_bits=sbits,
+                                 scale_quant_group_size=256)).quantize_weight(
+            torch.randn(rows, width, generator=generator) * 0.02)
+        native = encode_native_v3(q)
+        rotation = RandomizedHadamard(width, block=128, seed=2701)
+        signs = rotation.signs.numpy().astype(np.int8)
+        w = torch.from_numpy(decode_native_v3_rows(native)).half()
+        x = torch.randn(1, width, generator=generator).half()
+        for permuted in (False, True):
+            rp = np.random.default_rng(13).permutation(rows).astype(np.int32) if permuted else None
+            cp = np.random.default_rng(17).permutation(width).astype(np.int32) if permuted else None
+            expected = F.linear(rotation.rotate_activation(x[:, cp] if permuted else x),
+                                w[rp] if permuted else w).float().numpy()
+            actual = runtime.operator(backend, native, signs, x.float().numpy(), rows=rp, columns=cp)
+            with kernel_environment():
+                reference = runtime.operator(backend, native, signs, x.float().numpy(), rows=rp, columns=cp)
+            np.testing.assert_array_equal(actual, reference)
+            np.testing.assert_allclose(actual, expected, rtol=0.002, atol=0.001)
+            result = {"bits": bits, "scale_bits": sbits, "rows": rows, "width": width,
+                      "tokens": 1, "permuted": permuted, "exact_reference": True,
+                      "max_abs": float(np.max(np.abs(actual - expected))), "passed": True}
+            print(json.dumps(result), flush=True)
+            results.append(result)
+    return results
+
+
 def check(library, backend):
     runtime = NativeTests(library)
     generator = torch.Generator().manual_seed(3701)
@@ -34,8 +69,9 @@ def check(library, backend):
             signs = rotation.signs.numpy().astype(np.int8)
             weights = torch.from_numpy(decode_native_v3_rows(native))
             vocabulary = rotation.inverse_activation(weights).half()
-            tiled = os.environ.get("ROTQUANT_RQ3_KERNEL", "reference") == "tiled4"
-            for tokens in ((1, 3, 4, 5, 7, 33) if tiled else (1, 7, 33)):
+            variant = os.environ.get("ROTQUANT_RQ3_KERNEL", "reference")
+            candidate = variant in ("tiled4", "decode4")
+            for tokens in ((1, 2, 3, 4, 5, 7, 33) if candidate else (1, 7, 33)):
                 x = torch.randn(tokens, width, generator=generator).half()
                 rows = np.random.default_rng(13).permutation(137).astype(np.int32) if bits == 5 else None
                 columns = np.random.default_rng(17).permutation(width).astype(np.int32) if bits == 5 else None
@@ -50,22 +86,30 @@ def check(library, backend):
                     np.testing.assert_allclose(embeddings, vocabulary[ids].float().numpy(), rtol=0, atol=0.000125)
                 # FP32 parallel reductions may cross an FP16 rounding boundary.
                 np.testing.assert_allclose(actual, expected, rtol=0.002, atol=0.001)
-                if tiled and bits == 5:
+                if candidate and bits == 5:
                     # Same data and arithmetic: additionally require exact
                     # equivalence to the original native kernel, including tails.
                     os.environ["ROTQUANT_RQ3_KERNEL"] = "reference"
                     try:
                         reference = runtime.operator(backend, native, signs, x.float().numpy(), rows=rows, columns=columns)
                     finally:
-                        os.environ["ROTQUANT_RQ3_KERNEL"] = "tiled4"
+                        os.environ["ROTQUANT_RQ3_KERNEL"] = variant
                     np.testing.assert_array_equal(actual, reference)
                 report = {"bits": bits, "scale_bits": sbits, "width": width, "tokens": tokens,
                           "max_abs": float(np.max(np.abs(actual - expected))), "passed": True}
                 print(json.dumps(report), flush=True)
                 reports.append(report)
+    extra = check_decode_tails(runtime, backend, generator) if os.environ.get("ROTQUANT_RQ3_KERNEL") == "decode4" else []
+    diagnostics = None
+    if backend == "CUDA0" and os.environ.get("ROTQUANT_RQ3_KERNEL") == "decode4":
+        from scripts.native_cuda_diagnostics import CudaDiagnostics
+        diagnostics = CudaDiagnostics(library).snapshot()
+        if not diagnostics["decode_host_dispatches"] or not diagnostics["tiled_host_dispatches"]:
+            raise ValueError("Candidate decode/prefill dispatch missing")
     return {"protocol": "rq3-packed-operator-check-v1", "backend": backend,
             "library_sha256": digest(library), "runtime_files": runtime_identity(library),
-            "settings": execution_settings(), "cases": reports, "passed": True,
+            "settings": execution_settings(), "cases": reports, "decode_cases": extra,
+            "native_diagnostics": diagnostics, "passed": True,
             "scope": "synthetic operators; not retained-model quality or serving performance"}
 
 

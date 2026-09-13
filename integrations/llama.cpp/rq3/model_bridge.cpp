@@ -14,6 +14,7 @@ struct session {
     llama_model * model = nullptr;
     llama_context * context = nullptr;
     ggml_backend_dev_t devices[2] = {nullptr, nullptr};
+    llama_model_tensor_buft_override input_override[2] = {};
     uint64_t custom_ops = 0;
     int32_t positions = 0;
     ~session() {
@@ -39,6 +40,16 @@ void * rq3_model_open(const char * path, const char * device, uint32_t context) 
         if (!cpu && !s->devices[0]) { throw std::runtime_error("requested GPU unavailable; no fallback"); }
         auto mp = llama_model_default_params();
         mp.devices = s->devices; mp.n_gpu_layers = cpu ? 0 : 999;
+        // llama.cpp normally keeps ordinary input embeddings on CPU even when
+        // all repeating/output layers are offloaded. Our all-GPU benchmark
+        // contract includes GET_ROWS, for conventional GGUFs as well as RQ3.
+        // Keep the override alive with the model; never relax the execution gate.
+        if (!cpu) {
+            auto buft = ggml_backend_dev_buffer_type(s->devices[0]);
+            if (!buft) { throw std::runtime_error("selected GPU has no buffer type"); }
+            s->input_override[0] = {"^token_embd\\.weight$", buft};
+            mp.tensor_buft_overrides = s->input_override;
+        }
         mp.split_mode = LLAMA_SPLIT_MODE_NONE; mp.check_tensors = true; mp.load_mtp = false;
         s->model = llama_model_load_from_file(path, mp);
         if (!s->model) { throw std::runtime_error("model load failed; inspect persistent log"); }

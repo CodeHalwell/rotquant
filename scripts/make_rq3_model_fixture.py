@@ -15,7 +15,9 @@ from rotquant.quantize import QuantConfig, Quantizer
 from rotquant.rotate import RandomizedHadamard
 
 
-def make_fixture(output, llama_dir, vocabulary_bits=6):
+def make_fixture(output, llama_dir, vocabulary_bits=6, conventional=None):
+    if conventional not in (None, "bf16", "q4_0"):
+        raise ValueError("Choose BF16 or Q4_0 for a conventional fixture")
     if Path(output).exists():
         raise FileExistsError(output)
     sys.path.insert(0, str(Path(llama_dir) / "gguf-py"))
@@ -32,11 +34,12 @@ def make_fixture(output, llama_dir, vocabulary_bits=6):
     writer.add_float32("qwen35.attention.layer_norm_rms_epsilon", 1e-6)
     writer.add_float32("qwen35.rope.freq_base", 10000000.0)
     writer.add_array("qwen35.rope.dimension_sections", [11, 11, 10, 0])
-    writer.add_uint32("rotquant.version", 2)
-    writer.add_uint32("rotquant.matrix_version", 3)
-    writer.add_uint32("rotquant.rotation_block_size", 128)
-    writer.add_bool("rotquant.tied_embedding", True)
-    writer.add_string("rotquant.vocabulary_mode", "dense_equivalent_fp16")
+    if conventional is None:
+        writer.add_uint32("rotquant.version", 2)
+        writer.add_uint32("rotquant.matrix_version", 3)
+        writer.add_uint32("rotquant.rotation_block_size", 128)
+        writer.add_bool("rotquant.tied_embedding", True)
+        writer.add_string("rotquant.vocabulary_mode", "dense_equivalent_fp16")
     writer.add_tokenizer_model("gpt2")
     writer.add_tokenizer_pre("qwen35")
     writer.add_token_list([f"t{i}" for i in range(256)])
@@ -54,6 +57,13 @@ def make_fixture(output, llama_dir, vocabulary_bits=6):
         writer.add_tensor(name, values)
 
     def packed(name, rows, cols, source_name="", vocabulary=False):
+        if conventional:
+            # Ordinary tensors exercise the real GET_ROWS placement path. This
+            # random fixture is never a quality or quantization comparison.
+            values = (rng.standard_normal((rows, cols)) * 0.02).astype(np.float32)
+            qtype = gguf.GGMLQuantizationType.BF16 if conventional == "bf16" else gguf.GGMLQuantizationType.Q4_0
+            writer.add_tensor(name + ".weight", gguf.quants.quantize(values, qtype), raw_dtype=qtype)
+            return
         bits = vocabulary_bits if vocabulary else 5
         q = Quantizer(QuantConfig(bits=bits, group_size=128, scale="rms", scale_bits=16 if vocabulary else 8)).quantize_weight(
             torch.from_numpy((rng.standard_normal((rows, cols)) * 0.02).astype(np.float32)))
@@ -98,5 +108,6 @@ if __name__ == "__main__":
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--llama-dir", type=Path, required=True)
     parser.add_argument("--vocabulary-bits", type=int, choices=(6, 8), default=6)
+    parser.add_argument("--conventional", choices=("bf16", "q4_0"))
     args = parser.parse_args()
-    make_fixture(args.output, args.llama_dir, args.vocabulary_bits)
+    make_fixture(args.output, args.llama_dir, args.vocabulary_bits, args.conventional)
