@@ -9,6 +9,16 @@ software.
 
 ## [Unreleased]
 
+### Test environment (2026-09-12)
+
+- The two notebook-execution tests for the native GPU pilot and the native
+  optimisation study now stub `IPython.display` alongside their existing
+  `google.colab` stubs. Both notebooks' results cells import it, Colab
+  provides it, but the locked `dev`/`eval` environment does not, so Python CI
+  on `main` had failed on every Python version since `1bc31d4` with
+  `ModuleNotFoundError: No module named 'IPython'`. Notebooks, the locked
+  dependencies and every numerical gate are unchanged.
+
 ### Colab pip-less environment bootstrap (2026-09-10)
 
 - Remove the native notebook's dependency on `ensurepip`: create the venv with
@@ -114,6 +124,16 @@ software.
   archive locations, negative results and lessons, the defect register,
   evaluation protocol, operations cookbook, decisions log, open questions and
   a glossary. Linked from the README.
+- Corrections after Copilot's review of PR #19: native-v2 is described as a
+  per-matrix 1–8-bit runtime with fp16 scales rather than as W4-only; the
+  scale8 and W5 export rows record the lossy scale conversion (L5) instead of
+  a missing layout; README line references updated; the evidence levels of
+  the LoRA-QAT and vector arms preserved; the authored-task limitations stated
+  precisely; the stale changelog sentence fixed.
+- Merged with the 10–11 September native runtime work: the notes' compatibility
+  matrix, next steps, timeline, decisions and open questions now record the L5
+  fix, the llama.cpp v2 integration, the A100 parity run and the throughput
+  pilot, with their stated limits.
 - Recorded here because commit `5a98b99` had no changelog entry: the
   public-task release gate (`scripts/run_qwen35_public_tasks.py`,
   `scripts/public_task_suite.py`, the generated
