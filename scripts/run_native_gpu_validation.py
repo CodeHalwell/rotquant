@@ -58,6 +58,7 @@ def repository_identity(allow_dirty=False):
                 ROOT / "scripts/check_rq3_model.py", ROOT / "scripts/check_rq3_gpu.py",
                 ROOT / "scripts/check_rq3_dispatch.py",
                 ROOT / "scripts/native_kernel_candidates.py", ROOT / "scripts/native_kernel_sweep.py",
+                ROOT / "scripts/native_overnight_candidates.py",
                 ROOT / "scripts/run_rq3_kernel_screen.py",
                 ROOT / "scripts/make_rq3_model_fixture.py",
                 ROOT / "scripts/build_conventional_control.py", ROOT / "scripts/check_conventional_model.py",

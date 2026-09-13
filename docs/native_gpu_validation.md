@@ -17,6 +17,13 @@ library or a demonstrated speedup. Do not restart the public-task sweep yet.
 
 ## Colab: what to run
 
+September 13: correctness, decode4 and W5/tile8 short-context gates have now
+passed; see [backbone1 evidence](../research/results/native_backbone_2026_09_13/README.md).
+The current follow-on is the separate
+[overnight kernel notebook](../notebooks/qwen35_4b_native_overnight_colab.ipynb),
+not an eight-hour setting on the old pilot. New GEMM/head kernels remain GPU
+unvalidated. The instructions below preserve the historical correctness handoff.
+
 **After the successful W5/W6 correctness run, use the new
 [performance pilot notebook](../notebooks/qwen35_4b_native_gpu_pilot_colab.ipynb)
 and [pilot runbook](native_gpu_pilot.md).** It retains all gates, adds a private

@@ -70,14 +70,14 @@ index 2456f7dcc..b5a08f953 100644
      // check if all the sources are allocated on this device
 diff --git a/ggml/src/ggml-cuda/rq3.cu b/ggml/src/ggml-cuda/rq3.cu
 new file mode 100644
-index 000000000..bf054b443
 --- /dev/null
 +++ b/ggml/src/ggml-cuda/rq3.cu
-@@ -0,0 +1,359 @@
+@@ -0,0 +1,380 @@
 +#include "common.cuh"
 +#include "rotquant-v3.h"
 +#include "ggml-cuda.h"
 +#include <mutex>
++#include <type_traits>
 +using rq3_ulong = uint64_t;
 +using uchar = unsigned char;
 +using uint = unsigned int;
@@ -338,6 +338,8 @@ index 000000000..bf054b443
 +    }
 +}
 +
++#include "rq3-experiment.cuh"
++
 +// Process-local diagnostics. Counts describe host dispatches, not CUDA graph
 +// replays. Timings require graphs disabled and intentionally synchronize each
 +// custom op; never include these runs in the uninstrumented speed table.
@@ -347,6 +349,11 @@ index 000000000..bf054b443
 +static uint64_t rq3_tiled_dispatches = 0;
 +static uint64_t rq3_decode_dispatches = 0;
 +static uint64_t rq3_w5_dispatches[3] = {};
++static uint64_t rq3_experiment_dispatches[8] = {}, rq3_scratch_peak = 0;
++extern "C" GGML_BACKEND_API uint64_t ggml_cuda_rq3_experiment_stat(int id) {
++    std::lock_guard<std::mutex> guard(rq3_profile_mutex);
++    return id == 0 ? rq3_scratch_peak : id > 0 && id < 8 ? rq3_experiment_dispatches[id] : 0;
++}
 +extern "C" GGML_BACKEND_API uint64_t ggml_cuda_rq3_w5_dispatches(int tile) {
 +    std::lock_guard<std::mutex> guard(rq3_profile_mutex);
 +    return tile == 4 ? rq3_w5_dispatches[0] : tile == 8 ? rq3_w5_dispatches[1] : tile == 16 ? rq3_w5_dispatches[2] : 0;
@@ -373,11 +380,15 @@ index 000000000..bf054b443
 +    const int64_t groups = tag == RQ3_ROTATE || tag == RQ3_ROWS ? inputs / 128 : op->ne[0];
 +    GGML_ASSERT(groups > 0 && groups <= INT32_MAX && tokens > 0 && tokens <= 65535);
 +    const char * variant = getenv("ROTQUANT_RQ3_KERNEL");
-+    const int w5_tile = !variant ? 0 : strcmp(variant, "w5s8") == 0 ? 4 :
++    const auto experiment = rq3_experiment_for(variant);
++    const int w5_tile = experiment.id ? 8 : !variant ? 0 : strcmp(variant, "w5s8") == 0 ? 4 :
 +        strcmp(variant, "w5s8-tile8") == 0 ? 8 : strcmp(variant, "w5s8-tile16") == 0 ? 16 : 0;
 +    GGML_ASSERT(!variant || w5_tile || strcmp(variant, "reference") == 0 || strcmp(variant, "tiled4") == 0 || strcmp(variant, "decode4") == 0);
 +    const bool decode = variant && (w5_tile || strcmp(variant, "decode4") == 0) && tag == RQ3_MATMUL && tokens == 1;
 +    const bool tiled = variant && (w5_tile || strcmp(variant, "tiled4") == 0 || strcmp(variant, "decode4") == 0) && tag == RQ3_MATMUL && tokens >= 4;
++    const bool gemm = experiment.rows && tag == RQ3_MATMUL && tokens >= 4;
++    const bool head = experiment.head && tag == RQ3_HEAD;
++    size_t scratch = 0;
 +    const char * enabled = getenv("ROTQUANT_RQ3_PROFILE");
 +    const bool profile = enabled && strcmp(enabled, "1") == 0;
 +    cudaEvent_t begin = nullptr, end = nullptr;
@@ -390,7 +401,14 @@ index 000000000..bf054b443
 +        CUDA_CHECK(cudaEventCreate(&end));
 +        CUDA_CHECK(cudaEventRecord(begin, ctx.stream()));
 +    }
-+    if (decode && w5_tile) {
++    if (gemm) {
++        scratch = experiment.half ? rq3_chunk_gemm<half>(ctx, a, op, experiment.rows) :
++            rq3_chunk_gemm<float>(ctx, a, op, experiment.rows);
++    } else if (head) {
++        kernel_rq3_head_warp<<<dim3((groups + 3) / 4, tokens), 128, 0, ctx.stream()>>>(a,
++            (const uchar *) op->src[0]->data, (const uchar *) op->src[1]->data,
++            (const uchar *) op->src[2]->data, (float *) op->data);
++    } else if (decode && w5_tile) {
 +        kernel_rq3_decode4<true><<<dim3((groups + 3) / 4), 128, 0, ctx.stream()>>>(a,
 +            (const uchar *) op->src[0]->data, (const uchar *) op->src[1]->data,
 +            (const uchar *) op->src[2]->data, (float *) op->data);
@@ -429,9 +447,11 @@ index 000000000..bf054b443
 +    GGML_ASSERT(index >= 0 && index < 4);
 +    rq3_profile_ms[index] += elapsed;
 +    rq3_profile_calls[index]++;
-+    if (tiled) { rq3_tiled_dispatches++; }
++    if (gemm || head) { rq3_experiment_dispatches[experiment.id]++; }
++    rq3_scratch_peak = std::max(rq3_scratch_peak, uint64_t(scratch));
++    if (tiled && !gemm) { rq3_tiled_dispatches++; }
 +    if (decode) { rq3_decode_dispatches++; }
-+    if (w5_tile && (decode || tiled)) { rq3_w5_dispatches[w5_tile == 4 ? 0 : w5_tile == 8 ? 1 : 2]++; }
++    if (w5_tile && (decode || (tiled && !gemm))) { rq3_w5_dispatches[w5_tile == 4 ? 0 : w5_tile == 8 ? 1 : 2]++; }
 +}
 diff --git a/ggml/src/ggml-metal/CMakeLists.txt b/ggml/src/ggml-metal/CMakeLists.txt
 index 140c5d809..a17adbe6a 100644
@@ -3158,3 +3178,137 @@ index 309dd4324..77facac67 100644
      cb(cur, "ffn_out", il);
  
      return cur;
+diff --git a/ggml/src/ggml-cuda/rq3-experiment.cuh b/ggml/src/ggml-cuda/rq3-experiment.cuh
+new file mode 100644
+--- /dev/null
++++ b/ggml/src/ggml-cuda/rq3-experiment.cuh
+@@ -0,0 +1,129 @@
++// Opt-in experiment v1. Included after rq3 helpers; never changes default dispatch.
++// Operands have the SAME half-rounding boundary as kernel_rq3. GEMM changes
++// reduction order, so it belongs to the separately gated reordered lane.
++static constexpr size_t rq3_scratch_limit = 256ULL * 1024 * 1024;
++struct rq3_experiment { int id = 0, rows = 0; bool half = false, head = false; };
++static rq3_experiment rq3_experiment_for(const char * name) {
++    if (!name) { return {}; }
++    if (!strcmp(name, "head-warp")) { return {1, 0, false, true}; }
++    if (!strcmp(name, "sgemm-128")) { return {2, 128, false, false}; }
++    if (!strcmp(name, "sgemm-512")) { return {3, 512, false, false}; }
++    if (!strcmp(name, "hgemm-128")) { return {4, 128, true, false}; }
++    if (!strcmp(name, "hgemm-512")) { return {5, 512, true, false}; }
++    if (!strcmp(name, "hgemm-2048")) { return {6, 2048, true, false}; }
++    if (!strcmp(name, "hgemm-512-head")) { return {7, 512, true, true}; }
++    return {};
++}
++
++// Four rows, one warp each. Four virtual lanes preserve the original 128-lane
++// FWHT and dot reduction order. No block barriers or dense head copy.
++static __global__ void kernel_rq3_head_warp(rq3_args a, const uchar * src0,
++        const uchar * src1, const uchar * src2, float * out) {
++    const int lane = threadIdx.x % 32;
++    const int64_t row = int64_t(blockIdx.x) * 4 + threadIdx.x / 32;
++    if (row >= a.outputs) { return; } // entire warp exits together
++    const rq3_view v = rq3_parse(src1);
++    const auto * input = (const float *) src0;
++    const auto * signs = (const char *) src2;
++    float sums[4] = {};
++    for (int64_t start = 0; start < a.inputs; start += 128) {
++        float w[4];
++        #pragma unroll
++        for (int p = 0; p < 4; ++p) { w[p] = rq3_weight(v, row, start + p * 32 + lane); }
++        #pragma unroll
++        for (int stride = 1; stride < 32; stride *= 2) {
++            #pragma unroll
++            for (int p = 0; p < 4; ++p) {
++                const float other = __shfl_xor_sync(0xffffffffu, w[p], stride);
++                w[p] = (lane & stride) ? other - w[p] : w[p] + other;
++            }
++        }
++        // Stages 32 and 64, using old values on both sides.
++        const float a0 = w[0] + w[1], a1 = w[0] - w[1];
++        const float a2 = w[2] + w[3], a3 = w[2] - w[3];
++        w[0] = a0 + a2; w[1] = a1 + a3;
++        w[2] = a0 - a2; w[3] = a1 - a3;
++        #pragma unroll
++        for (int p = 0; p < 4; ++p) {
++            const int64_t col = start + p * 32 + lane;
++            sums[p] += rq3_round(w[p] * 0.08838834764831845f * signs[col]) *
++                rq3_round(input[int64_t(blockIdx.y) * a.inputs + col]);
++        }
++    }
++    float sum = (sums[0] + sums[2]) + (sums[1] + sums[3]);
++    #pragma unroll
++    for (int stride = 16; stride > 0; stride /= 2) {
++        const float other = __shfl_down_sync(0xffffffffu, sum, stride);
++        if (lane < stride) { sum += other; }
++    }
++    if (!lane) { out[int64_t(blockIdx.y) * a.outputs + row] = rq3_round(sum); }
++}
++
++template<typename T> static __global__ void rq3_stage_input(const float * x, T * y, int64_t n) {
++    const int64_t i = int64_t(blockIdx.x) * blockDim.x + threadIdx.x;
++    if (i < n) { y[i] = T(rq3_round(x[i])); }
++}
++template<typename T> static __global__ void rq3_unpack_chunk(const uchar * packed,
++        const int * permutation, T * out, int64_t first, int64_t count, int64_t cols) {
++    const int64_t i = int64_t(blockIdx.x) * blockDim.x + threadIdx.x;
++    if (i >= count * cols) { return; }
++    const int64_t r = first + i / cols;
++    const int64_t source = permutation ? permutation[r] : r;
++    out[i] = T(rq3_round(rq3_weight(rq3_parse(packed), source, i % cols)));
++}
++static __global__ void rq3_gemm_epilogue(const float * x, float * y,
++        int64_t first, int64_t count, int64_t rows, int64_t tokens) {
++    const int64_t i = int64_t(blockIdx.x) * blockDim.x + threadIdx.x;
++    if (i < count * tokens) { y[(i / count) * rows + first + i % count] = rq3_round(x[i]); }
++}
++
++// Scratch allocations have operator lifetime; pool capacity may stay reserved.
++// Account all three requested buffers. cuBLAS/context workspace and allocator
++// rounding are EXTRA and must be reported via process VRAM, not hidden here.
++template<typename T> static size_t rq3_chunk_gemm(ggml_backend_cuda_context & ctx,
++        rq3_args a, ggml_tensor * op, int chunk) {
++    const int k = int(a.inputs), n = int(a.outputs), t = int(a.tokens);
++    GGML_ASSERT(a.inputs <= INT32_MAX && a.outputs <= INT32_MAX);
++    const size_t input_bytes = size_t(k) * t * sizeof(T);
++    const size_t per_row = size_t(k) * sizeof(T) + size_t(t) * sizeof(float);
++    // A shape outside the declared workspace contract fails, never silently
++    // falls back and gets credited as an experimental dispatch.
++    GGML_ASSERT(input_bytes + per_row <= rq3_scratch_limit);
++    chunk = int(std::min(size_t(std::min(chunk, n)), (rq3_scratch_limit - input_bytes) / per_row));
++    ggml_cuda_pool_alloc<T> input(ctx.pool(), size_t(k) * t);
++    ggml_cuda_pool_alloc<T> weights(ctx.pool(), size_t(k) * chunk);
++    ggml_cuda_pool_alloc<float> output(ctx.pool(), size_t(chunk) * t);
++    rq3_stage_input<<<(size_t(k) * t + 255) / 256, 256, 0, ctx.stream()>>>(
++        (const float *) op->src[0]->data, input.get(), int64_t(k) * t);
++    cublasHandle_t handle = ctx.cublas_handle();
++    cublasMath_t previous_math;
++    cublasPointerMode_t previous_pointer;
++    CUBLAS_CHECK(cublasGetMathMode(handle, &previous_math));
++    CUBLAS_CHECK(cublasGetPointerMode(handle, &previous_pointer));
++    // Never inherit llama.cpp's TF32 mode for the FP32 control. Disallow
++    // reduced-precision intermediate reductions for both experiment lanes.
++    CUBLAS_CHECK(cublasSetMathMode(handle, CUBLAS_MATH_DISALLOW_REDUCED_PRECISION_REDUCTION));
++    CUBLAS_CHECK(cublasSetPointerMode(handle, CUBLAS_POINTER_MODE_HOST));
++    const float alpha = 1, beta = 0;
++    for (int first = 0; first < n; first += chunk) {
++        const int count = std::min(chunk, n - first);
++        rq3_unpack_chunk<<<(size_t(count) * k + 255) / 256, 256, 0, ctx.stream()>>>(
++            (const uchar *) op->src[1]->data,
++            a.permutation ? (const int *) op->src[2]->data : nullptr,
++            weights.get(), first, count, k);
++        if constexpr (std::is_same<T, float>::value) {
++            CUBLAS_CHECK(cublasSgemm(handle, CUBLAS_OP_T, CUBLAS_OP_N, count, t, k,
++                &alpha, weights.get(), k, input.get(), k, &beta, output.get(), count));
++        } else {
++            CUBLAS_CHECK(cublasGemmEx(handle, CUBLAS_OP_T, CUBLAS_OP_N, count, t, k,
++                &alpha, weights.get(), CUDA_R_16F, k, input.get(), CUDA_R_16F, k,
++                &beta, output.get(), CUDA_R_32F, count, CUBLAS_COMPUTE_32F,
++                CUBLAS_GEMM_DEFAULT));
++        }
++        rq3_gemm_epilogue<<<(size_t(count) * t + 255) / 256, 256, 0, ctx.stream()>>>(
++            output.get(), (float *) op->data, first, count, n, t);
++    }
++    CUBLAS_CHECK(cublasSetPointerMode(handle, previous_pointer));
++    CUBLAS_CHECK(cublasSetMathMode(handle, previous_math));
++    return input_bytes + size_t(chunk) * per_row;
++}

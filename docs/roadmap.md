@@ -22,17 +22,29 @@ See the [evidence and caveats](../research/results/native_cuda_2026_09_10/README
 This verifies native reproduction of the quantized checkpoint, not FP16/BF16
 quality recovery. W5/W8 is covered by synthetic tests, not a retained-model run.
 
-**Next gate: W5 backbone kernel screen, then retained-model confirmation against decode4.**
+**Next gate: bounded GEMM/head runtime experiments against the validated tile8 control.**
+The [completed backbone1 run](../research/results/native_backbone_2026_09_13/README.md)
+passes all 29 stages. At 128 tokens tile8 reaches 160.08 prefill / 33.70 decode
+tok/s versus decode4's 119.49 / 31.66, with unchanged retained numerical gates.
+The separate [overnight notebook](../notebooks/qwen35_4b_native_overnight_colab.ipynb)
+implements six opt-in candidates plus one conditional combination under the
+user-approved eight-hour active/wall ceiling. See its
+[contracts and readiness status](native_overnight_experiment_plan.md).
+This does not change the default runtime or establish a new GPU result. Wider
+task quality, W5/W8 retained confirmation and all-quant provider comparisons are
+still separate gates. No paid GPU was launched while preparing the notebook.
+
+Historical motivation:
 The [completed followup4 profile](../research/results/native_decode4_profile_2026_09_13/README.md)
 passes all 20 stages, reproducing 32.17 versus 20.04 decode tok/s at 128 tokens.
 Backbone matrices are 57.8% of measured custom decode event time and 98.7% of
 custom prefill time; the unchanged vocabulary head is 37.0% of custom decode.
 These are not whole-model wall-time or DRAM-bandwidth shares.
-The [new backbone experiment](native_backbone_experiment.md) implements three
+The [earlier backbone experiment](native_backbone_experiment.md) implemented three
 opt-in W5/scale8/tile candidates and a cheap exact-parity/synthetic-speed screen.
 At most two candidates proceed to fresh full-model gates and same-run decode4
-timings. No eligible candidate stops the run before export/model work. GPU
-candidate correctness and speed remain unmeasured; compile success is not a win.
+timings. Its GPU confirmation is now recorded in backbone1 above; compile
+success alone was not treated as a win.
 Keep vocabulary-head optimization separate; then validate longer context/W5-W8,
 repeat conventional controls and resume cost-bounded native task evaluation.
 

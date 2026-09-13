@@ -1,0 +1,192 @@
+{
+  "status": "passed-with-scope-caveats",
+  "producer": "e435080f74d49fef405249b1b2dd82fa12f05295",
+  "stage_count": 29,
+  "active_minutes": 40.12277813150001,
+  "build_minutes": 26.95631561893333,
+  "verified_included_artifact_references": 31,
+  "unavailable_external_artifact_references": 38,
+  "verified_producer_source_hashes": 28,
+  "screen": [
+    {
+      "kernel": "w5s8",
+      "eligible": true,
+      "worst_ratio": 1.0355997128560888,
+      "decode": 1.04773968099472,
+      "prefill": 1.1110663740608677
+    },
+    {
+      "kernel": "w5s8-tile8",
+      "eligible": true,
+      "worst_ratio": 1.0267520602970637,
+      "decode": 1.0480360981936425,
+      "prefill": 1.3578809795715423
+    },
+    {
+      "kernel": "w5s8-tile16",
+      "eligible": true,
+      "worst_ratio": 1.0234331772228547,
+      "decode": 1.0428108627645138,
+      "prefill": 1.3160382418823715
+    }
+  ],
+  "timings": [
+    {
+      "kernel": "decode4",
+      "prefill_tps": 119.49012700239372,
+      "decode_tps": 31.66295038399346,
+      "peak_mib": 3450,
+      "repetitions": 3,
+      "prefill_seconds": [
+        1.0712352579998878,
+        1.0711529539998992,
+        1.0712664190000396
+      ],
+      "decode_seconds": [
+        1.016705557001842,
+        1.008329646997936,
+        1.0068995599990558
+      ]
+    },
+    {
+      "kernel": "w5s8-tile8",
+      "prefill_tps": 160.08111276631527,
+      "decode_tps": 33.69840538248521,
+      "peak_mib": 3450,
+      "repetitions": 3,
+      "prefill_seconds": [
+        0.7995975369999542,
+        0.7996358100003818,
+        0.7995505779999803
+      ],
+      "decode_seconds": [
+        0.9499323750005715,
+        0.9491213590004008,
+        0.9497457539978313
+      ]
+    },
+    {
+      "kernel": "w5s8-tile16",
+      "prefill_tps": 152.07711521925248,
+      "decode_tps": 33.67565025874819,
+      "peak_mib": 3450,
+      "repetitions": 3,
+      "prefill_seconds": [
+        0.8415110930000083,
+        0.8418108129999382,
+        0.8417128399996727
+      ],
+      "decode_seconds": [
+        0.950478920000478,
+        0.9496831429983104,
+        0.9505623999998534
+      ]
+    }
+  ],
+  "parity": {
+    "max_abs_error": 0.0322265625,
+    "mean_abs_error": 0.002836523566979521,
+    "mean_kl": 0.000008667400892968748,
+    "top1_agreement": 1,
+    "positions": 16,
+    "generation_probes": 4,
+    "exact_generation_probes": 4,
+    "thresholds": {
+      "max_abs_error": 0.125,
+      "mean_abs_error": 0.005,
+      "mean_kl": 0.0001,
+      "top1_agreement_min": 0.99
+    },
+    "guards": {
+      "max_abs_error": true,
+      "mean_abs_error": true,
+      "mean_kl": true,
+      "top1": true,
+      "exact_generation": true
+    },
+    "passed": true,
+    "comparison": "cross-engine-native-v3",
+    "boundary": "Bounded numerical probes, not task accuracy or full-suite equivalence."
+  },
+  "gates": [
+    {
+      "stage": "screen-operators-decode4",
+      "cases": 42,
+      "decode_cases": 54,
+      "prefill_format_cases": 0
+    },
+    {
+      "stage": "screen-operators-w5s8",
+      "cases": 84,
+      "decode_cases": 54,
+      "prefill_format_cases": 168
+    },
+    {
+      "stage": "screen-operators-w5s8-tile8",
+      "cases": 84,
+      "decode_cases": 54,
+      "prefill_format_cases": 168
+    },
+    {
+      "stage": "screen-operators-w5s8-tile16",
+      "cases": 84,
+      "decode_cases": 54,
+      "prefill_format_cases": 168
+    },
+    {
+      "stage": "operators-CPU",
+      "cases": 42,
+      "decode_cases": 54,
+      "prefill_format_cases": 0
+    },
+    {
+      "stage": "operators-CUDA0",
+      "cases": 42,
+      "decode_cases": 54,
+      "prefill_format_cases": 0
+    },
+    {
+      "stage": "whole-model-w6"
+    },
+    {
+      "stage": "whole-model-w8"
+    },
+    {
+      "stage": "hf-conversion",
+      "cases": 6
+    },
+    {
+      "stage": "w5s8-tile8-operators-CUDA0",
+      "cases": 84,
+      "decode_cases": 54,
+      "prefill_format_cases": 168
+    },
+    {
+      "stage": "w5s8-tile8-whole-model-w6"
+    },
+    {
+      "stage": "w5s8-tile8-whole-model-w8"
+    },
+    {
+      "stage": "w5s8-tile16-operators-CUDA0",
+      "cases": 84,
+      "decode_cases": 54,
+      "prefill_format_cases": 168
+    },
+    {
+      "stage": "w5s8-tile16-whole-model-w6"
+    },
+    {
+      "stage": "w5s8-tile16-whole-model-w8"
+    }
+  ],
+  "limitations": [
+    "Offline receipt and calculation checks, not an independent GPU replay.",
+    "Referenced external binaries, model tensors and raw parity logits are absent.",
+    "One A100 session, 128-token prompt, one retained W5/W6 arm; three measured repetitions, fixed decode replay.",
+    "Full-model configurations ran sequentially, not in randomized/counterbalanced order.",
+    "Retained parity is against the saved quantized checkpoint, not new full-precision quality evidence.",
+    "Process VRAM is sampled, not an exact peak or bandwidth measurement.",
+    "No conventional baseline was run in this bundle."
+  ]
+}

@@ -1,15 +1,16 @@
 # rotquant-eval
 
-**Next Colab run:** [W5 backbone kernel experiment](notebooks/qwen35_4b_native_backbone_colab.ipynb).
-[Followup4 passed all 20 gates](research/results/native_decode4_profile_2026_09_13/README.md)
-and reproduced ~60% faster decode. Backbone matrices remain the largest custom
-operator cost, followed by the vocabulary head. The [new runbook](docs/native_backbone_experiment.md)
-screens W5/scale8 specialization and 8/16-token prefill tiles against **decode4**,
-then validates at most two finalists on the unchanged W5/W6 checkpoint. It stops
-before model export if none qualifies. Live logs, bounded phases and report
-downloads are built in. These candidates have **no measured GPU win yet**.
-The [BF16/Unsloth baselines](research/results/native_followup_2026_09_13/README.md)
-remain historical; there are no conventional downloads in this run.
+**Next Colab run:** [overnight native runtime experiment](notebooks/qwen35_4b_native_overnight_colab.ipynb)
+on A100 40GB, with an explicit **480-minute active AND wall ceiling**.
+[Backbone1 passed all 29 stages](research/results/native_backbone_2026_09_13/README.md):
+tile8 reached **160.08 prefill / 33.70 decode tok/s** at 128 tokens, versus
+119.49 / 31.66 for decode4. The unchanged W5/W6 checkpoint remains the candidate.
+The [overnight runbook](docs/native_overnight_experiment_plan.md) tests bounded
+FP32/FP16 GEMM staging and a warp-based vocabulary head against tile8, with
+numerical rejection, at most two backbone finalists, longer-context checks and
+fresh BF16/Unsloth controls. New kernels have **no GPU correctness or speed
+result yet**. Optional automatic Colab release follows verified Drive reports;
+it is not a guaranteed billing cap. Existing notebooks/defaults are preserved.
 
 A GPU-oriented assessment harness for **TurboQuant-style rotation + weight
 compression**. The implemented experiment cells test the following hypotheses on
@@ -159,7 +160,7 @@ common-FP16 KL by 55.6–57.9% versus the pinned Unsloth UD-Q4_K_XL; W5/W8 by
 W4 models or evidence of general task/serving superiority. The authored tasks
 exposed seed sensitivity and two oracle/format interpretation limitations.
 
-**Next: profile the validated decode4 path before further optimisation.** The public-task run was
+**Runtime progression (historical; current next run is linked above):** The public-task run was
 stopped after the W5/W6 Python reference path proved too slow. Native full-model
 execution now passes the user's [A100 W5/W6 saved-probe checks](research/results/native_cuda_2026_09_10/README.md),
 and the [same-run A100 study](research/results/native_study_2026_09_11/README.md)

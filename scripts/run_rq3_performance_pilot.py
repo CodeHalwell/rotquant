@@ -51,7 +51,7 @@ def reference_tokens(reference, expected_kernel="reference"):
     rows = reference.get("rows", [])
     controls = reference.get("controls", {})
     if (reference.get("passed") is not True or reference.get("measurement_kind") != "throughput"
-            or expected_kernel not in ("reference", "decode4")
+            or expected_kernel not in ("reference", "decode4", "w5s8-tile8")
             or reference.get("settings", {}).get("rq3_kernel") != expected_kernel
             or reference.get("settings", {}).get("rq3_profile") is not False
             or controls.get("repetitions", 0) < 2
@@ -206,6 +206,10 @@ def run(args):
             report["replay_report_sha256"] = digest(reference)
         os.environ["ROTQUANT_REQUIRE_GPU"] = "1"
         runtime = NativeTests(args.library)
+        from scripts.native_overnight_candidates import CANDIDATES, ExperimentDiagnostics
+        experiment_kernel = report["settings"]["rq3_kernel"]
+        experiment = ExperimentDiagnostics(args.library) if experiment_kernel in CANDIDATES else None
+        experiment_before = experiment.snapshot(experiment_kernel) if experiment else None
         diagnostics = None
         if gate["backend"] == "CUDA0" and (report["settings"]["rq3_profile"] or
                                              report["settings"]["rq3_kernel"] != "reference"):
@@ -233,6 +237,8 @@ def run(args):
                     if kernel in W5_TILES and not report["native_diagnostics"].get("w5_host_dispatches", {}).get(str(W5_TILES[kernel])):
                         raise ValueError("Requested W5 candidate was not dispatched")
                 report["gpu_custom_ops"] = model.custom_ops
+                if experiment:
+                    report["experimental_dispatch"] = experiment.require(experiment_before, experiment_kernel)
                 if model.custom_ops <= 0:
                     raise ValueError("No packed native operations observed")
         if gate["backend"] == "CUDA0" and not memory.samples:
@@ -262,7 +268,7 @@ def main():
     parser.add_argument("--min-decode-tps", type=float, default=2.)
     parser.add_argument("--max-vram-mib", type=float, default=16384.)
     parser.add_argument("--replay-report", type=Path, help="Replay the validated reference's decode IDs")
-    parser.add_argument("--replay-kernel", choices=("reference", "decode4"), default="reference",
+    parser.add_argument("--replay-kernel", choices=("reference", "decode4", "w5s8-tile8"), default="reference",
                         help="Explicit expected kernel of the replay receipt")
     args = parser.parse_args()
     def terminate(signum, frame):

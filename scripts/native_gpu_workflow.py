@@ -58,12 +58,16 @@ class Stage:
 
 
 class Workflow:
-    def __init__(self, root, repo, controls, budget_minutes=90):
-        if not 1 <= budget_minutes <= 180:
-            raise ValueError("active execution budget must be 1..180 minutes")
+    def __init__(self, root, repo, controls, budget_minutes=90, *, overnight=False):
+        maximum = 480 if overnight else 180
+        if not 1 <= budget_minutes <= maximum:
+            raise ValueError(f"active execution budget must be 1..{maximum} minutes")
         self.root, self.repo = Path(root).resolve(), Path(repo).resolve()
         self.budget = budget_minutes * 60
         self.controls = {**controls, "active_budget_minutes": budget_minutes}
+        self.overnight = overnight
+        if overnight:
+            self.controls["overnight_wall_minutes"] = budget_minutes
         self.path = self.root / "workflow.json"
         self.lock = None
 
@@ -83,6 +87,10 @@ class Workflow:
             else:
                 self.state = {"protocol": "rq3-gpu-e2e-v2", "controls": self.controls,
                               "active_seconds": 0., "attempts": [], "status": "ready"}
+                if self.overnight:
+                    self.state["wall_deadline_epoch"] = time.time() + self.budget
+            if self.overnight and "wall_deadline_epoch" not in self.state:
+                raise ValueError("Missing persisted overnight deadline")
             # A process killed without cleanup left a running receipt. Charge
             # conservatively, bounded by the declared phase timeout.
             for row in self.state["attempts"]:
@@ -112,6 +120,9 @@ class Workflow:
                 print(f"RESUME {name}: verified completed artifacts", flush=True)
                 return row["value"]
         remaining = self.budget - self.state["active_seconds"]
+        if self.overnight:
+            # Reserve finalization time inside the original, non-renewable deadline.
+            remaining = min(remaining, self.state["wall_deadline_epoch"] - time.time()) - 120
         if remaining <= 0:
             raise TimeoutError("Active execution allowance exhausted; completed work is preserved. Stop the GPU runtime.")
         directory = self.root / "stages" / name / f"attempt-{len(previous) + 1:03d}"
