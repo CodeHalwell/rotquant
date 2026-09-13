@@ -1,12 +1,14 @@
 # rotquant-eval
 
-**Next Colab run:** [GPU baseline completion and decode optimisation](notebooks/qwen35_4b_native_followup_colab.ipynb).
-The [runbook](docs/native_gpu_followup.md) covers independent public/private API
-checks for tiny BF16/Q4_0 models, matched baselines first, and an opt-in
-single-token kernel on unchanged W5/W6 weights.
+**Next Colab run:** [Focused decode validation after cache repair](notebooks/qwen35_4b_native_followup_colab.ipynb).
+The [runbook](docs/native_gpu_followup.md) covers early dispatch checks and fresh
+reference/decode4 pairs on unchanged W5/W6 weights. The completed
+[BF16/Unsloth baselines](research/results/native_followup_2026_09_13/README.md)
+are archived; the default `followup3` skips repeating those downloads/timings.
 The [A100 study](research/results/native_study_2026_09_11/README.md)
-confirmed 3.30–3.35× faster prefill; decode remains ~19.8–19.9 tok/s and the
-BF16/Unsloth comparison is unfinished. The new decode candidate is unvalidated on CUDA.
+confirmed 3.30–3.35× faster prefill; reference decode remains ~20 tok/s versus
+Unsloth's ~113–127 tok/s in followup2. Candidate full-model CUDA validation and
+speed remain pending after repairing a cached-library diagnostic counter bug.
 
 A GPU-oriented assessment harness for **TurboQuant-style rotation + weight
 compression**. The implemented experiment cells test the following hypotheses on
@@ -161,9 +163,10 @@ stopped after the W5/W6 Python reference path proved too slow. Native full-model
 execution now passes the user's [A100 W5/W6 saved-probe checks](research/results/native_cuda_2026_09_10/README.md),
 and the [same-run A100 study](research/results/native_study_2026_09_11/README.md)
 confirms tiled4 prefill gains and bounded parity. The [new notebook](notebooks/qwen35_4b_native_followup_colab.ipynb)
-fixes ordinary embedding placement, isolates bridge errors from Q4 CPU/CUDA
-drift with a public-API control, tests tiny conventional models first, then
-collects matched baselines before a gated opt-in decode candidate. See the
+now repairs cached-library diagnostic binding and tests dispatch before
+full-model work. The [baseline follow-up](research/results/native_followup_2026_09_13/README.md)
+completed conventional comparisons and confirmed public/private API agreement.
+Fresh candidate parity and timing are next. See the
 [runbook](docs/native_gpu_followup.md); decode speedup/CUDA conformance are still
 unmeasured. Saved checkpoints and partial results are preserved;
 no re-quantization or training is required before a new runtime-bound

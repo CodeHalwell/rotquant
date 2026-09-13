@@ -57,6 +57,10 @@ def check_decode_tails(runtime, backend, generator):
 
 def check(library, backend):
     runtime = NativeTests(library)
+    dispatch = None
+    if backend == "CUDA0" and os.environ.get("ROTQUANT_RQ3_KERNEL") in ("tiled4", "decode4"):
+        from scripts.check_rq3_dispatch import check as check_dispatch
+        dispatch = check_dispatch(library, os.environ["ROTQUANT_RQ3_KERNEL"])
     generator = torch.Generator().manual_seed(3701)
     reports = []
     for bits, sbits in ((5, 8), (6, 16), (8, 16)):
@@ -110,6 +114,7 @@ def check(library, backend):
             "library_sha256": digest(library), "runtime_files": runtime_identity(library),
             "settings": execution_settings(), "cases": reports, "decode_cases": extra,
             "native_diagnostics": diagnostics, "passed": True,
+            "dispatch_probe": dispatch,
             "scope": "synthetic operators; not retained-model quality or serving performance"}
 
 
@@ -121,7 +126,17 @@ def main():
     args = parser.parse_args()
     if args.output and args.output.exists():
         raise FileExistsError(args.output)
-    result = check(args.library, args.backend)
+    try:
+        result = check(args.library, args.backend)
+    except BaseException as error:
+        if args.output:
+            from scripts.native_gpu_workflow import write_json
+            write_json(args.output, {"protocol": "rq3-packed-operator-check-v1", "passed": False,
+                "backend": args.backend, "settings": execution_settings(),
+                "error": f"{type(error).__name__}: {error}",
+                "dispatch_probe": getattr(error, "evidence", None),
+                "boundary": "Failed gate. Completed numerical cases, if any, remain in the persistent log."})
+        raise
     if args.output:
         args.output.parent.mkdir(parents=True, exist_ok=True)
         args.output.write_text(json.dumps(result, indent=2) + "\n")

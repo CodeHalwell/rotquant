@@ -1,0 +1,92 @@
+{
+  "revision": "304d3297743abad675d7696f799dc07e9c20bdae",
+  "checks": {
+    "included_artifacts": 26,
+    "external_artifacts_absent": 51,
+    "producer_files": 41
+  },
+  "passed_stages": 22,
+  "failed_stages": 1,
+  "active_minutes": 15.724368436500006,
+  "timings": [
+    {
+      "label": "pilot",
+      "context": 128,
+      "measured_repetitions": 3,
+      "prefill_tokens_per_second": 36.331713947002186,
+      "decode_tokens_per_second": 19.95207319979,
+      "median_prefill_seconds": 3.523162758999888,
+      "median_decode_step_ms": 49.75278050005727,
+      "decode_tps_min": 19.929875996395495,
+      "decode_tps_max": 19.963507618912434,
+      "boundary": "Warmup excluded. Rates are total tokens / total time; min/max are observed repetitions, not confidence intervals.",
+      "sampled_peak_mib": 3450
+    },
+    {
+      "label": "bf16",
+      "context": 128,
+      "measured_repetitions": 3,
+      "prefill_tokens_per_second": 4926.447687005795,
+      "decode_tokens_per_second": 89.65469823567544,
+      "median_prefill_seconds": 0.025993456999913178,
+      "median_decode_step_ms": 11.000045999935537,
+      "decode_tps_min": 88.91481126109167,
+      "decode_tps_max": 90.68316282556164,
+      "boundary": "Warmup excluded. Rates are total tokens / total time; min/max are observed repetitions, not confidence intervals.",
+      "sampled_peak_mib": 8836
+    },
+    {
+      "label": "ud_q4",
+      "context": 128,
+      "measured_repetitions": 3,
+      "prefill_tokens_per_second": 3296.357162216713,
+      "decode_tokens_per_second": 112.88549058920232,
+      "median_prefill_seconds": 0.038172170000052574,
+      "median_decode_step_ms": 8.660176500029593,
+      "decode_tps_min": 111.23606319888509,
+      "decode_tps_max": 115.04505520251062,
+      "boundary": "Warmup excluded. Rates are total tokens / total time; min/max are observed repetitions, not confidence intervals.",
+      "sampled_peak_mib": 3580
+    },
+    {
+      "label": "pilot",
+      "context": 512,
+      "measured_repetitions": 3,
+      "prefill_tokens_per_second": 36.45532542360765,
+      "decode_tokens_per_second": 19.965056160453546,
+      "median_prefill_seconds": 14.043770967,
+      "median_decode_step_ms": 49.707549499999004,
+      "decode_tps_min": 19.895141005547863,
+      "decode_tps_max": 20.018989224930035,
+      "boundary": "Warmup excluded. Rates are total tokens / total time; min/max are observed repetitions, not confidence intervals.",
+      "sampled_peak_mib": 3972
+    },
+    {
+      "label": "bf16",
+      "context": 512,
+      "measured_repetitions": 3,
+      "prefill_tokens_per_second": 9171.97565417977,
+      "decode_tokens_per_second": 90.73094396558861,
+      "median_prefill_seconds": 0.05370703300013702,
+      "median_decode_step_ms": 10.707825000054072,
+      "decode_tps_min": 89.03261176087408,
+      "decode_tps_max": 92.1884531919617,
+      "boundary": "Warmup excluded. Rates are total tokens / total time; min/max are observed repetitions, not confidence intervals.",
+      "sampled_peak_mib": 9348
+    },
+    {
+      "label": "ud_q4",
+      "context": 512,
+      "measured_repetitions": 3,
+      "prefill_tokens_per_second": 6198.945218796765,
+      "decode_tokens_per_second": 126.64991594871339,
+      "median_prefill_seconds": 0.08258547900004487,
+      "median_decode_step_ms": 7.678953999970872,
+      "decode_tps_min": 126.29380105792825,
+      "decode_tps_max": 126.87373525452352,
+      "boundary": "Warmup excluded. Rates are total tokens / total time; min/max are observed repetitions, not confidence intervals.",
+      "sampled_peak_mib": 4092
+    }
+  ],
+  "boundary": "Receipt/hash/arithmetic verification only. No GPU replay, candidate promotion or new quality measurement."
+}

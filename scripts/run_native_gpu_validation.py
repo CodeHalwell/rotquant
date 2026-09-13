@@ -56,6 +56,7 @@ def repository_identity(allow_dirty=False):
                 ROOT / "scripts/run_native_gguf_baseline.py",
                 ROOT / "scripts/run_rq3_retained_gpu.py", ROOT / "scripts/rq3_test_runtime.py",
                 ROOT / "scripts/check_rq3_model.py", ROOT / "scripts/check_rq3_gpu.py",
+                ROOT / "scripts/check_rq3_dispatch.py",
                 ROOT / "scripts/make_rq3_model_fixture.py",
                 ROOT / "scripts/build_conventional_control.py", ROOT / "scripts/check_conventional_model.py",
                 ROOT / "scripts/native_controls/conventional_probe.cpp",
@@ -221,6 +222,15 @@ def run_pipeline(args):
                 write_json(report, {"passed": True, "runtime_files": runtime})
                 return passed(report, runtime), [report]
             workflow.stage("binding-load", load_gate, minutes=2, reuse=False)
+
+            if study and candidate != "none":
+                def dispatch_gate(stage):
+                    report = stage.directory / "report.json"
+                    command(stage, "check_rq3_dispatch.py", "--library", library,
+                            "--kernel", candidate, "--output", report)
+                    return passed(report, runtime), [report]
+                workflow.stage("candidate-dispatch-preflight", dispatch_gate,
+                               signature={"runtime": runtime, "kernel": candidate}, minutes=2, reuse=False)
 
             def numerical(stage, script, extra):
                 report = stage.directory / "report.json"

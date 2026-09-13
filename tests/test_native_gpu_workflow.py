@@ -235,6 +235,7 @@ def test_study_preflight_and_candidate_wiring(tmp_path, monkeypatch):
     fixtures = [cli for name, cli in commands if name == "make_rq3_model_fixture.py" and "--conventional" in cli]
     assert [cli[cli.index("--conventional") + 1] for cli in fixtures] == ["bf16", "q4_0"]
     names = [row["name"] for row in pipeline.read(args.output_dir / "workflow.json")["attempts"]]
+    assert names.index("binding-load") < names.index("candidate-dispatch-preflight") < names.index("conventional-control-build")
     assert names.index("conventional-control-build") < names.index("conventional-preflight-bf16")
     assert names.index("conventional-preflight-q4_0") < names.index("export-b5_v6_s0")
     checks = [cli for name, cli in commands if name == "check_conventional_model.py"]
@@ -245,6 +246,17 @@ def test_study_preflight_and_candidate_wiring(tmp_path, monkeypatch):
     assert all(Path(cli[cli.index("--control-receipt") + 1]).is_relative_to(args.output_dir) for cli in checks)
     assert len(studies) == 1 and studies[0]["candidate"] == "decode4" and not studies[0]["profile"]
     assert set(studies[0]["references"]) == {128}
+
+
+def test_dispatch_failure_stops_before_export_and_conventional_downloads(tmp_path, monkeypatch):
+    args, commands = fake_pipeline(tmp_path, monkeypatch, fail="check_rq3_dispatch")
+    args.performance_study = True
+    args.study_candidate = "decode4"
+    with pytest.raises(subprocess.CalledProcessError):
+        pipeline.run_pipeline(args)
+    names = [name for name, _ in commands]
+    assert "check_rq3_dispatch.py" in names
+    assert not set(names) & {"run_native_gguf_baseline.py", "export_rotquant_gguf_v2.py", "run_rq3_performance_pilot.py"}
 
 
 def test_managed_environment_setup_preserves_torch_and_restores_path(tmp_path, monkeypatch):

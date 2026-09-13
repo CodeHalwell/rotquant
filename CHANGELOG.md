@@ -9,6 +9,20 @@ software.
 
 ## [Unreleased]
 
+### Cached CUDA diagnostic binding (2026-09-13)
+
+- Resolve diagnostic counters through the executing library's dependency
+  handle, not a separately opened unversioned CUDA alias. Verify and record
+  the actual symbol provider. Native kernels and binary-cache inputs are unchanged.
+- Reproduce copied-SONAME counter separation in a real Linux CPU-only loader
+  test, including private-cache publication/restoration; run it in Linux CI.
+- Add a tiny fresh-counter dispatch and exact-output gate immediately after
+  binding load, before retained export/timing. Persist diagnostic failures.
+  Full candidate operator/model gates and numerical limits remain required.
+- Archive and audit the completed followup2 baseline evidence. Default
+  `followup3` to fresh reference/decode4 pairs with no conventional baseline
+  redownload/rerun. Do not mix historical timings into fresh speed ratios.
+
 ### Conventional GPU preflight controls (2026-09-13)
 
 - Add a separately compiled public llama API caller for tiny ordinary BF16/Q4_0

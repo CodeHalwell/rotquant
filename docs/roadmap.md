@@ -22,7 +22,7 @@ See the [evidence and caveats](../research/results/native_cuda_2026_09_10/README
 This verifies native reproduction of the quantized checkpoint, not FP16/BF16
 quality recovery. W5/W8 is covered by synthetic tests, not a retained-model run.
 
-**Next gate: finish matched baselines, then optimise single-token decoding.**
+**Next gate: validate repaired dispatch tracking, then optimise single-token decoding.**
 The [September 11 A100 study](../research/results/native_study_2026_09_11/README.md)
 completed all three reference/tiled4 timing pairs: 3.30–3.35× faster prefill,
 unchanged ~19.8–19.9 decode tok/s and bounded saved-model parity. The 2048 timing
@@ -42,6 +42,15 @@ independent public-API caller to match the private bridge on each backend;
 Q4 cross-backend drift is separately reported. BF16 numerical and all RotQuant
 gates stay unchanged. See the [exact contract and limitations](native_gpu_followup.md).
 Native binaries are unchanged, allowing compatible cached builds to be reused.
+September 13 followup2: [22 stages passed and all four conventional baseline
+timings completed](../research/results/native_followup_2026_09_13/README.md).
+At 512 tokens UD-Q4 delivers 126.65 decode tok/s versus the RotQuant reference's
+19.97, at 4092 versus 3972 sampled MiB. The candidate numerical cases passed,
+but dispatch counters were read through a separately opened cached library alias.
+A CPU-only Linux regression reproduces that mechanism. The repair binds the
+execution dependency and adds an early fresh-counter gate. `followup3` skips
+conventional downloads/timing by default, preserves their historical results,
+and requires fresh reference/candidate pairs. No candidate promotion yet.
 Resume public tasks under a new runtime-bound
 identity only after cost/quality gates; no speed ratio substitutes for quality.
 No new allocator/recovery sweep, requantization or promotion. Existing

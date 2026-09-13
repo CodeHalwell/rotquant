@@ -1,4 +1,4 @@
-# Native GPU follow-up: baseline completion and decode optimisation
+# Native GPU follow-up: diagnostic repair and focused decode validation
 
 ## Run next
 
@@ -6,12 +6,41 @@ Use [qwen35_4b_native_followup_colab.ipynb](../notebooks/qwen35_4b_native_follow
 on an **A100 40GB**, verify `SOURCE_ROOT`, then **Run all**. The notebook has
 persistent logs, per-phase caps, progress for every repetition, a results cell
 that also works after a stop, and a reports download cell. Use the new default
-`RUN_NAME = "followup2"`, not a repair cell in the failed run. Original checkpoints
+`RUN_NAME = "followup3"`, not a repair cell in the failed run. Original checkpoints
 and past reports are never edited. There is no calibration or training.
 
 The [completed study evidence](../research/results/native_study_2026_09_11/README.md)
 supports tiled4's 3.30–3.35× prefill gain, not a decode gain. BF16/Unsloth speed
-comparisons remain unfinished. The new run prioritizes those missing results.
+comparisons were subsequently completed in [followup2](../research/results/native_followup_2026_09_13/README.md).
+The new run prioritizes the remaining candidate checks and matched timings.
+
+## Current repair: cached-library diagnostic binding
+
+The uploaded followup2 bundle confirms exact private/public agreement on both
+CPU and CUDA for tiny BF16/Q4_0 models, reference retained-model parity, and all
+four baseline timings. It stopped only at the decode4 dispatch-counter gate,
+after numerical cases passed. Its cached runtime restored in 17.9 seconds.
+
+The cache intentionally persists SONAME aliases as separate regular files.
+The old diagnostic helper opened `libggml-cuda.so` directly, whereas execution
+could use its versioned dependency. A real Linux CPU-only ELF regression now
+reproduces this state split: old alias counter zero, execution counter nonzero.
+The repair resolves diagnostic symbols through the execution-library handle,
+verifies both symbols' actual provider, and records its path and hash. It
+does not modify the native kernel, relax the dispatch guard, or clear caches.
+
+An early tiny dispatch probe checks **new counter increments** for reference,
+one-token decode and four-token prefill, as well as exact reference outputs,
+immediately after binding load. Wrong/missing dispatch stops before export or
+timing. Full operator checks repeat that probe; failure receipts now preserve
+binding/counter evidence instead of ending without a report.
+
+Default `BASELINES = ()` avoids repeating the completed ~11.34 GB downloads
+and four timings. Fresh reference and decode4 measurements still run in pairs.
+Historical baselines remain archived, not imported as same-session results.
+To explicitly repeat baselines, select `("bf16", "ud_q4")`; this also restores
+the conventional preflight. Current diagnostics need fresh A100 verification;
+the Linux regression is a loader test, not proof of CUDA speed or model parity.
 
 ## What changed
 
@@ -89,7 +118,7 @@ quality, or the unexecuted decode4 candidate. No new GPU success is claimed.
 | `ARMS` | `("b5_v6_s0",)` | Keep the tested recipe for this follow-up |
 | `CONTEXTS` | `(128, 512)` | Explicitly add 2048 with a new run name |
 | `CANDIDATE` | `"decode4"` | `"none"`: fresh reference + baselines only |
-| `BASELINES` | `("bf16", "ud_q4")` | Explicit subset; empty only with a candidate |
+| `BASELINES` | `()` | Opt in to BF16/UD-Q4 reruns; empty only with a candidate |
 | `RUN_PROFILE` | `False` | Optional diagnostic runs with a candidate |
 | Measurements | 3 repetitions + 1 warmup | 32 cached decode steps each |
 | Active allowance | 90 minutes | Includes builds/downloads/checks, not idle setup |
@@ -105,11 +134,13 @@ measurements and prevent ratios from incomplete or instrumented reports.
 This preflight repair changes **no native kernels, bridge code or runtime-cache
 inputs** relative to `2c4037e76f71`. That failed run already saved its successful
 CUDA build in the private Drive cache. A matching GPU/toolchain can restore it;
-only the small public-API caller is newly compiled. A cache miss or incompatible
+the diagnostic repair requires no new native compilation. The small public-API
+caller is compiled only when conventional baselines are requested. A cache miss or incompatible
 older kernel still requires a cold build (previously ~27 minutes). Restoration
 does not skip fresh conformance gates. The private Drive export cache may be
 conservatively invalidated, but exports reuse the original weights without
-quantization. BF16/UD-Q4 downloads total about 11.34 GB on local VM disk.
+quantization. Optional BF16/UD-Q4 downloads total about 11.34 GB on local VM disk;
+the focused defaults skip them.
 
 Do not update a running checkout. New controls require a new `RUN_NAME`; the
 source and previous evidence remain intact. **Timeouts do not stop billing.**
@@ -133,10 +164,13 @@ Tests cover divergent callers, changed identities, missing controls, retained
 BF16 limits, Q4 diagnostics, malformed probes and notebook orchestration.
 The CPU backend does not execute the candidate CUDA code. A local Metal build
 could not complete because the Metal compiler/toolchain is unavailable.
-The uploaded run already demonstrated CUDA compilation and bounded ordinary
-BF16 GPU placement/parity for the unchanged binary. The **new public/private
-CUDA checks**, decode4 execution/performance and rendered Colab outputs remain
-unvalidated locally. Open the updated notebook on A100 40GB, verify `SOURCE_ROOT`,
-leave `followup2` defaults, choose **Runtime → Run all**, then inspect Results
+The uploaded followup2 run demonstrated the public/private CUDA checks and
+reference retained-model parity. The repair's real Linux loader test runs
+without CUDA: `python tests/check_cuda_diagnostic_loader.py --work-dir /tmp/rq3-loader-test`
+(choose a new empty directory). It reproduces old-alias zero counters and
+repaired execution counters after an actual cache round trip.
+The repaired dispatch probe, candidate CUDA model parity/speed and rendered
+Colab outputs remain unvalidated locally. Open the notebook on A100 40GB,
+verify `SOURCE_ROOT`, leave `followup3` defaults, choose **Runtime → Run all**, then inspect Results
 and download the reports before disconnecting/deleting the runtime to close
 those gaps. No GPU session was provisioned or billed by this development task.
