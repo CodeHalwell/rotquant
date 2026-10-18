@@ -273,6 +273,7 @@ def simulate_packed_kv_cache(
     tiers: dict[int, tuple[int, int]] = {}
     pending_start: dict[int, int] = {}
     n_kv_layers = 0
+    write_coverage = {}
 
     for layer_idx, layer in enumerate(simulated.layers):
         keys = getattr(layer, "keys", None)
@@ -307,6 +308,7 @@ def simulate_packed_kv_cache(
         layer.keys = reconstructed_keys
         layer.values = reconstructed_values
         rotations[layer_idx] = (key_rotation, value_rotation)
+        write_coverage[layer_idx] = {"calls": 0, "tokens": 0}
         codebooks[layer_idx] = (packed_keys.codebook, packed_values.codebook)
         source_kv_bytes += keys.numel() * keys.element_size()
         source_kv_bytes += values.numel() * values.element_size()
@@ -390,9 +392,12 @@ def simulate_packed_kv_cache(
             key_states, value_states, layer_idx, *args, **kwargs)
         if recent:
             requantize_aged_rows(layer, layer_idx, pair, layer_config, start + written)
+        write_coverage[layer_idx]["calls"] += 1
+        write_coverage[layer_idx]["tokens"] += written
         return result
 
     simulated.update = types.MethodType(quantized_update, simulated)
+    simulated.rotquant_write_coverage = write_coverage
     non_kv_state_bytes = max(source_total_bytes - source_kv_bytes, 0)
     deployed_total_bytes = non_kv_state_bytes + packed_kv_bytes
     return simulated, {
@@ -451,6 +456,7 @@ def _evaluate_kv_cache(
     source_nll: list[float] = []
     quant_nll: list[float] = []
     size_metrics: list[dict[str, float | int]] = []
+    coverage_records = []
     evaluated_tokens = 0
     explicit_decode_positions = _accepts_position_ids(model)
 
@@ -509,6 +515,11 @@ def _evaluate_kv_cache(
             )
             source_cache = source.past_key_values
             packed_cache = candidate.past_key_values
+            coverage = getattr(packed_cache, "rotquant_write_coverage", {})
+            if (len(coverage) != cache_metrics["kv_layers"] or any(
+                    row["tokens"] != step + 1 or row["calls"] != step + 1
+                    for row in coverage.values())):
+                raise RuntimeError("KV decode writes bypassed quantization coverage")
             source_logits = source.logits[:, -1].float()
             candidate_logits = candidate.logits[:, -1].float()
             temperature = config.temperature
@@ -532,6 +543,7 @@ def _evaluate_kv_cache(
                 candidate_logits, target, reduction="none"
             ).detach().cpu().tolist())
             evaluated_tokens += target.numel()
+        coverage_records.append({str(k): dict(v) for k, v in coverage.items()})
 
     averaged_sizes = {
         key: _mean([float(metrics[key]) for metrics in size_metrics])
@@ -552,6 +564,7 @@ def _evaluate_kv_cache(
         "source_nll": _mean(source_nll),
         "quantized_cache_nll": _mean(quant_nll),
         "nll_delta": _mean(quant_nll) - _mean(source_nll),
+        "decode_write_coverage": coverage_records,
         **averaged_sizes,
     }
     result["paired_token_bootstrap"] = bootstrap_report(

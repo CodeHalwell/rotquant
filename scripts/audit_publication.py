@@ -46,9 +46,20 @@ def _sha256(path: Path) -> str:
     return digest.hexdigest()
 
 
-def validate_numerical_claims(manifest: dict[str, Any]) -> tuple[list[dict[str, Any]], dict[str, float]]:
+def evidence_status(manifest):
+    return {name: row.get("status", "current") for name, row in manifest["results"].items()}
+
+
+def withdrawn_results(manifest):
+    return [name for name, status in evidence_status(manifest).items()
+            if "withdrawn" in status.lower()]
+
+
+def validate_numerical_claims(manifest: dict[str, Any], *, historical=False) -> tuple[list[dict[str, Any]], dict[str, float]]:
     if manifest.get("schema_version") != 1:
         raise ValueError("unsupported publication manifest schema")
+    if withdrawn_results(manifest) and not historical:
+        raise ValueError("publication contains withdrawn evidence; use --historical for arithmetic only")
 
     checks: list[dict[str, Any]] = []
     joint = manifest["results"]["qwen_joint"]
@@ -268,7 +279,7 @@ def _tex_number(value: float, digits: int) -> str:
     return f"{value:.{digits}f}"
 
 
-def render_tex_macros(manifest: dict[str, Any], derived: dict[str, float]) -> str:
+def render_tex_macros(manifest: dict[str, Any], derived: dict[str, float], *, historical=False) -> str:
     joint = manifest["results"]["qwen_joint"]
     transfer = manifest["results"]["cache_transfer"]
     models = manifest["models"]
@@ -295,6 +306,11 @@ def render_tex_macros(manifest: dict[str, Any], derived: dict[str, float]) -> st
         f"\\newcommand{{\\RotQuantRevision}}{{\\texttt{{{models['rotquant']['revision'][:12]}}}}}",
         "",
     ]
+    if withdrawn_results(manifest) and not historical:
+        names = ("CacheShortReductionPct", "CacheLongReductionPct", "MatchedCacheMeanRatio", "MatchedCacheWorstRatio")
+        for name in names:
+            prefix = f"\\newcommand{{\\{name}}}"
+            lines = [prefix + "{withdrawn}" if line.startswith(prefix) else line for line in lines]
     return "\n".join(lines)
 
 
@@ -305,15 +321,14 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--rotquant-checkpoint", type=Path)
     parser.add_argument("--native-gguf", type=Path)
     parser.add_argument("--skip-native-hash", action="store_true")
+    parser.add_argument("--historical", action="store_true", help="Check withdrawn arithmetic without publication approval")
     parser.add_argument("--report", type=Path, default=Path("paper/generated/audit_report.json"))
     parser.add_argument("--tex-output", type=Path, default=Path("paper/generated/results.tex"))
     return parser.parse_args()
 
 
-def main() -> None:
-    args = parse_args()
-    manifest = json.loads(args.manifest.read_text())
-    checks, derived = validate_numerical_claims(manifest)
+def artifact_checks(args, manifest):
+    checks = []
     if args.source_checkpoint is not None:
         checks.extend(audit_source_checkpoint(args.source_checkpoint, manifest["models"]["source"]))
     if args.rotquant_checkpoint is not None:
@@ -326,22 +341,40 @@ def main() -> None:
                 verify_hash=not args.skip_native_hash,
             )
         )
+    return checks
+
+
+def main() -> None:
+    args = parse_args()
+    manifest = json.loads(args.manifest.read_text())
+    checks, derived = validate_numerical_claims(manifest, historical=True)
+    checks.extend(artifact_checks(args, manifest))
 
     failed = [check for check in checks if not check["passed"]]
+    withdrawn = withdrawn_results(manifest)
+    current = {key: value for key, value in derived.items() if "cache" not in key}
     report = {
         "manifest": str(args.manifest),
-        "passed": not failed,
+        "passed": not failed and not withdrawn,
+        "arithmetic_passed": not failed,
+        "publication_eligible": not failed and not withdrawn,
+        "historical": args.historical,
+        "evidence_status": evidence_status(manifest),
         "checks": checks,
-        "derived": derived,
+        "derived": current if withdrawn else derived,
     }
+    if args.historical:
+        report["historical_derived"] = derived
     args.report.parent.mkdir(parents=True, exist_ok=True)
     args.report.write_text(json.dumps(report, indent=2, sort_keys=True) + "\n")
     args.tex_output.parent.mkdir(parents=True, exist_ok=True)
-    args.tex_output.write_text(render_tex_macros(manifest, derived))
+    args.tex_output.write_text(render_tex_macros(manifest, derived, historical=args.historical))
     if failed:
         labels = ", ".join(check["check"] for check in failed)
         raise SystemExit(f"publication audit failed: {labels}")
-    print(json.dumps({"passed": True, "checks": len(checks), "derived": derived}, indent=2))
+    if withdrawn and not args.historical:
+        raise SystemExit("publication audit blocked: withdrawn evidence: " + ", ".join(withdrawn))
+    print(json.dumps(report, indent=2))
 
 
 if __name__ == "__main__":

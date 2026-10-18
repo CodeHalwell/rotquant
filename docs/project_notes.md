@@ -741,6 +741,11 @@ Complete bytes for scale8 W4 also appear as 3,759,868,416 and 3,759,868,736:
 
 ## 9. Defect and open-item register
 
+The [18 October review fixes](review_fixes_2026-10-18.md) supersede the affected
+items below: learned-rotation storage/arithmetic, GPTQ fallback, uniform search
+bounds, LoRA reload precision and non-finite scale acceptance are fixed locally.
+The separate 13-finding review is fully mapped to regression evidence there.
+
 Status as of `85e1254`. "Open" means verified still present in the code today.
 
 ### 9.1 Library queue behind the reuse freeze (deep dive §4.2)

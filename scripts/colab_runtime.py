@@ -1,12 +1,12 @@
 """Small stdlib-only live subprocess wrapper for resumable Colab experiments."""
 from __future__ import annotations
 
-import contextlib
 import os
-import signal
 import subprocess
 import time
 from pathlib import Path
+
+from scripts.process_tree import ProcessTree
 
 
 def run_live(command, label, *, repo_dir, log_root, timeout_seconds=None):
@@ -41,14 +41,7 @@ def run_live(command, label, *, repo_dir, log_root, timeout_seconds=None):
                     heartbeat = now
                 time.sleep(1)
         except BaseException:
-            with contextlib.suppress(ProcessLookupError):
-                os.killpg(process.pid, signal.SIGTERM)
-            try:
-                process.wait(timeout=10)
-            except subprocess.TimeoutExpired:
-                with contextlib.suppress(ProcessLookupError):
-                    os.killpg(process.pid, signal.SIGKILL)
-                process.wait()
+            ProcessTree(process).terminate()
             raise
         if process.returncode:
             raise subprocess.CalledProcessError(process.returncode, command)

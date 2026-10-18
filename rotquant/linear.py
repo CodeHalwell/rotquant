@@ -26,6 +26,7 @@ from ._internal import (
     encoded_storage_scales,
     expand_scales,
     generate_sketch_matrix,
+    rotate_hessian,
     storage_scales,
 )
 from .codebooks import VectorCodebook
@@ -121,7 +122,13 @@ class QuantLinear(nn.Module):
         dtype of floating-point tensors, so the int32 code buffers are device-moved
         untouched. Sketch caches are rebuilt lazily via their device/dtype check.
         """
+        adapters = [(parameter, parameter.detach(), None if parameter.grad is None else parameter.grad.detach())
+                    for parameter in (self.lora_A, self.lora_B) if parameter is not None]
         super()._apply(fn, recurse)
+        for parameter, stored_value, gradient in adapters:
+            parameter.data = stored_value.to(device=parameter.device)
+            if gradient is not None:
+                parameter.grad = gradient.to(device=parameter.device)
         qw = self.qweight
         qw.packed.data = fn(qw.packed.data)
         def stored(tensor):
@@ -387,8 +394,8 @@ class QuantLinear(nn.Module):
             device="cpu", dtype=torch.float16).clone()
 
     @torch.no_grad()
-    def refresh_quantization(self) -> None:
-        """Reassign packed codes for the current learned rotation and scales."""
+    def refresh_quantization(self, hessian: torch.Tensor | None = None) -> None:
+        """Refresh codes; GPTQ requires a Hessian in the source input basis."""
         if self._recovery_source_weight is None or self._quant_config is None:
             raise ValueError("quantization refresh requires retained source weights")
         device = self.qweight.packed.data.device
@@ -400,7 +407,8 @@ class QuantLinear(nn.Module):
                 self._scale_training_base
                 * self.scale_finetuning_multiplier()).detach()
         self.qweight = Quantizer(self._quant_config).quantize_weight(
-            rotated, scales_override=scales_override)
+            rotated, H=(rotate_hessian(self.act_rotation, hessian.to(device))
+                        if hessian is not None else None), scales_override=scales_override)
         if self._log_scale_multiplier is not None:
             indices = unpack_indices(self.qweight.packed).reshape(
                 self.out_features, self.in_features)

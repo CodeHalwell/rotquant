@@ -149,6 +149,11 @@ def _validate_module(value: Any, index: int, version: int) -> str:
     name = module.get("name")
     if not isinstance(name, str) or not name:
         _fail(f"{path}.name", "must be a non-empty module name")
+    aliases = module.get("aliases", [])
+    if (not isinstance(aliases, list) or any(not isinstance(alias, str) or not alias
+                                           or alias == name for alias in aliases)
+            or len(aliases) != len(set(aliases))):
+        _fail(f"{path}.aliases", "must contain unique non-empty alias names")
     for field in ("in_features", "out_features"):
         feature_count = module.get(field)
         if (
@@ -177,12 +182,15 @@ def _validate_module(value: Any, index: int, version: int) -> str:
         block = rotation.get("block")
         if isinstance(block, bool) or not isinstance(block, int) or block < 1:
             _fail(f"{path}.rotation.block", "must be a positive integer")
-    if rotation_kind == "butterfly":
+    if rotation_kind in {"butterfly", "dense", "learned"}:
         storage_dtype = rotation.get("storage_dtype", "float32")
-        if storage_dtype not in {"float16", "bfloat16", "float32"}:
+        choices = {"float16", "bfloat16", "float32"}
+        if rotation_kind != "butterfly":
+            choices.add("float64")
+        if storage_dtype not in choices:
             _fail(
                 f"{path}.rotation.storage_dtype",
-                "must be float16, bfloat16, or float32",
+                "unsupported rotation storage dtype",
             )
 
     qweight = _mapping(module.get("qweight"), f"{path}.qweight")
@@ -300,6 +308,7 @@ def validate_checkpoint_manifest(manifest: Any) -> None:
         _validate_module(module, index, version)
         for index, module in enumerate(modules)
     ]
+    names.extend(alias for module in modules for alias in module.get("aliases", []))
     if len(names) != len(set(names)):
         _fail("quantized_modules", "module names must be unique")
     vocabulary = root.get("tied_vocabulary")

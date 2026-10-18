@@ -175,6 +175,13 @@ class Rotation(nn.Module):
         self._cached_activation_output: torch.Tensor | None = None
         self._cached_activation_version: int | None = None
 
+    def _apply(self, fn, recurse: bool = True):
+        def move_storage(tensor):
+            probe = fn(torch.empty(0, device=tensor.device, dtype=tensor.dtype))
+            return tensor.to(device=probe.device)
+        self.clear_activation_cache()
+        return super()._apply(move_storage, recurse)
+
     def enable_activation_cache(self, enabled: bool = True) -> None:
         """Reuse one no-grad activation transform across shared projections."""
 
@@ -368,7 +375,8 @@ class ButterflyRotation(Rotation):
                 and self._cached_cos.device == self.theta.device
                 and self._cached_theta_version == self.theta._version):
             return self._cached_cos, self._cached_sin
-        cos, sin = self.theta.cos(), self.theta.sin()
+        angles = self.theta.float()
+        cos, sin = angles.cos(), angles.sin()
         if not self.training:
             self._cached_cos = cos.detach()
             self._cached_sin = sin.detach()
@@ -378,7 +386,8 @@ class ButterflyRotation(Rotation):
 
     def _apply_stages(self, x: torch.Tensor, *, inverse: bool) -> torch.Tensor:
         original_shape = x.shape
-        h = x.reshape(-1, self.n_blocks, self.block)
+        work = x if x.dtype == torch.float64 else x.float()
+        h = work.reshape(-1, self.n_blocks, self.block)
         cos, sin = self._trig()
         stages = range(self.n_stages - 1, -1, -1) if inverse \
             else range(self.n_stages)
@@ -388,12 +397,12 @@ class ButterflyRotation(Rotation):
             paired = h.reshape(-1, self.n_blocks, groups, 2, step)
             a, b = paired[:, :, :, 0, :], paired[:, :, :, 1, :]
             c = cos[:, stage].reshape(1, self.n_blocks, groups, step).to(
-                device=x.device, dtype=x.dtype)
+                device=work.device, dtype=work.dtype)
             s = sin[:, stage].reshape(1, self.n_blocks, groups, step).to(
-                device=x.device, dtype=x.dtype)
+                device=work.device, dtype=work.dtype)
             h = torch.stack((c * a + s * b, s * a - c * b), dim=3)
             h = h.reshape(-1, self.n_blocks, self.block)
-        return h.reshape(original_shape)
+        return h.reshape(original_shape).to(x.dtype)
 
     def enable_sign_training(self, temperature: float = 1.0,
                              init_magnitude: float = 0.1) -> nn.Parameter:

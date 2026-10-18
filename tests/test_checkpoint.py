@@ -63,7 +63,7 @@ class _CustomCheckpointModel(nn.Module):
         return self.proj(value)
 
 
-def _tiny_packed_llama(rotation="butterfly", quant_config=None):
+def _tiny_packed_llama(rotation="butterfly", quant_config=None, dtype=torch.float32):
     transformers = pytest.importorskip("transformers")
     pytest.importorskip("safetensors")
     config = transformers.LlamaConfig(
@@ -76,7 +76,7 @@ def _tiny_packed_llama(rotation="butterfly", quant_config=None):
         max_position_embeddings=64,
         tie_word_embeddings=True,
     )
-    model = transformers.LlamaForCausalLM(config).eval()
+    model = transformers.AutoModelForCausalLM.from_config(config, dtype=dtype).eval()
     patch_model(
         model,
         PatchConfig(

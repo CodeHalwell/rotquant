@@ -71,7 +71,7 @@ class ModelAdapter:
         self, model: nn.Module
     ) -> Iterator[tuple[str, nn.Module]]:
         excluded = self.incompatible_modules(model)
-        for name, module in model.named_modules():
+        for name, module in model.named_modules(remove_duplicate=False):
             if isinstance(module, nn.Linear) and name not in excluded:
                 yield name, module
 
@@ -83,14 +83,14 @@ class ModelAdapter:
         Custom adapters can override this contract when replacing the parent.
         """
         parents = tuple(
-            name for name, module in model.named_modules()
+            name for name, module in model.named_modules(remove_duplicate=False)
             if isinstance(module, (
                 nn.MultiheadAttention, nn.TransformerEncoderLayer,
                 nn.TransformerDecoderLayer,
             ))
         )
         return tuple(
-            name for name, module in model.named_modules()
+            name for name, module in model.named_modules(remove_duplicate=False)
             if isinstance(module, nn.Linear) and (
                 isinstance(module, nn.modules.linear.NonDynamicallyQuantizableLinear)
                 or any(not parent or name.startswith(parent + ".") for parent in parents)
@@ -120,7 +120,8 @@ class ModelAdapter:
         setattr(parent, attribute, replacement)
 
     def inspect(self, model: nn.Module) -> ModelSupport:
-        modules = list(self.iter_quantizable_modules(model))
+        modules = list({id(module): (name, module)
+                        for name, module in self.iter_quantizable_modules(model)}.values())
         parameters = sum(module.weight.numel() for _, module in modules)
         return ModelSupport(
             adapter=self.name,
@@ -130,6 +131,12 @@ class ModelAdapter:
             capabilities=self.capabilities,
             excluded_modules=self.incompatible_modules(model),
         )
+
+    def replace_quantized_aliases(self, model, source, replacement):
+        owners = [(parent, attr) for parent in model.modules()
+                  for attr, child in parent._modules.items() if child is source]
+        for parent, attr in owners:
+            self.replace_quantized_module(parent, attr, source, replacement)
 
 
 class AdapterRegistry:

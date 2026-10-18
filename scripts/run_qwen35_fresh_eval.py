@@ -75,6 +75,7 @@ REUSABLE_SOURCE = {
     "source_fingerprint": "5cdcfe2d92f3d1b1586b471f90883d60f7d3a9fe5e14d60cfa74ec80a7dfe4a9",
 }
 REUSABLE_LABELS = ("source_fp16", "b5_v6_s0", "b5_v8_s0")
+REUSE_ENABLED = False
 
 
 def progress(root, phase, **details):
@@ -485,6 +486,8 @@ def llama_build_identity():
 def reuse_receipt(root):
     receipt = read_record(root / "reuse.json")
     if receipt is not None:
+        if not REUSE_ENABLED:
+            raise ValueError("core execution changed; use a fresh execution root")
         if receipt["consumer_source"] != source_identity():
             raise ValueError("reuse consumer code changed; use a fresh output root")
         if receipt["producer_source"] != REUSABLE_SOURCE:
@@ -512,6 +515,8 @@ def paths_for(root, label, item):
 
 def reuse_completed(root, evidence, previous, labels, device):
     """Adopt frozen inputs and read-only completed collections, never old GGUF attempts."""
+    if not REUSE_ENABLED:
+        raise ValueError("core execution changed; use a fresh execution root")
     root, previous = Path(root).resolve(), Path(previous).resolve()
     separate(root, previous)
     separate(root, evidence)

@@ -92,9 +92,9 @@ def _rotation_spec(rotation: Rotation) -> dict[str, Any]:
             storage_dtype=_dtype_name(rotation.theta.dtype),
         )
     elif isinstance(rotation, DenseOrthogonal):
-        spec["kind"] = "dense"
+        spec.update(kind="dense", storage_dtype=_dtype_name(rotation.R.dtype))
     elif isinstance(rotation, LearnedRotation):
-        spec["kind"] = "learned"
+        spec.update(kind="learned", storage_dtype=_dtype_name(rotation.theta.dtype))
     else:
         raise TypeError(
             f"unsupported activation rotation in checkpoint: {type(rotation).__name__}"
@@ -117,9 +117,11 @@ def _build_rotation(spec: dict[str, Any]) -> Rotation:
             dtype=_resolve_dtype(spec.get("storage_dtype", "float32")),
         )
     if kind == "dense":
-        return DenseOrthogonal(dim, seed=0)
+        return DenseOrthogonal(dim, seed=0, dtype=_resolve_dtype(spec.get("storage_dtype", "float32")))
     if kind == "learned":
-        return LearnedRotation(dim, seed=0)
+        rotation = LearnedRotation(dim, seed=0)
+        rotation.theta.data = rotation.theta.detach().to(_resolve_dtype(spec.get("storage_dtype", "float32")))
+        return rotation
     raise ValueError(f"unsupported checkpoint rotation kind: {kind!r}")
 
 
@@ -482,6 +484,8 @@ def _write_packed_checkpoint(
         modules.append(
             {
                 "name": name,
+                "aliases": [alias for alias, child in model.named_modules(remove_duplicate=False)
+                            if child is module and alias != name],
                 "in_features": module.in_features,
                 "out_features": module.out_features,
                 "has_bias": module.bias is not None,
@@ -742,7 +746,17 @@ def load_packed_model(
                 qlinear.commit_lora(
                     _resolve_dtype(module_spec.get("lora_dtype") or resolved_dtype)
                 )
-            adapter.replace_quantized_module(parent, attr, source, qlinear)
+            adapter.replace_quantized_aliases(model, source, qlinear)
+            for alias in module_spec.get("aliases", []):
+                alias_parent, alias_attr = get_parent(model, alias)
+                alias_source = getattr(alias_parent, alias_attr)
+                if alias_source is qlinear:
+                    continue
+                alias_linear = adapter.to_linear(alias_source)
+                if (alias_linear.in_features, alias_linear.out_features) != (
+                        qlinear.in_features, qlinear.out_features):
+                    raise ValueError(f"linear shape mismatch while restoring alias {alias}")
+                adapter.replace_quantized_aliases(model, alias_source, qlinear)
 
     missing, unexpected = load_model(
         model, checkpoint / manifest["model_state"], strict=True, device="cpu"
@@ -771,20 +785,6 @@ def load_packed_model(
     model.to(device=device, dtype=resolved_dtype).eval()
     for module, name, buffer in reconstructed_buffers:
         module._buffers[name] = buffer.to(device=device)
-    # ``Module.to(dtype=...)`` correctly converts ordinary model tensors but
-    # would also erase the explicitly deployed butterfly metadata dtype.  That
-    # dtype is part of the packed artifact's byte budget, so restore it after
-    # the model-wide conversion.
-    for module_spec in manifest["quantized_modules"]:
-        rotation_spec = module_spec["rotation"]
-        if rotation_spec["kind"] != "butterfly":
-            continue
-        parent, attr = get_parent(model, module_spec["name"])
-        rotation = getattr(parent, attr).act_rotation
-        rotation.theta.data = rotation.theta.detach().to(
-            dtype=_resolve_dtype(rotation_spec.get("storage_dtype", "float32"))
-        )
-        rotation._invalidate_cache()
     return model
 
 

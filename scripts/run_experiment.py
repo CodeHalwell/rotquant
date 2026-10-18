@@ -1352,7 +1352,10 @@ def _apply_quantization(cfg: dict[str, Any], model, pcfg: PatchConfig,
         # scoring semantics.
         if not dynamic_scoring.get("candidate_formats"):
             dynamic_scoring.pop("candidate_formats", None)
+        from scripts.score_cache_identity import score_cache_identity
+
         score_context = {
+            "execution": score_cache_identity(model, cfg),
             "model": cfg.get("model"),
             "model_revision": cfg.get("model_revision"),
             "seed": pcfg.seed,

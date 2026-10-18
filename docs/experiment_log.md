@@ -1,5 +1,19 @@
 # RotQuant experiment log
 
+## 2026-10-18: review reliability fixes and local verification
+
+Addressed all 13 findings from the review of `6d5f620`, starting with nested
+worker cancellation, exact storage preservation and deployed butterfly
+arithmetic/selection. The [fix record](review_fixes_2026-10-18.md) maps each
+finding to its regression checks and records compatibility changes.
+
+Local checks: 323 focused Python tests passed; a clean pinned v2 native CPU
+integration built/loaded, all 18 operator cases and both tiny W6/W8 Qwen graphs
+passed, and the three standalone native suites passed. The publication audit
+now blocks withdrawn cache results. CUDA compile CI was added but not run
+locally. No retained checkpoint, raw quality result or candidate promotion was
+changed; no GPU evaluation or training ran.
+
 This is the durable research ledger for the project. Raw local runs remain in
 `results/*.json`; this document records the comparison that was made, what was
 learned, negative results, and the decision that followed. Results produced in

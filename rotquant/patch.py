@@ -151,6 +151,28 @@ def _rotate_hessian(rotation: Rotation, hessian: torch.Tensor) -> torch.Tensor:
     return rotate_hessian(rotation, hessian)
 
 
+def validate_projection_aliases(model, targets, excluded):
+    selected_ids = {id(module) for _, module in targets}
+    selected_names = {name for name, _ in targets}
+    for name, module in model.named_modules(remove_duplicate=False):
+        if id(module) in selected_ids and (name not in selected_names or name in excluded):
+            raise ValueError(f"shared projection alias conflicts with include/exclude: {name}")
+
+
+def unique_projection_targets(targets, cfg, hessians):
+    if any(not name for name, _ in targets):
+        raise ValueError("in-place patching requires a model containing projections; use QuantLinear.from_linear for a root projection")
+    unique = {}
+    for name, module in targets:
+        previous = unique.setdefault(id(module), (name, module))
+        if quant_config_for(cfg, previous[0]) != quant_config_for(cfg, name):
+            raise ValueError(f"shared projection aliases require one quantization config: {name}")
+    for name, _ in unique.values():
+        if quant_config_for(cfg, name).error_comp == "gptq" and hessians.get(name) is None:
+            raise ValueError(f"GPTQ requires a calibrated Hessian for {name}")
+    return list(unique.values())
+
+
 def patch_model(model: nn.Module, cfg: PatchConfig,
                 hessians: Mapping[str, torch.Tensor] | None = None,
                 activations: dict[str, torch.Tensor] | None = None,
@@ -234,6 +256,9 @@ def patch_model(model: nn.Module, cfg: PatchConfig,
             "(include=%s, exclude=%s). The model is still full-precision!",
             adapter.name, include_terms, exclude_terms)
         return model
+
+    validate_projection_aliases(model, targets, support.excluded_modules)
+    targets = unique_projection_targets(targets, cfg, hessians)
 
     model.__dict__["_rotquant_adapter_name"] = adapter.name
 
@@ -348,6 +373,7 @@ def patch_model(model: nn.Module, cfg: PatchConfig,
                     member.to(device=work_linear.weight.device,
                               dtype=torch.float32)
                     for member in selection_members]
+            commit_rotation_storage(weight_rot, cfg.rotation_storage_dtype)
             if isinstance(weight_rot, ButterflyRotation) \
                     and train_cfg.objective == "activation":
                 if layer_acts is None:
@@ -358,6 +384,7 @@ def patch_model(model: nn.Module, cfg: PatchConfig,
                 reference_rot = ButterflyRotation(
                     work_linear.in_features, block=cfg.block,
                     seed=cfg.seed + i, device=work_linear.weight.device)
+                commit_rotation_storage(reference_rot, cfg.rotation_storage_dtype)
                 if train_cfg.selection_tokens:
                     selection_acts = layer_acts[
                         train_cfg.max_tokens:
@@ -385,6 +412,7 @@ def patch_model(model: nn.Module, cfg: PatchConfig,
                 reference_rot = ButterflyRotation(
                     work_linear.in_features, block=cfg.block,
                     seed=cfg.seed + i, device=work_linear.weight.device)
+                commit_rotation_storage(reference_rot, cfg.rotation_storage_dtype)
                 # Score both arms on the error that survives the deployed
                 # mean bias correction; otherwise the gate ranks a component
                 # that apply_mean_bias_correction cancels.
@@ -436,10 +464,7 @@ def patch_model(model: nn.Module, cfg: PatchConfig,
             )
         if stage_on_cpu:
             qlin = qlin.to(device=source_device, dtype=source_dtype)
-        parent, attr = get_parent(model, name)
-        adapter.replace_quantized_module(
-            parent, attr, source_module, qlin
-        )
+        adapter.replace_quantized_aliases(model, source_module, qlin)
         if stats_out is not None:
             stats_out["patched_modules"] = i + 1
             if qlin.qweight.scale_diagnostics is not None:

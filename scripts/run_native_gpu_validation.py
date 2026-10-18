@@ -50,6 +50,7 @@ def repository_identity(allow_dirty=False):
             "workflow_sources": {str(p.relative_to(ROOT)): digest(p) for p in [
                 Path(__file__), ROOT / "scripts/native_gpu_workflow.py", ROOT / "scripts/native_hashing.py",
                 ROOT / "scripts/native_gpu_environment.py",
+                ROOT / "scripts/colab_runtime.py", ROOT / "scripts/process_tree.py",
                 ROOT / "scripts/native_gpu_cache.py", ROOT / "scripts/run_rq3_performance_pilot.py",
                 ROOT / "scripts/native_pilot_controls.py",
                 ROOT / "scripts/native_performance_study.py", ROOT / "scripts/native_cuda_diagnostics.py",

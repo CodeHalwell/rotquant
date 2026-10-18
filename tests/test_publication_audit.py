@@ -17,7 +17,7 @@ def _manifest() -> dict:
 
 
 def test_publication_numbers_recompute() -> None:
-    checks, derived = audit_publication.validate_numerical_claims(_manifest())
+    checks, derived = audit_publication.validate_numerical_claims(_manifest(), historical=True)
     assert checks
     assert all(check["passed"] for check in checks)
     assert derived["joint_mean_ppl"] == 14.5548
@@ -26,7 +26,7 @@ def test_publication_numbers_recompute() -> None:
 
 def test_tex_macros_are_deterministic() -> None:
     manifest = _manifest()
-    _, derived = audit_publication.validate_numerical_claims(manifest)
+    _, derived = audit_publication.validate_numerical_claims(manifest, historical=True)
     rendered = audit_publication.render_tex_macros(manifest, derived)
     assert "\\newcommand{\\QwenJointMeanPPL}{14.5548}" in rendered
     assert "\\newcommand{\\ActualTensorReductionPct}{59.34}" in rendered
@@ -123,7 +123,7 @@ def test_source_audit_derives_mtp_head_bytes_from_shards(tmp_path: Path) -> None
 
 def test_manifest_like_for_like_fields_are_internally_consistent() -> None:
     manifest = _manifest()
-    checks, derived = audit_publication.validate_numerical_claims(manifest)
+    checks, derived = audit_publication.validate_numerical_claims(manifest, historical=True)
     labels = {check["check"] for check in checks}
     assert "source loaded bytes equal total minus MTP head" in labels
     assert "like-for-like tensor storage reduction" in labels
@@ -131,7 +131,7 @@ def test_manifest_like_for_like_fields_are_internally_consistent() -> None:
 
     stale = json.loads(json.dumps(manifest))
     stale["models"]["source"]["tensor_bytes_excluding_mtp"] += 1
-    stale_checks, _ = audit_publication.validate_numerical_claims(stale)
+    stale_checks, _ = audit_publication.validate_numerical_claims(stale, historical=True)
     assert any(
         not check["passed"] and check["check"] == "source loaded bytes equal total minus MTP head"
         for check in stale_checks

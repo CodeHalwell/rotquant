@@ -137,13 +137,6 @@ class QuantConfig:
     def __post_init__(self) -> None:
         if not isinstance(self.collect_scale_diagnostics, bool):
             raise TypeError("collect_scale_diagnostics must be boolean")
-        # Uniform centroids span [-1,1], whereas Gaussian centroids already
-        # span several standard deviations. A common RMS range clips uniform
-        # int4 at <=1.5 sigma and is not a valid codebook control.
-        if self.mse_search_lo is None:
-            self.mse_search_lo = 1.5 if self.codebook.lower() == "uniform" else 0.5
-        if self.mse_search_hi is None:
-            self.mse_search_hi = 4.0 if self.codebook.lower() == "uniform" else 1.5
         if not isinstance(self.bits, int) or not 1 <= self.bits <= 16:
             raise ValueError("bits must be an integer in [1, 16]")
         if not isinstance(self.residual_bits, int) or not 1 <= self.residual_bits <= 16:
@@ -202,7 +195,8 @@ class QuantConfig:
             raise TypeError("gptq_recompute_scales must be boolean")
         if self.mse_search_grid < 1:
             raise ValueError("mse_search_grid must be >= 1")
-        if self.mse_search_lo <= 0 or self.mse_search_hi < self.mse_search_lo:
+        lo, hi = self.mse_search_bounds
+        if not math.isfinite(lo) or not math.isfinite(hi) or lo <= 0 or hi < lo:
             raise ValueError("mse_search bounds must satisfy 0 < lo <= hi")
         if self.error_comp == "turboquant" and self.sketch_k < 1:
             raise ValueError("sketch_k must be >= 1 for TurboQuant correction")
@@ -237,6 +231,12 @@ class QuantConfig:
             raise ValueError(
                 "calibrated_samples and calibrated_iters must be positive"
             )
+
+    @property
+    def mse_search_bounds(self) -> tuple[float, float]:
+        defaults = (1.5, 4.0) if self.codebook.lower() == "uniform" else (0.5, 1.5)
+        return (defaults[0] if self.mse_search_lo is None else self.mse_search_lo,
+                defaults[1] if self.mse_search_hi is None else self.mse_search_hi)
 
 
 @dataclass
@@ -400,8 +400,10 @@ def _storage_scales(scales: torch.Tensor | None,
     if scales is None or scale_bits == 32.0:
         return scales
     if scale_bits == 16.0:
-        return scales.to(torch.float16).clamp_min(
-            _FP16_SMALLEST_POSITIVE)
+        stored = scales.to(torch.float16).clamp_min(_FP16_SMALLEST_POSITIVE)
+        if not torch.isfinite(stored).all():
+            raise ValueError("scales overflow 16-bit storage")
+        return stored
     if scale_bits == 8.0:
         stored, offsets, steps = _encode_storage_scales(
             scales, scale_bits, scale_quant_group_size)
@@ -425,11 +427,12 @@ def _encode_storage_scales(
 
     if scales is None:
         return None, None, None
+    if not torch.isfinite(scales).all() or (scales < 0).any():
+        raise ValueError("scales must be finite and nonnegative")
     if scale_bits == 32.0:
         return scales.float(), None, None
     if scale_bits == 16.0:
-        return (scales.to(torch.float16).clamp_min(
-            _FP16_SMALLEST_POSITIVE), None, None)
+        return _storage_scales(scales, scale_bits), None, None
     if scale_bits != 8.0:
         raise ValueError("scale_bits must be 8, 16, or 32")
     if group_size < 2:
@@ -457,6 +460,8 @@ def _encode_storage_scales(
     # A genuinely constant block has no range; a zero step is exact and compact.
     constant = ~positive_range
     steps[constant] = 0
+    if not torch.isfinite(offsets).all() or not torch.isfinite(steps).all():
+        raise ValueError("scales overflow 8-bit affine metadata storage")
     # Divide by exactly the fp16 step that decoding multiplies by.  Subnormal
     # fp16 steps are legitimate for narrow-range blocks (a range below 0.0156
     # gives a step below the smallest normal).  Clamping the divisor to the
@@ -721,7 +726,7 @@ class Quantizer:
         valid = torch.ones(ng, gs, dtype=torch.bool, device=w.device)
         if pad:
             valid[-1, gs - pad:] = False
-        cand = torch.linspace(self.cfg.mse_search_lo, self.cfg.mse_search_hi,
+        cand = torch.linspace(*self.cfg.mse_search_bounds,
                               self.cfg.mse_search_grid, device=w.device)
         best_scales = rms.clone()
         best_err = torch.full_like(rms, float("inf"))
@@ -754,8 +759,7 @@ class Quantizer:
             )
         grouped = w.reshape(out, groups, group_size)
         candidates = torch.linspace(
-            self.cfg.mse_search_lo,
-            self.cfg.mse_search_hi,
+            *self.cfg.mse_search_bounds,
             self.cfg.mse_search_grid,
             device=w.device,
         )
@@ -790,6 +794,10 @@ class Quantizer:
         """
         w = weight.detach().to(torch.float32)
         out, inf = w.shape
+        if not torch.isfinite(w).all():
+            raise ValueError("quantization weights must be finite")
+        if self.cfg.error_comp == "gptq" and H is None:
+            raise ValueError("GPTQ requires a calibrated Hessian")
         self._ensure_dimension_dependent_codebook(inf)
         if self._auto_calibrated:
             # Exact content digest: summary statistics (sums, norms) collide
@@ -825,6 +833,8 @@ class Quantizer:
             self.cfg.scale_bits,
             self.cfg.scale_quant_group_size,
         )
+        if scales is not None and not torch.isfinite(scales).all():
+            raise ValueError(f"scales overflow {self.cfg.scale_bits:g}-bit storage")
         scale_diagnostics = None
         if self.cfg.collect_scale_diagnostics and selected_scales is not None:
             flat = selected_scales.detach().float().flatten()
@@ -864,6 +874,9 @@ class Quantizer:
         else:
             q_w, idx = _quantize_groups(w, scales, self.codebook, self.cfg.group_size)
 
+        if not torch.isfinite(q_w).all():
+            raise ValueError("quantized weights must be finite")
+
         if self.cfg.bias_correction in {"length", "length_mean"}:
             # Scalar quantisation shortens reconstructed directions.  The
             # self-dot multiplier ||w||^2/<w,q(w)> is TurboVec's length
@@ -892,6 +905,8 @@ class Quantizer:
                 q_w = self.codebook.centroids.to(w.device)[idx] * expanded
             scales = corrected_scales
 
+        if not torch.isfinite(q_w).all():
+            raise ValueError("quantized weights must be finite")
         packed = pack_indices(
             idx if vector else idx.reshape(-1),
             self.cfg.bits * self.codebook.dim if vector else self.cfg.bits,
@@ -956,11 +971,9 @@ class Quantizer:
         """
         out, inf = w.shape
         if H is None:
-            logger.warning(
-                "GPTQ requested without a Hessian; falling back to H=I, which is "
-                "exactly plain rounding (no error feedback). Did you forget "
-                "calibration?")
-            H = torch.eye(inf, device=w.device, dtype=torch.float32)
+            raise ValueError("GPTQ requires a calibrated Hessian")
+        if H.shape != (inf, inf) or not torch.isfinite(H).all():
+            raise ValueError("GPTQ requires a finite Hessian matching input features")
         H = H.to(torch.float32).clone()
         gs = self.cfg.group_size
         bs = max(1, int(self.cfg.gptq_block))

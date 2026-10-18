@@ -1,4 +1,5 @@
 {
+  "arithmetic_passed": true,
   "checks": [
     {
       "absolute_difference": 0.0,
@@ -126,12 +127,15 @@
     "joint_mean_relative_ppl_pct": 4.710038057280164,
     "joint_worst_relative_ppl_pct": 5.775498017999858,
     "like_for_like_tensor_storage_reduction_pct": 58.25594114289463,
-    "loaded_source_tensor_bytes": 9078538752,
-    "long_cache_kl_reduction_pct": 10.620334860976666,
-    "matched_cache_mean_ratio": 0.8022089847409393,
-    "matched_cache_worst_ratio": 0.8351962131441176,
-    "short_cache_kl_reduction_pct": 23.98255890126667
+    "loaded_source_tensor_bytes": 9078538752
   },
+  "evidence_status": {
+    "cache_transfer": "withdrawn 2026-09-01; retained as a record of the defective-simulator measurement",
+    "matched_cache": "withdrawn 2026-09-01; retained as a record of the defective-simulator measurement",
+    "qwen_joint": "current"
+  },
+  "historical": false,
   "manifest": "paper/data/publication_results.json",
-  "passed": true
+  "passed": false,
+  "publication_eligible": false
 }

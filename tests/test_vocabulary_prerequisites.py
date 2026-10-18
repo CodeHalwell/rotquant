@@ -52,8 +52,8 @@ def test_uniform_control_uses_a_valid_scale_range():
     error = lambda q: (q.quantize_weight(w).dequantize() - w).square().mean()
     assert error(corrected) < error(old) * 0.4
     assert error(absmax) < error(old) * 0.5
-    assert QuantConfig().mse_search_lo == 0.5
-    assert QuantConfig(codebook="uniform").mse_search_hi == 4.0
+    assert QuantConfig().mse_search_bounds == (0.5, 1.5)
+    assert QuantConfig(codebook="uniform").mse_search_bounds == (1.5, 4.0)
 
 
 def test_absmax_gptq_identity_matches_rounding():

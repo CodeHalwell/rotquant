@@ -29,7 +29,7 @@ from ._internal import (
     storage_scales,
 )
 from .linear import QuantLinear
-from .patch import PatchConfig, quant_config_for
+from .patch import PatchConfig, commit_rotation_storage, quant_config_for
 from .quantize import QuantConfig, Quantizer
 from .rotate import ButterflyRotation, RandomizedHadamard
 from .utils import get_logger
@@ -752,12 +752,14 @@ def _packed_cpu_block(source: nn.Module, global_name: str,
         if full_name not in seed_by_name:
             continue
         selected_quant = quant_config_for(patch_cfg, full_name)
-        rotation = ButterflyRotation(
+        rotation_kind = RandomizedHadamard if states is None else ButterflyRotation
+        rotation = rotation_kind(
             linear.in_features, block=patch_cfg.block,
             seed=seed_by_name[full_name], device=device)
         state = states[relative] if states is not None else None
         if state is not None:
             rotation.theta.data.copy_(state["theta"])
+            commit_rotation_storage(rotation, patch_cfg.rotation_storage_dtype)
         rotation.requires_grad_(False).eval()
         scales_override = (
             _scale_override(linear, rotation, selected_quant, state)
@@ -807,6 +809,7 @@ def _patch_source_block(source: nn.Module, global_name: str,
                 seed=seed_by_name[full_name], device=work.weight.device)
             rotation.theta.data.copy_(
                 state["theta"].to(rotation.theta.device))
+            commit_rotation_storage(rotation, patch_cfg.rotation_storage_dtype)
         rotation.requires_grad_(False).eval()
         scales_override = (
             _scale_override(work, rotation, selected_quant, state)

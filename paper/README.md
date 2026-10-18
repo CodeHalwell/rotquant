@@ -3,9 +3,13 @@
 Build the current arXiv-style draft with:
 
 ```bash
-uv run python scripts/audit_publication.py
+uv run python scripts/audit_publication.py --historical
 cd paper && tectonic main.tex
 ```
+
+The default audit blocks publication while the manifest contains withdrawn
+cache results. `--historical` checks their arithmetic and labels the report
+ineligible for publication. Without it, generated cache macros say `withdrawn`.
 
 For the full local release audit, also pass the cached source and RotQuant
 snapshot directories plus `--native-gguf`. The command reconciles numerical

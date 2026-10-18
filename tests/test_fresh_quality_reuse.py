@@ -72,6 +72,7 @@ def test_llama_generation_consumes_frozen_ids_without_native_retokenization():
 
 @pytest.fixture
 def reusable(tmp_path, monkeypatch):
+    monkeypatch.setattr(runner, "REUSE_ENABLED", True)
     previous, output, evidence = [tmp_path / name for name in ("previous", "output", "evidence")]
     current_source = {"revision": "new", "source_fingerprint": "new"}
     expected = {"source": current_source, "runtime": {"version": "fixed"}, "settings": runner.SETTINGS}
@@ -215,6 +216,10 @@ def _require_reviewed_commit(revision):
 
 
 def test_reuse_compatibility_keeps_reviewed_hf_scoring_and_core_code_unchanged():
+    if not runner.REUSE_ENABLED:
+        with pytest.raises(ValueError, match="fresh execution"):
+            runner.reuse_completed(None, None, None, None, None)
+        return
     revision = runner.REUSABLE_SOURCE["revision"]
     _require_reviewed_commit(revision)
     old = subprocess.check_output(["git", "show", f"{revision}:scripts/run_qwen35_fresh_eval.py"],

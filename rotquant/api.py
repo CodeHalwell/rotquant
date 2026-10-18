@@ -130,9 +130,9 @@ def optimize_model(
     patch_model(
         model,
         resolved.to_patch_config(),
-        hessians=dict(hessians or {}),
-        activations=dict(activations or {}),
-        activation_means=dict(activation_means or {}),
+        hessians=hessians,
+        activations=activations,
+        activation_means=activation_means,
         stats_out=stats,
     )
     if not stats.get("patched_modules"):

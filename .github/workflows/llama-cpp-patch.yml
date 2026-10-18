@@ -7,11 +7,27 @@ name: llama.cpp patch check
       - ".github/workflows/llama-cpp-patch.yml"
       - "integrations/llama.cpp/**"
       - "scripts/build_rotquant_llama_cpp.sh"
+      - "scripts/build_rq3_runtime.py"
+      - "scripts/check_rq3_cpu_model.py"
+      - "scripts/rq3_test_runtime.py"
+      - "scripts/make_rq3_model_fixture.py"
+      - "native/**"
+      - "rotquant/**"
+      - "pyproject.toml"
+      - "uv.lock"
   pull_request:
     paths:
       - ".github/workflows/llama-cpp-patch.yml"
       - "integrations/llama.cpp/**"
       - "scripts/build_rotquant_llama_cpp.sh"
+      - "scripts/build_rq3_runtime.py"
+      - "scripts/check_rq3_cpu_model.py"
+      - "scripts/rq3_test_runtime.py"
+      - "scripts/make_rq3_model_fixture.py"
+      - "native/**"
+      - "rotquant/**"
+      - "pyproject.toml"
+      - "uv.lock"
   workflow_dispatch:
 
 permissions:
@@ -32,3 +48,45 @@ jobs:
           git -C upstream checkout --detach "${pinned}"
           git -C upstream apply --check "${GITHUB_WORKSPACE}/integrations/llama.cpp/rotquant-native-v1.patch"
           echo "patch applies cleanly"
+
+  v2-cpu:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+        with:
+          python-version: "3.12"
+          enable-cache: true
+      - run: uv sync --locked --extra dev --extra eval
+      - name: Build and load pinned v2 integration
+        run: uv run --no-sync python -m scripts.build_rq3_runtime --source-dir "$RUNNER_TEMP/llama-source" --build-dir "$RUNNER_TEMP/llama-build" --backend CPU --jobs 2
+      - name: Packed operators and tiny W6/W8 graphs
+        run: |
+          library="$RUNNER_TEMP/llama-build/bin/librotquant_ggml_test.so"
+          uv run --no-sync python -m scripts.check_rq3_gpu --library "$library" --backend CPU --output "$RUNNER_TEMP/operators.json"
+          for bits in 6 8; do
+            model="$RUNNER_TEMP/fixture-w$bits.gguf"
+            uv run --no-sync python -m scripts.make_rq3_model_fixture --llama-dir "$RUNNER_TEMP/llama-source" --output "$model" --vocabulary-bits "$bits"
+            uv run --no-sync python -m scripts.check_rq3_cpu_model --library "$library" --model "$model"
+          done
+
+  v2-cuda-compile:
+    runs-on: ubuntu-24.04
+    container: nvidia/cuda:12.8.1-devel-ubuntu24.04
+    timeout-minutes: 45
+    steps:
+      - name: Install build tools
+        run: apt-get update && apt-get install -y --no-install-recommends git cmake ninja-build g++ python3
+      - uses: actions/checkout@v4
+      - name: Apply and verify pinned v2 source
+        run: python3 -c "from pathlib import Path; from scripts.build_rq3_runtime import prepare_source; prepare_source(Path('/tmp/llama-source'))"
+      - name: Compile CUDA sm80 without a GPU
+        run: |
+          cmake -S /tmp/llama-source -B /tmp/llama-build -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release -DROTQUANT_ROOT="$GITHUB_WORKSPACE" \
+            -DGGML_CUDA=ON -DGGML_METAL=OFF -DGGML_NATIVE=OFF \
+            -DGGML_CUDA_NCCL=OFF -DCMAKE_CUDA_ARCHITECTURES=80 \
+            -DLLAMA_CURL=OFF -DLLAMA_BUILD_TESTS=OFF -DLLAMA_BUILD_EXAMPLES=ON \
+            -DLLAMA_BUILD_SERVER=OFF -DLLAMA_BUILD_UI=OFF
+          cmake --build /tmp/llama-build --target rotquant_ggml_test --parallel 2

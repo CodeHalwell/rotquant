@@ -372,7 +372,7 @@ class CandidateScore:
 # reconstruction scores are source-model facts, so random and greedy allocation
 # may share them when the runner supplies the same content-addressed context.
 _CANDIDATE_SCORE_CACHE: dict[str, dict[str, list[CandidateScore]]] = {}
-_CANDIDATE_CACHE_SCHEMA = 2  # FP32 pre-quantization rotations / corrected uniform scales
+_CANDIDATE_CACHE_SCHEMA = 3
 
 
 def _candidate_cache_path(key: str) -> Path | None:
@@ -1074,6 +1074,7 @@ def _pareto_selection(
     target_bytes: int,
     tolerance_bytes: int,
     granularity_bytes: int,
+    minimum_bytes: int | None = None,
 ) -> tuple[dict[str, CandidateScore], dict[str, Any]]:
     """Solve a bucketed multiple-choice rate-distortion problem.
 
@@ -1110,7 +1111,7 @@ def _pareto_selection(
             exact_granularity = math.gcd(exact_granularity, step)
         granularity_bytes = max(1, exact_granularity)
     upper = target_bytes + tolerance_bytes
-    lower = max(0, target_bytes - tolerance_bytes)
+    lower = max(0, target_bytes - tolerance_bytes) if minimum_bytes is None else minimum_bytes
     required_max = max(0, high_total - lower)
     largest_step = max(
         (
@@ -1300,6 +1301,7 @@ def _refine_selection(
     target_bytes: int,
     tolerance_bytes: int,
     max_passes: int,
+    minimum_bytes: int | None = None,
 ) -> tuple[dict[str, CandidateScore], dict[str, Any]]:
     """Improve an allocation with exact-byte single and pair exchanges.
 
@@ -1311,7 +1313,7 @@ def _refine_selection(
     """
 
     current = dict(selected)
-    lower = max(0, target_bytes - tolerance_bytes)
+    lower = max(0, target_bytes - tolerance_bytes) if minimum_bytes is None else minimum_bytes
     upper = target_bytes + tolerance_bytes
 
     def allocation_bytes() -> int:
@@ -1625,6 +1627,7 @@ def select_dynamic_quantization(
             target_bytes=target_bytes,
             tolerance_bytes=tolerance_bytes,
             granularity_bytes=config.allocation_granularity_bytes,
+            minimum_bytes=0 if size_attr == "packed_bytes" else None,
         )
         if config.allocation == "random_pareto":
             solver_stats["solver"] = "seeded_random_multiple_choice_pareto"
@@ -1638,6 +1641,7 @@ def select_dynamic_quantization(
                 target_bytes=target_bytes,
                 tolerance_bytes=tolerance_bytes,
                 max_passes=config.refinement_passes,
+                minimum_bytes=0 if size_attr == "packed_bytes" else None,
             )
             solver_stats["refinement"] = refinement_stats
         if config.allocation == "random_pareto":
