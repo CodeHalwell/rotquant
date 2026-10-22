@@ -52,6 +52,8 @@ eval = [
     # v5 from_config(dtype=...) signature; a major bump needs a deliberate,
     # tested migration.
     "transformers>=5,<6",
+    # Earlier Hub dataclasses import a private type removed in Python 3.15.
+    "huggingface-hub>=1.19,<2; python_version >= '3.15'",
     "datasets",
     "accelerate",
     "safetensors",
