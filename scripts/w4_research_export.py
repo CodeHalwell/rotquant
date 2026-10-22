@@ -12,7 +12,11 @@ from pathlib import Path
 import torch
 from safetensors import safe_open
 
-from scripts.export_rotquant_gguf_v2 import LLAMA_REVISION, recurrent_layer_map
+from scripts.export_rotquant_gguf_v2 import (
+    LLAMA_REVISION,
+    Qwen35FP32Transforms,
+    recurrent_layer_map,
+)
 from scripts.native_hashing import digest
 
 
@@ -136,7 +140,7 @@ def export_fp16(source: Path, output: Path, llama_cpp: Path, quant_export: Path)
     gguf, base_class = converter_modules(llama_cpp)
     omitted_keys = set()
 
-    class MatchedFP16Model(base_class):
+    class MatchedFP16Model(Qwen35FP32Transforms, base_class):
         model_arch = base_class.model_arch
         no_mtp = True
 

@@ -146,13 +146,13 @@ class Worker:
         runtime = NativeTests(self.args.library)
         with runtime.model(self.args.native / "model.gguf", "CUDA0", capacity) as model:
             backend = NativeBackend(model, stop_ids_for_source(tokenizer))
-            self.parity(lambda ids: model.evaluate(ids[:-1], reset=True, selected=16))
-            result = self.native_results(model, backend, tokenizer, scorer)
+            self.parity(lambda ids: backend.model.evaluate(ids[:-1], reset=True, selected=16))
+            result = self.native_results(backend.model, backend, tokenizer, scorer)
             if bool(model.custom_ops) != (self.args.label != "fp16"):
                 raise ValueError("native dispatch does not match the expected model format")
         return {**result, "label": self.args.label, "runtime": runtime_identity(self.args.library),
                 "native_artifacts": artifacts(self.args.native.glob("*.gguf")),
-                "data_fingerprint": self.data["fingerprint"], "backend": "CUDA0/reference"}
+                "data_fingerprint": self.data["fingerprint"], "backend": "CUDA0/reference/chunk16"}
 
     def native_results(self, model, backend, tokenizer, scorer):
         from scripts.w4_research_measure import (

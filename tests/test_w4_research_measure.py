@@ -30,6 +30,28 @@ class FakeNative:
         return logits[-1] if selected == 1 else logits[-selected:]
 
 
+class CachedNative:
+    """Expose position and prefix sum so dropped tokens or resets change logits."""
+
+    backend = "CPU"
+    custom_ops = 7
+
+    def __init__(self):
+        self.calls, self.history = [], []
+
+    def evaluate(self, ids, reset=False, selected=1):
+        assert 1 <= selected <= len(ids) <= 16
+        self.calls.append((list(map(int, ids)), reset, selected))
+        if reset:
+            self.history = []
+        logits = []
+        for token in ids:
+            self.history.append(int(token))
+            logits.append([len(self.history), sum(self.history), token])
+        result = np.asarray(logits, dtype=np.float32)
+        return result[-1] if selected == 1 else result[-selected:]
+
+
 class FakeMemory:
     def report(self):
         return {"sampled_peak_process_vram_mib": None, "samples": 0}
@@ -67,6 +89,48 @@ def test_native_predict_chunks_each_position_and_resets_only_first_chunk():
         (16, True, 16), (16, False, 16), (1, False, 1)]
 
 
+@pytest.mark.parametrize("count", [17, 33])
+@pytest.mark.parametrize("selected", range(1, 17))
+def test_chunked_native_preserves_final_selected_logits_across_boundaries(count, selected):
+    native = CachedNative()
+    model = research.ChunkedNativeModel(native)
+    ids = np.arange(count)
+    result = model.evaluate(ids, reset=True, selected=selected)
+    expected = np.column_stack((np.arange(1, count + 1), ids.cumsum(), ids))[-selected:]
+    np.testing.assert_array_equal(result, expected[0] if selected == 1 else expected)
+    assert result.dtype == np.float32
+    assert [reset for _, reset, _ in native.calls] == [True] + [False] * (len(native.calls) - 1)
+    assert native.history == ids.tolist()
+    if selected == 16:
+        assert [requested for _, _, requested in native.calls] == (
+            [15, 1] if count == 17 else [1, 15, 1])
+    if selected == 1:
+        assert all(requested == 1 for _, _, requested in native.calls)
+
+
+def test_chunked_native_continues_cache_and_forwards_runtime_attributes():
+    native = CachedNative()
+    model = research.NativeBackend(native, set()).model
+    assert model.chunk_tokens == 16 and model.backend == "CPU" and model.custom_ops == 7
+    assert research.NativeBackend(model, set()).model is model
+    model.evaluate([7, 8], reset=True)
+    ids = np.arange(17)
+    result = model.evaluate(ids, selected=16)
+    expected = np.column_stack((np.arange(4, 20), 15 + ids.cumsum()[1:], ids[1:]))
+    np.testing.assert_array_equal(result, expected)
+    np.testing.assert_array_equal(model.evaluate([3], reset=True), [1, 3, 3])
+    assert [reset for _, reset, _ in native.calls] == [True, False, False, True]
+    assert native.history == [3]
+
+
+@pytest.mark.parametrize("selected", [0, 2, 17, True, 1.0])
+def test_chunked_native_rejects_invalid_selection_before_changing_cache(selected):
+    native = CachedNative()
+    with pytest.raises(ValueError, match="selected must be an integer"):
+        research.ChunkedNativeModel(native).evaluate([1], reset=True, selected=selected)
+    assert not native.calls
+
+
 def test_native_generation_includes_eos_and_obeys_token_cap():
     model = FakeNative()
     backend = research.NativeBackend(model, {0})
@@ -74,6 +138,16 @@ def test_native_generation_includes_eos_and_obeys_token_cap():
     assert backend.generate([1], 2) == [2, 3]
     assert model.calls[0] == ([2], True, 1)
     assert model.calls[3] == ([1], True, 1)
+
+
+def test_native_generation_chunks_prefill_and_keeps_decode_cached():
+    model = FakeNative()
+    backend = research.NativeBackend(model, {0})
+    assert backend.generate(np.arange(33), 8) == [3, 4, 0]
+    assert [(len(ids), reset, selected) for ids, reset, selected in model.calls] == [
+        (16, True, 1), (16, False, 1), (1, False, 1), (1, False, 1), (1, False, 1)]
+    assert [token for ids, _, _ in model.calls[:3] for token in ids] == list(range(33))
+    assert [ids for ids, _, _ in model.calls[3:]] == [[3], [4]]
 
 
 def test_quality_loads_full_logits_records_inputs_and_parity(tmp_path):
@@ -183,12 +257,29 @@ def test_native_speed_uses_frozen_prompt_and_decode_excludes_warmup(tmp_path):
     report = research.native_speeds(model, {"3": {"prompt_ids": [1, 2, 3], "decode_ids": [2, 4]}},
                                     2, tmp_path / "speed.json", memory=FakeMemory())
     assert report["completed"] and len(report["rows"]) == 3
+    assert report["prefill_chunk_tokens"] is None
     assert report["summary"]["3"]["measured_repetitions"] == 2
     assert report["summary"]["3"]["decode_tokens_per_second"] > 0
     assert report["frozen_inputs"]["3"]["prompt_sha256"] == research.input_hash([1, 2, 3])
     assert [row["warmup"] for row in report["rows"]] == [True, False, False]
     assert all(row["decode_input_ids"] == [2, 4] for row in report["rows"])
     assert [ids for ids, reset, _ in model.calls if reset] == [[1, 2, 3]] * 3
+    assert json.loads((tmp_path / "speed.json").read_text()) == report
+
+
+def test_native_speed_times_chunked_prefill_and_cached_decode(tmp_path):
+    native = CachedNative()
+    model = research.NativeBackend(native, set()).model
+    prompt, decode = list(range(33)), [3, 4]
+    report = research.native_speeds(
+        model, {33: {"prompt_ids": prompt, "decode_ids": decode}},
+        1, tmp_path / "speed.json", memory=FakeMemory())
+    assert report["completed"] and report["prefill_chunk_tokens"] == 16
+    assert len(report["rows"]) == 2 and report["summary"]["33"]["measured_repetitions"] == 1
+    expected = [(16, True, 1), (16, False, 1), (1, False, 1), (1, False, 1), (1, False, 1)]
+    assert [(len(ids), reset, selected) for ids, reset, selected in native.calls] == expected * 2
+    assert native.history == prompt + decode
+    assert all(row["decode_input_ids"] == decode for row in report["rows"])
     assert json.loads((tmp_path / "speed.json").read_text()) == report
 
 

@@ -134,8 +134,15 @@ checkpoint returns the same selected state without another optimisation step.
   bytes are measured. Native payload includes the GGUF, retained auxiliary
   weights and tokenizer/processor assets; receipts and logs are separate.
   FP16 auxiliary tensors are checked against the source and counted identically.
+  FP16 and packed exports compute additive RMSNorm multipliers and recurrent
+  `-exp(A_log)` coefficients in FP32, matching the source model's arithmetic
+  before writing GGUF. Existing exports must be regenerated after this fix;
+  checkpoint weights and parity acceptance limits are unchanged.
 - **Speed:** FP16/W5/W4 use the same native CUDA bridge, reference kernel mode,
-  F16 cache, fixed real prompts (128/512/2048 tokens), fixed 32-token decode
+  F16 cache and 16-token prefill chunks for parity, quality, task generation
+  and timing. The full-prompt path failed retained FP16 parity on A100;
+  measured throughput must identify the validated chunked path. Fixed real
+  prompts (128/512/2048 tokens), fixed 32-token decode
   continuation, three measured repetitions and excluded warmup. This isolates
   runtime speed from model-specific generation lengths. Memory and input hashes
   are recorded. Checkpoints are loaded separately.

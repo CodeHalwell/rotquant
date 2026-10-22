@@ -54,9 +54,39 @@ class HFTeacher:
         return result
 
 
+class ChunkedNativeModel:
+    """Use the same native prefill shape for parity, quality and timing."""
+
+    chunk_tokens = 16
+
+    def __init__(self, native_model):
+        self.native_model = native_model
+
+    def __getattr__(self, name):
+        return getattr(self.native_model, name)
+
+    def evaluate(self, ids, *, reset=False, selected=1):
+        values = token_ids(ids)
+        if type(selected) is not int or not 1 <= selected <= min(16, len(values)):
+            raise ValueError("selected must be an integer from 1 to min(16, token count)")
+        selected_start = len(values) - selected
+        outputs = []
+        for start in range(0, len(values), self.chunk_tokens):
+            chunk = values[start:start + self.chunk_tokens]
+            needed = max(0, start + len(chunk) - max(start, selected_start))
+            logits = self.native_model.evaluate(
+                chunk, reset=reset and start == 0, selected=max(1, needed))
+            if needed:
+                outputs.append(np.asarray(logits, dtype=np.float32).reshape(needed, -1))
+        result = np.concatenate(outputs)
+        return result[0] if selected == 1 else result
+
+
 class NativeBackend:
     def __init__(self, native_model, stop_ids):
-        self.model, self.stop_ids = native_model, set(map(int, stop_ids))
+        self.model = (native_model if isinstance(native_model, ChunkedNativeModel)
+                      else ChunkedNativeModel(native_model))
+        self.stop_ids = set(map(int, stop_ids))
 
     def predict(self, ids):
         values = token_ids(ids, 2)[:-1]
@@ -274,6 +304,7 @@ def native_speeds(model, speed_inputs, repetitions, output, *, memory=None,
                            "prompt_tokens": len(prompt), "decode_tokens": len(decode)}
                   for length, (prompt, decode) in frozen.items()}
     report = {"completed": False, "rows": [], "summary": {}, "repetitions": repetitions,
+              "prefill_chunk_tokens": getattr(model, "chunk_tokens", None),
               "frozen_inputs": identities}
     context = ProcessVRAM() if memory is None else nullcontext(memory)
     with context as tracker:

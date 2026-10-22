@@ -37,6 +37,20 @@ LLAMA_REVISION = "17252c769a63c1cb650ce98ae309cf4de0da7778"
 LOG = logging.getLogger("rotquant.export.gguf-v2")
 
 
+class Qwen35FP32Transforms:
+    """Match HF arithmetic before the pinned converter stores dense tensors."""
+
+    def modify_tensors(self, data_torch, name, bid):
+        # HF computes both -exp(A_log) and 1 + RMSNorm.weight in FP32,
+        # even when the saved parameters are FP16. Promoting after either
+        # transform would retain the converter's premature FP16 rounding.
+        if name.endswith(".A_log") or (
+            name.endswith("norm.weight") and not name.endswith("linear_attn.norm.weight")
+        ):
+            data_torch = data_torch.float()
+        yield from super().modify_tensors(data_torch, name, bid)
+
+
 def validate_recipe(manifest: dict) -> None:
     if manifest.get("torch_dtype") != "float16":
         raise ValueError("GGUF v2 currently requires FP16 execution boundaries")
@@ -108,7 +122,7 @@ def make_converter(base_class, gguf, checkpoint: Path, manifest: dict, audit: di
     sign_keys = {key for values in sign_groups.values() for key in values} | set(vocab_sign_keys)
     model_architecture = base_class.model_arch
 
-    class RetainedQwen35Model(base_class):
+    class RetainedQwen35Model(Qwen35FP32Transforms, base_class):
         model_arch = model_architecture
         no_mtp = True
 

@@ -167,7 +167,10 @@ reach the published quality.
   checkpoint-directory bytes are separate columns. Language-only Bonsai
   marketing sizes cannot replace measured complete bytes.
 - **Speed:** matched real prompts and frozen decode tokens, excluded warmup,
-  medians and repeated measurements. Runtime/backend identity stays visible;
+  medians and repeated measurements. All arms use 16-token prefill chunks;
+  parity, task generation and timings use the same chunk schedule. This measures
+  end-to-end chunked prefill, including bridge synchronization and readback.
+  Runtime/backend identity includes `chunk16` and stays visible;
   separate backends receive separate plot panels. Raw speed does not establish
   answer quality or the time needed to solve a task.
 - **Status:** pending, measured and failed arms stay distinct. Missing values

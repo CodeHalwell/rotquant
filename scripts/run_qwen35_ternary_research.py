@@ -72,7 +72,8 @@ class TernaryStudy(ResearchStudy):
         from scripts.ternary_research_results import partial_measurement
         expected = {"protocol": "ternary-measurement-context-v1", "identity": self.identity,
                     "data_fingerprint": self.data["fingerprint"], "label": label,
-                    "backend": "CUDA0/Prism" if label == "bonsai2_4b" else "CUDA0/reference"}
+                    "backend": "CUDA0/Prism/chunk16" if label == "bonsai2_4b" else "CUDA0/reference/chunk16",
+                    "prefill_chunk_tokens": 16}
         try:
             partial = partial_measurement(directory, expected, f"{type(error).__name__}: {error}")
             if partial is not None:

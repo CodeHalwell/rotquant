@@ -41,7 +41,8 @@ class TernaryWorker(Worker):
         write_json(self.output / "measurement-context.json", {
             "protocol": "ternary-measurement-context-v1", "identity": self.args.identity,
             "data_fingerprint": self.data["fingerprint"], "label": label,
-            "backend": "CUDA0/Prism" if bonsai else "CUDA0/reference"})
+            "backend": "CUDA0/Prism/chunk16" if bonsai else "CUDA0/reference/chunk16",
+            "prefill_chunk_tokens": model.chunk_tokens})
         return super().native_results(model, backend, tokenizer, scorer)
 
     @staticmethod
@@ -70,14 +71,14 @@ class TernaryWorker(Worker):
                        max(64, self.config["research"]["speed_decode_steps"]), 4160)
         runtime = BonsaiRuntime(self.args.library)
         with runtime.model(receipt["model"], "CUDA0", capacity) as model:
-            smoke = smoke_model(model, self.data["documents"]["selection"][0]["input_ids"])
+            backend = NativeBackend(model, stop_ids_for_source(tokenizer))
+            smoke = smoke_model(backend.model, self.data["documents"]["selection"][0]["input_ids"])
             if model.vocab != mapping["vocabulary_size"]:
                 raise ValueError("Bonsai runtime/tokenizer vocabulary size mismatch")
-            stops = stop_ids_for_source(tokenizer)
-            if any(not model.is_eog(token) for token in stops):
+            if any(not model.is_eog(token) for token in backend.stop_ids):
                 raise ValueError("Bonsai and source stop-token semantics disagree")
-            result = self.native_results(model, NativeBackend(model, stops), tokenizer, scorer)
-        return {**result, "label": "bonsai2_4b", "backend": "CUDA0/Prism",
+            result = self.native_results(backend.model, backend, tokenizer, scorer)
+        return {**result, "label": "bonsai2_4b", "backend": "CUDA0/Prism/chunk16",
                 "artifacts": receipt, "tokenizer_parity": mapping, "smoke": smoke,
                 "runtime": artifacts([self.args.library]), "data_fingerprint": self.data["fingerprint"],
                 "dispatch": "All layers requested on CUDA; Prism operation fallback is not audited by RQ3 counters"}

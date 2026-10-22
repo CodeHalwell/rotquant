@@ -151,7 +151,8 @@ def test_hydration_rejects_changed_artifacts_requests_and_failed_latest_attempts
 
 def write_partial(directory, study, label="w5_v6"):
     context = {"protocol": "ternary-measurement-context-v1", "identity": study.identity,
-               "data_fingerprint": study.data["fingerprint"], "label": label, "backend": "CUDA0/reference"}
+               "data_fingerprint": study.data["fingerprint"], "label": label,
+               "backend": "CUDA0/reference/chunk16", "prefill_chunk_tokens": 16}
     write_json(directory / "measurement-context.json", context)
     write_json(directory / "test/quality.json", quality())
     write_json(directory / "long_test/quality.json", quality())
@@ -189,6 +190,7 @@ def test_partial_measurements_need_current_attempt_deployment_binding(tmp_path):
     study.data = {"fingerprint": "data"}
     context = write_partial(tmp_path, study)
     assert partial_measurement(tmp_path, {**context, "identity": "different-source"}, "failed") is None
+    assert partial_measurement(tmp_path, {**context, "prefill_chunk_tokens": 8192}, "failed") is None
     (tmp_path / "measurement-context.json").unlink()
     assert partial_measurement(tmp_path, context, "failed") is None
 

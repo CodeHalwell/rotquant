@@ -1,10 +1,11 @@
 """FP16 export preserves topology and accounts for the same source auxiliaries."""
 import json
 from types import SimpleNamespace
+from typing import ClassVar
 
 import pytest
 import torch
-from safetensors.torch import save_file
+from safetensors.torch import load_file, save_file
 
 from scripts import w4_research_export as export
 
@@ -32,6 +33,7 @@ def export_inputs(tmp_path, monkeypatch):
     class Converter:
         model_arch = "qwen35"
         hf_arch = "Qwen3_5ForConditionalGeneration"
+        tensors: ClassVar[dict[str, torch.Tensor]] = {}
 
         def __init__(self, source, outtype, output, **kwargs):
             assert outtype == "f16"
@@ -46,9 +48,19 @@ def export_inputs(tmp_path, monkeypatch):
         def prepare_metadata(self, vocab_only):
             assert vocab_only is False
 
+        def modify_tensors(self, value, name, bid):
+            # Match the upstream arithmetic; the exporter must promote first.
+            if name.endswith(".A_log"):
+                value = -value.exp()
+            elif name.endswith("norm.weight") and not name.endswith("linear_attn.norm.weight"):
+                value = value + 1
+            yield name, value
+
         def write(self):
-            for key in export.source_tensors(self.source):
-                self.filter_tensors((key, None))
+            for key, value in load_file(self.source / "model.safetensors").items():
+                item = self.filter_tensors((key, value))
+                if item is not None:
+                    self.tensors.update(self.modify_tensors(item[1], item[0], None))
             self.prepare_metadata(False)
             assert self.arrays["qwen35.attention.recurrent_layers"] == [False, True]
             self.output.write_bytes(b"fp16 model")
@@ -76,6 +88,34 @@ def test_fp16_export_preserves_topology_auxiliary_bytes_and_receipts(export_inpu
     assert audit["quantized_export_sha256"] == export.digest(quant / "export.json")
     with pytest.raises(FileExistsError):
         export.export_fp16(source, output, llama, quant)
+
+
+def test_fp16_export_transforms_nonzero_parameters_at_hf_precision(export_inputs):
+    source, output, llama, quant = export_inputs
+    norm = torch.tensor([.1, -.1], dtype=torch.float16)
+    decay = torch.tensor([.7, -.7], dtype=torch.float16)
+    values = {
+        "model.language_model.norm.weight": norm,
+        "model.language_model.layers.0.linear_attn.A_log": decay,
+        "model.language_model.layers.0.linear_attn.norm.weight": norm,
+        "model.language_model.layers.0.linear_attn.in_proj_a.weight": norm,
+    }
+    state = load_file(source / "model.safetensors")
+    state.update({key: value.clone() for key, value in values.items()})
+    save_file(state, source / "model.safetensors")
+    _, converter = export.converter_modules(llama)
+    export.export_fp16(source, output, llama, quant)
+    expected_norm, expected_decay = 1 + norm.float(), -decay.float().exp()
+    assert not torch.equal(expected_norm, (1 + norm).float())
+    assert not torch.equal(expected_decay, (-decay.exp()).float())
+    for name, expected in zip(list(values)[:2], (expected_norm, expected_decay)):
+        actual = converter.tensors[name]
+        assert actual.dtype == torch.float32
+        assert torch.equal(actual, expected)
+    for name in list(values)[2:]:
+        actual = converter.tensors[name]
+        assert actual.dtype == torch.float16
+        assert torch.equal(actual, values[name])
 
 
 @pytest.mark.parametrize("change,match", [("auxiliary", "auxiliary tensor differs"),

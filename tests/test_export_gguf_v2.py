@@ -5,7 +5,7 @@ from types import SimpleNamespace
 import numpy as np
 import pytest
 import torch
-from safetensors.torch import save_file
+from safetensors.torch import load_file, save_file
 
 from rotquant.native_v3 import NativeV3Matrix, encode_native_v3
 from rotquant.quantize import QuantConfig, Quantizer
@@ -89,7 +89,16 @@ class Converter:
 
     def prepare_tensors(self):
         for name, loader in self.index_tensors().items():
-            self.gguf_writer.add_tensor(name, loader().numpy())
+            for target, value in self.modify_tensors(loader(), name, None):
+                self.gguf_writer.add_tensor(target, value.numpy())
+
+    def modify_tensors(self, value, name, bid):
+        # The pinned upstream converter computes these before choosing F32 storage.
+        if name.endswith(".A_log"):
+            value = -value.exp()
+        elif name.endswith("norm.weight") and not name.endswith("linear_attn.norm.weight"):
+            value = value + 1
+        yield name, value
 
     def map_tensor_name(self, name):
         return name.replace("model.layers.0.mlp.down_proj", "blk.0.ffn_down")
@@ -113,6 +122,36 @@ def test_export_preserves_payload_and_has_one_shared_vocabulary(retained):
     assert [m["vocabulary"] for m in audit["matrices"]] == [False, True]
     assert audit["matrices"][0]["group_size"] == original.layout.group_size
     assert np.all(tensors["token_embd.rqsign"] == -1)
+
+
+def test_retained_export_transforms_dense_parameters_at_hf_precision(retained):
+    path, manifest, _, _ = retained
+    norm = torch.tensor([.1, -.1], dtype=torch.float16)
+    decay = torch.tensor([.7, -.7], dtype=torch.float16)
+    values = {
+        "model.language_model.norm.weight": norm,
+        "model.language_model.layers.0.linear_attn.A_log": decay,
+        "model.language_model.layers.0.linear_attn.norm.weight": norm,
+        "model.language_model.layers.0.linear_attn.in_proj_a.weight": norm,
+    }
+    state = load_file(path / manifest["model_state"])
+    state.update({key: value.clone() for key, value in values.items()})
+    save_file(state, path / manifest["model_state"])
+    cls = make_converter(Converter, SimpleNamespace(), path, manifest, {})
+    converter = cls()
+    converter.hparams = {"tie_word_embeddings": True, "num_hidden_layers": 1}
+    converter.gguf_writer = Writer()
+    converter.prepare_tensors()
+    tensors = converter.gguf_writer.tensors
+    expected_norm, expected_decay = 1 + norm.float(), -decay.float().exp()
+    assert not torch.equal(expected_norm, (1 + norm).float())
+    assert not torch.equal(expected_decay, (-decay.exp()).float())
+    for name, expected in zip(list(values)[:2], (expected_norm, expected_decay)):
+        assert tensors[name].dtype == np.float32
+        np.testing.assert_array_equal(tensors[name], expected.numpy())
+    for name in list(values)[2:]:
+        assert tensors[name].dtype == np.float16
+        np.testing.assert_array_equal(tensors[name], values[name].numpy())
 
 
 @pytest.mark.parametrize("change", ["bias", "lora", "rotation", "activation", "dtype", "vocabulary"])
