@@ -56,6 +56,13 @@ def test_tiny_qwen_research_arm_recovers_exports_and_reloads(tmp_path, monkeypat
     torch.testing.assert_close(actual, expected[0], rtol=0, atol=0)
     assert report["artifact_bytes"] == sum(p.stat().st_size for p in path.rglob("*") if p.is_file())
     assert report["metrics"]["recovery"]["steps"] == 2
+    numerics = report["metrics"]["recovery"]["numerics"]
+    assert numerics["policy"] == "source_forward_fp32_l2_backward_v1"
+    assert numerics["patched_fallbacks"]
+    for module in source.modules():
+        for attribute in ("chunk_gated_delta_rule", "recurrent_gated_delta_rule"):
+            function = getattr(module, attribute, None)
+            assert not hasattr(function, "_rotquant_numerics_token")
     layers = [m for m in restored.modules() if isinstance(m, QuantLinear)]
     assert layers and all(m.qweight.packed.bits == 4 and m.qweight.group_size == 32 for m in layers)
     assert restored.get_input_embeddings().owner.config.bits == 6

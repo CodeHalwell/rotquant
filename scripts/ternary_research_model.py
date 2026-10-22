@@ -74,9 +74,7 @@ def recover(model, config, calls, directory):
     if device.type == "cuda":
         torch.cuda.reset_peak_memory_stats(device)
     started = time.monotonic()
-    with stable_qwen_fallbacks(model) as numerics:
-        stats = apply_recovery(model, config, calls, directory)
-        stats["numerics"] = numerics
+    stats = apply_recovery(model, config, calls, directory)
     settings = config["recovery"]
     train = calls[:settings["distill_train_batches"]]
     stats.update(wall_seconds_this_attempt=time.monotonic() - started,

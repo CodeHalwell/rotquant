@@ -1080,6 +1080,17 @@ def distill_packed_model(model: nn.Module, calls: Sequence[TeacherCall], device,
                          compute_dtype: torch.dtype,
                          config: BlockRotationTrainConfig) -> dict[str, Any]:
     """Fine-tune deployed parameters and select on disjoint teacher calls."""
+    from .ternary_numerics import stable_qwen_fallbacks
+
+    with stable_qwen_fallbacks(model) as numerics:
+        stats = _distill_packed_model(model, calls, device, compute_dtype, config)
+        stats["numerics"] = numerics
+        return stats
+
+
+def _distill_packed_model(model: nn.Module, calls: Sequence[TeacherCall], device,
+                          compute_dtype: torch.dtype,
+                          config: BlockRotationTrainConfig) -> dict[str, Any]:
     required = (config.distill_train_batches
                 + config.distill_validation_batches
                 + config.distill_selection_batches)
