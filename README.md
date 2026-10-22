@@ -222,13 +222,20 @@ Run commands inside the managed venv with `uv run <cmd>`, or activate it first:
 source .venv/bin/activate
 ```
 
-> **Torch wheel:** `uv sync` installs whatever `uv.lock` pins from PyPI. On
-> Linux that is currently the CUDA build (`torch 2.12.0+cu130`, roughly 5 GB
-> with its NVIDIA libraries), which runs on CPU when no GPU is present; on
-> macOS it is the CPU/MPS build. For a smaller CPU-only Linux environment, or a
+> **Torch wheel:** `uv sync` installs the build pinned in `uv.lock`: PyTorch
+> 2.12 on Python 3.10–3.14 and 2.14 on Python 3.15. The Python 3.15 wheels come
+> from the [official PyTorch indexes](https://pytorch.org/blog/pytorch-2-14-release-blog/)
+> configured in `pyproject.toml`. Linux uses the CUDA 13.0 build, which also
+> runs on CPU when no GPU is present; macOS uses the CPU/MPS build. For a
+> smaller CPU-only Linux environment, or a
 > different CUDA version, follow the [PyTorch install selector](https://pytorch.org/get-started/locally/)
 > and either use `uv pip install` with the appropriate `--extra-index-url`, or add a
 > `[tool.uv.sources]` override in `pyproject.toml` pointing at the wheel index.
+> With pip on Python 3.15, install the matching PyTorch build from that index
+> first, then install RotQuant.
+
+On Python 3.15, the eval extra builds SentencePiece from source and needs
+CMake and a C++17 compiler.
 
 The **core foundation + correctness tests run on CPU with just `torch`, `numpy`,
 `scipy`** — no GPU, model download, or CUDA kernel needed.
@@ -342,7 +349,7 @@ pytest tests/ -q
 ```
 
 CI runs the full suite (including the cross-language native conformance
-tests) on Python 3.10/3.11/3.12/3.13 plus ruff lint on every push to `main`
+tests) on Python 3.10/3.11/3.12/3.13/3.14/3.15 plus ruff lint on every push to `main`
 and every pull request; the native workflow additionally builds with ASan/UBSan and checks
 that the pinned llama.cpp patch still applies.
 

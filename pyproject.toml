@@ -21,6 +21,8 @@ classifiers = [
     "Programming Language :: Python :: 3.11",
     "Programming Language :: Python :: 3.12",
     "Programming Language :: Python :: 3.13",
+    "Programming Language :: Python :: 3.14",
+    "Programming Language :: Python :: 3.15",
     "Programming Language :: C++",
     "Topic :: Scientific/Engineering :: Artificial Intelligence",
     "Operating System :: OS Independent",
@@ -28,7 +30,8 @@ classifiers = [
 dependencies = [
     # Upper bound: a torch major bump has never been non-breaking for
     # quantization/device code; raise deliberately, with the suite green.
-    "torch>=2.4,<3",
+    "torch>=2.4,<3; python_version < '3.15'",
+    "torch>=2.14,<3; python_version >= '3.15'",
     "numpy",
     "scipy>=1.9",  # bounded MILP repair for two-sided exact-byte allocation
     "pyyaml",  # scripts/run_experiment.py reads the experiment YAMLs
@@ -86,6 +89,24 @@ version = { attr = "rotquant.__version__" }
 
 [tool.setuptools.package-data]
 rotquant = ["py.typed"]
+
+# Python 3.15 wheels are published on the PyTorch indexes, not PyPI.
+# Match the existing platform defaults: CUDA on Linux, CPU/MPS elsewhere.
+[tool.uv.sources]
+torch = [
+    { index = "pytorch-cu130", marker = "python_version >= '3.15' and sys_platform == 'linux'" },
+    { index = "pytorch-cpu", marker = "python_version >= '3.15' and sys_platform != 'linux'" },
+]
+
+[[tool.uv.index]]
+name = "pytorch-cu130"
+url = "https://download.pytorch.org/whl/cu130"
+explicit = true
+
+[[tool.uv.index]]
+name = "pytorch-cpu"
+url = "https://download.pytorch.org/whl/cpu"
+explicit = true
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
