@@ -56,6 +56,38 @@ def check_decode_tails(runtime, backend, generator):
     return results
 
 
+def check_weight_groups(runtime, backend, generator):
+    """W4 scale lookup across groups, affine scale blocks and row/column maps."""
+    from scripts.native_performance_study import kernel_environment
+    results = []
+    for group_size in (32, 64, 128):
+        for width in (256, 512):
+            q = Quantizer(QuantConfig(bits=4, group_size=group_size, scale="rms", scale_bits=8,
+                                     scale_quant_group_size=256)).quantize_weight(
+                torch.randn(137, width, generator=generator) * 0.02)
+            native = encode_native_v3(q)
+            rotation = RandomizedHadamard(width, block=128, seed=2701)
+            signs = rotation.signs.numpy().astype(np.int8)
+            weights = torch.from_numpy(decode_native_v3_rows(native)).half()
+            rows = np.random.default_rng(13).permutation(137).astype(np.int32)
+            columns = np.random.default_rng(17).permutation(width).astype(np.int32)
+            for tokens in (1, 7, 33):
+                x = torch.randn(tokens, width, generator=generator).half()
+                expected = F.linear(rotation.rotate_activation(x[:, columns]), weights[rows]).float().numpy()
+                actual = runtime.operator(backend, native, signs, x.float().numpy(), rows=rows, columns=columns)
+                with kernel_environment():
+                    reference = runtime.operator(backend, native, signs, x.float().numpy(), rows=rows, columns=columns)
+                np.testing.assert_array_equal(actual, reference)
+                np.testing.assert_allclose(actual, expected, rtol=0.002, atol=0.001)
+                result = {"bits": 4, "scale_bits": 8, "group_size": group_size,
+                          "width": width, "rows": 137, "tokens": tokens, "permuted": True,
+                          "exact_reference": True, "max_abs": float(np.max(np.abs(actual - expected))),
+                          "passed": True}
+                print(json.dumps(result), flush=True)
+                results.append(result)
+    return results
+
+
 def check(library, backend):
     runtime = NativeTests(library)
     dispatch = None
@@ -106,6 +138,7 @@ def check(library, backend):
                           "max_abs": float(np.max(np.abs(actual - expected))), "passed": True}
                 print(json.dumps(report), flush=True)
                 reports.append(report)
+    weight_groups = check_weight_groups(runtime, backend, generator)
     extra = check_decode_tails(runtime, backend, generator) if os.environ.get("ROTQUANT_RQ3_KERNEL") in DECODE_KERNELS else []
     fallbacks = []
     if os.environ.get("ROTQUANT_RQ3_KERNEL") in W5_TILES:
@@ -136,6 +169,7 @@ def check(library, backend):
     return {"protocol": "rq3-packed-operator-check-v1", "backend": backend,
             "library_sha256": digest(library), "runtime_files": runtime_identity(library),
             "settings": execution_settings(), "cases": reports, "decode_cases": extra,
+            "weight_group_cases": weight_groups,
             "prefill_format_cases": fallbacks,
             "native_diagnostics": diagnostics, "passed": True,
             "dispatch_probe": dispatch,

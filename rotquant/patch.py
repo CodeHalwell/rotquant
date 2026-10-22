@@ -168,8 +168,11 @@ def unique_projection_targets(targets, cfg, hessians):
         if quant_config_for(cfg, previous[0]) != quant_config_for(cfg, name):
             raise ValueError(f"shared projection aliases require one quantization config: {name}")
     for name, _ in unique.values():
-        if quant_config_for(cfg, name).error_comp == "gptq" and hessians.get(name) is None:
-            raise ValueError(f"GPTQ requires a calibrated Hessian for {name}")
+        quant = quant_config_for(cfg, name)
+        needs_hessian = (quant.error_comp == "gptq" or quant.scale_refit != "none"
+                         or quant.code_refit_passes > 0)
+        if needs_hessian and hessians.get(name) is None:
+            raise ValueError(f"GPTQ/activation-aware refitting requires a calibrated Hessian for {name}")
     return list(unique.values())
 
 

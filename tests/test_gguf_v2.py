@@ -13,15 +13,16 @@ from rotquant.native_v3 import NativeV3Matrix, decode_native_v3_rows, encode_nat
 from rotquant.quantize import QuantConfig, Quantizer
 
 
-def matrix(bits=5, rows=7, cols=256, scale_bits=8):
-    q = Quantizer(QuantConfig(bits=bits, group_size=128, scale="rms", scale_bits=scale_bits,
+def matrix(bits=5, rows=7, cols=256, scale_bits=8, group_size=128):
+    q = Quantizer(QuantConfig(bits=bits, group_size=group_size, scale="rms", scale_bits=scale_bits,
                              scale_quant_group_size=4)).quantize_weight(
         torch.randn(rows, cols, generator=torch.Generator().manual_seed(10)))
     return encode_native_v3(q)
 
 
-def test_projection_permutations_do_not_reencode_scale8_blocks():
-    original = matrix()
+@pytest.mark.parametrize("bits,group_size", [(5, 128), (4, 128), (4, 64), (4, 32)])
+def test_projection_permutations_do_not_reencode_scale8_blocks(bits, group_size):
+    original = matrix(bits=bits, group_size=group_size)
     rows = np.arange(6, -1, -1, dtype=np.int32)
     columns = np.arange(255, -1, -1, dtype=np.int32)
     projection = NativeProjection(original, np.ones(256, dtype=np.int8), rows, columns)
@@ -29,6 +30,12 @@ def test_projection_permutations_do_not_reencode_scale8_blocks():
     loaded = NativeV3Matrix.from_bytes(tensors["blk.0.attn_output.rqv3"].tobytes())
     assert loaded.to_bytes() == original.to_bytes()
     np.testing.assert_array_equal(tensors["blk.0.attn_output.rqcol"], columns)
+
+
+def test_vocabulary_still_requires_group128():
+    with pytest.raises(ValueError, match="vocabulary"):
+        NativeProjection(matrix(bits=6, scale_bits=16, group_size=32),
+                         np.ones(256, dtype=np.int8), vocabulary=True)
 
 
 @pytest.mark.parametrize("bits", [6, 8])

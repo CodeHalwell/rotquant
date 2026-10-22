@@ -27,7 +27,6 @@ from ._internal import (
     expand_scales,
     generate_sketch_matrix,
     rotate_hessian,
-    storage_scales,
 )
 from .codebooks import VectorCodebook
 from .pack import packed_bytes, unpack_indices
@@ -160,11 +159,7 @@ class QuantLinear(nn.Module):
             factor = self._log_scale_multiplier.exp().clamp(
                 self._scale_multiplier_min, self._scale_multiplier_max)
             scales = self._scale_training_base * factor
-            stored = storage_scales(
-                scales,
-                self.qweight.scale_bits_main,
-                self.qweight.scale_quant_group_size,
-            )
+            stored, *_ = self.encode_finetuning_scales(scales)
             # Exact storage-rounded forward values with an identity STE.
             scales = scales + (stored.to(scales.dtype) - scales).detach()
             scale_group_size = (
@@ -212,22 +207,30 @@ class QuantLinear(nn.Module):
         return self._log_scale_multiplier.exp().clamp(
             self._scale_multiplier_min, self._scale_multiplier_max)
 
+    def encode_finetuning_scales(self, scales: torch.Tensor):
+        qw = self.qweight
+        if qw.scale_bits_main != 8:
+            return encoded_storage_scales(scales, qw.scale_bits_main,
+                                           qw.scale_quant_group_size)
+        block_ids = (torch.arange(scales.numel(), device=scales.device)
+                     // qw.scale_quant_group_size).reshape(scales.shape)
+        offsets = qw.scale_offsets.float()[block_ids]
+        steps = qw.scale_steps.float()[block_ids]
+        divisor = torch.where(steps > 0, steps, torch.ones_like(steps))
+        codes = torch.round((scales - offsets) / divisor).clamp(0, 255)
+        codes = torch.where(steps > 0, codes, torch.zeros_like(codes)).to(torch.uint8)
+        return offsets + codes.float() * steps, codes, qw.scale_offsets, qw.scale_steps
+
     @torch.no_grad()
     def commit_scale_finetuning(self) -> None:
         """Store trained scales at their claimed precision and drop train state."""
         if self._log_scale_multiplier is None:
             return
         scales = self._scale_training_base * self.scale_finetuning_multiplier()
-        # One encode: the training forward used ``storage_scales(scales)``,
-        # which is exactly the decoded value of this triple.
         (_decoded,
          self.qweight.scales,
          self.qweight.scale_offsets,
-         self.qweight.scale_steps) = encoded_storage_scales(
-            scales,
-            self.qweight.scale_bits_main,
-            self.qweight.scale_quant_group_size,
-        )
+         self.qweight.scale_steps) = self.encode_finetuning_scales(scales)
         self._log_scale_multiplier = None
         self._scale_training_base = None
         self._scale_training_codes = None

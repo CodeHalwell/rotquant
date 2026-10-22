@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import copy
 import fnmatch
+import math
 import os
 from collections.abc import Iterable, Sequence
 from dataclasses import dataclass, replace
@@ -50,6 +51,10 @@ class TeacherCall:
     logits: torch.Tensor | None = None
     topk_indices: torch.Tensor | None = None
     topk_logits: torch.Tensor | None = None
+    topk_log_probs: torch.Tensor | None = None
+    tail_log_prob: torch.Tensor | None = None
+    temperature: float | None = None
+    vocabulary_size: int | None = None
 
 
 @dataclass
@@ -389,44 +394,60 @@ def collect_block_calls(model: nn.Module, dataloader: Iterable, device,
     return calls
 
 
+def teacher_tail_log_probability(log_probs: torch.Tensor,
+                                 indices: torch.Tensor) -> torch.Tensor:
+    if indices.shape[-1] == log_probs.shape[-1]:
+        return log_probs.new_full(log_probs.shape[:-1], -torch.inf)
+    return torch.logsumexp(log_probs.scatter(-1, indices, -torch.inf), dim=-1)
+
+
+def capture_topk_teacher(inputs: dict, logits: torch.Tensor, topk: int,
+                         temperature: float) -> TeacherCall:
+    log_probs = F.log_softmax(logits.float() / temperature, dim=-1)
+    selected, indices = log_probs.topk(min(topk, logits.shape[-1]), dim=-1)
+    tail = teacher_tail_log_probability(log_probs, indices)
+    return TeacherCall(
+        inputs=inputs, topk_indices=indices.detach().to("cpu", torch.int32),
+        topk_log_probs=selected.detach().cpu(), tail_log_prob=tail.detach().cpu(),
+        temperature=float(temperature), vocabulary_size=logits.shape[-1],
+    )
+
+
+def capture_teacher_batch(model: nn.Module, batch: dict, device,
+                           storage_dtype: torch.dtype, topk: int,
+                           temperature: float) -> TeacherCall:
+    if not isinstance(batch, dict):
+        raise TypeError("model-level distillation requires dict batches")
+    inputs = {key: _tree_copy_cpu(value, storage_dtype) for key, value in batch.items()}
+    work = {key: (value.to(device) if torch.is_tensor(value) else value)
+            for key, value in batch.items()}
+    work.setdefault("use_cache", False)
+    output = model(**work)
+    logits = output.logits if hasattr(output, "logits") else output[0]
+    if topk:
+        return capture_topk_teacher(inputs, logits, topk, temperature)
+    return TeacherCall(inputs=inputs, logits=_tree_copy_cpu(logits, storage_dtype))
+
+
 @torch.no_grad()
 def collect_teacher_calls(model: nn.Module, dataloader: Iterable, device,
                           max_batches: int,
                           storage_dtype: torch.dtype = torch.float16,
                           topk: int = 0,
+                          temperature: float = 1.0,
                           ) -> list[TeacherCall]:
-    """Capture dense or memory-bounded top-k teacher targets."""
+    """Capture dense logits or FP32 top-k and tail probabilities at one temperature."""
     if topk < 0:
         raise ValueError("teacher topk must be nonnegative")
+    if not math.isfinite(temperature) or temperature <= 0:
+        raise ValueError("teacher temperature must be finite and positive")
     calls = []
     model.eval()
     for index, batch in enumerate(dataloader):
         if index >= max_batches:
             break
-        if not isinstance(batch, dict):
-            raise TypeError("model-level distillation requires dict batches")
-        inputs = {key: _tree_copy_cpu(value, storage_dtype)
-                  for key, value in batch.items()}
-        work = {key: (value.to(device) if torch.is_tensor(value) else value)
-                for key, value in batch.items()}
-        work.setdefault("use_cache", False)
-        output = model(**work)
-        logits = output.logits if hasattr(output, "logits") else output[0]
-        if topk:
-            width = min(topk, logits.shape[-1])
-            topk_logits, topk_indices = torch.topk(logits, width, dim=-1)
-            calls.append(TeacherCall(
-                inputs=inputs,
-                topk_indices=topk_indices.detach().to(
-                    device="cpu", dtype=torch.int32
-                ),
-                topk_logits=_tree_copy_cpu(topk_logits, storage_dtype),
-            ))
-        else:
-            calls.append(TeacherCall(
-                inputs=inputs,
-                logits=_tree_copy_cpu(logits, storage_dtype),
-            ))
+        calls.append(capture_teacher_batch(
+            model, batch, device, storage_dtype, topk, temperature))
     if len(calls) < max_batches:
         raise RuntimeError(
             f"captured {len(calls)} teacher calls, expected {max_batches}")
@@ -855,6 +876,57 @@ def _patch_source_block(source: nn.Module, global_name: str,
     return patched
 
 
+def validate_teacher_probabilities(call: TeacherCall) -> None:
+    indices, selected, tail = call.topk_indices, call.topk_log_probs, call.tail_log_prob
+    if indices.shape != selected.shape or selected.shape[:-1] != tail.shape:
+        raise ValueError("top-k teacher probability shapes disagree")
+    if indices.dtype not in (torch.int32, torch.int64):
+        raise ValueError("top-k teacher indices must be integers")
+    if (indices.shape[-1] < 1 or indices.shape[-1] > call.vocabulary_size
+            or (indices < 0).any() or (indices >= call.vocabulary_size).any()):
+        raise ValueError("top-k teacher indices do not match the vocabulary")
+    if (indices.sort(dim=-1).values.diff(dim=-1) == 0).any():
+        raise ValueError("top-k teacher indices must be unique")
+    if indices.shape[-1] == call.vocabulary_size and not torch.isneginf(tail).all():
+        raise ValueError("a full-vocabulary teacher target cannot have tail mass")
+    buckets = torch.cat((selected, tail.unsqueeze(-1)), dim=-1).float()
+    if not torch.allclose(torch.logsumexp(buckets, dim=-1),
+                          torch.zeros_like(tail, dtype=torch.float32), atol=2e-5):
+        raise ValueError("top-k teacher probabilities must preserve total mass")
+
+
+def validate_teacher_target(call: TeacherCall, temperature: float,
+                            vocabulary_size: int | None = None) -> None:
+    if call.logits is not None:
+        return
+    required = (call.topk_indices, call.topk_log_probs, call.tail_log_prob,
+                call.temperature, call.vocabulary_size)
+    if any(value is None for value in required):
+        raise ValueError("legacy top-k teacher targets lack full probability mass; recapture them")
+    if call.temperature != temperature:
+        raise ValueError("top-k teacher temperature changed; recapture teacher targets")
+    if vocabulary_size is not None and call.vocabulary_size != vocabulary_size:
+        raise ValueError("top-k teacher and student vocabulary sizes differ")
+    validate_teacher_probabilities(call)
+
+
+def topk_teacher_kl(student_log_prob: torch.Tensor, call: TeacherCall,
+                    temperature: float) -> torch.Tensor:
+    validate_teacher_target(call, temperature, student_log_prob.shape[-1])
+    indices = call.topk_indices[:, :-1].to(student_log_prob.device, torch.int64)
+    teacher = call.topk_log_probs[:, :-1].to(student_log_prob.device, torch.float32)
+    student = torch.gather(student_log_prob, -1, indices)
+    if indices.shape[-1] < student_log_prob.shape[-1]:
+        tail = call.tail_log_prob[:, :-1].to(student_log_prob.device, torch.float32)
+        teacher = torch.cat((teacher, tail.unsqueeze(-1)), dim=-1)
+        student_tail = teacher_tail_log_probability(student_log_prob, indices)
+        student = torch.cat((student, student_tail.unsqueeze(-1)), dim=-1)
+    probability = teacher.exp()
+    positive = probability > 0
+    log_ratio = torch.where(positive, teacher, 0) - torch.where(positive, student, 0)
+    return (probability * log_ratio).sum(dim=-1)
+
+
 def _teacher_call_loss(model: nn.Module, call: TeacherCall, device,
                        compute_dtype: torch.dtype,
                        config: BlockRotationTrainConfig) -> torch.Tensor:
@@ -885,26 +957,8 @@ def _teacher_call_loss(model: nn.Module, call: TeacherCall, device,
             token_kl = F.kl_div(
                 student_log_prob, teacher_prob, reduction="none"
             ).sum(dim=-1)
-        elif call.topk_indices is not None and call.topk_logits is not None:
-            indices = call.topk_indices.to(
-                device=device, dtype=torch.int64
-            )[:, :-1]
-            teacher_topk = call.topk_logits.to(
-                device=device, dtype=torch.float32
-            )[:, :-1]
-            teacher_prob = F.softmax(teacher_topk / temperature, dim=-1)
-            teacher_log_prob = F.log_softmax(
-                teacher_topk / temperature, dim=-1
-            )
-            selected_student = torch.gather(student_log_prob, -1, indices)
-            # KL against the teacher distribution renormalized over its top-k
-            # support. Student probabilities remain globally normalized, so
-            # mass assigned outside that support is still penalized.
-            token_kl = (
-                teacher_prob * (teacher_log_prob - selected_student)
-            ).sum(dim=-1)
         else:
-            raise ValueError("teacher call contains no dense or top-k targets")
+            token_kl = topk_teacher_kl(student_log_prob, call, temperature)
         kl = (token_kl * token_mask).sum() / denominator
         total = total + config.distill_kl_weight * kl * temperature ** 2
     if config.distill_ce_weight:
@@ -922,6 +976,8 @@ def _distill_eval_loss(model: nn.Module, calls: Sequence[TeacherCall], device,
                        config: BlockRotationTrainConfig) -> float:
     values = [float(_teacher_call_loss(
         model, call, device, compute_dtype, config).item()) for call in calls]
+    if any(not math.isfinite(value) for value in values):
+        raise FloatingPointError("recovery produced a non-finite evaluation loss")
     return sum(values) / max(len(values), 1)
 
 
@@ -981,22 +1037,60 @@ def _save_distill_checkpoint(path: str, state: dict[str, Any]) -> None:
     os.replace(temporary, destination)
 
 
-def _load_distill_checkpoint(path: str) -> dict[str, Any]:
+def distillation_loss_contract(config: BlockRotationTrainConfig) -> dict[str, Any]:
+    return {
+        "target": "full-mass-topk-tail-v1",
+        "temperature": config.distill_temperature,
+        "kl_weight": config.distill_kl_weight,
+        "ce_weight": config.distill_ce_weight,
+        "teacher_topk": config.distill_teacher_topk,
+    }
+
+
+def _load_distill_checkpoint(path: str, loss_contract: dict[str, Any]) -> dict[str, Any]:
     state = torch.load(path, map_location="cpu", weights_only=True)
-    if not isinstance(state, dict) or state.get("format") != "rotquant-distill-v1":
-        raise ValueError("invalid RotQuant distillation checkpoint")
+    if not isinstance(state, dict) or state.get("format") != "rotquant-distill-v2":
+        raise ValueError("legacy or invalid distillation checkpoint; start a fresh recovery run")
+    if state.get("loss_contract") != loss_contract:
+        raise ValueError("distillation checkpoint loss changed; start a fresh recovery run")
     return state
+
+
+def validate_recovery_inputs(model: nn.Module, calls: Sequence[TeacherCall],
+                             config: BlockRotationTrainConfig) -> None:
+    if config.distill_kl_weight:
+        for call in calls:
+            validate_teacher_target(call, config.distill_temperature)
+    if not config.distill_code_refresh_interval:
+        return
+    for module in model.modules():
+        if (isinstance(module, QuantLinear) and module._quant_config is not None
+                and module._quant_config.error_comp == "gptq"):
+            raise ValueError(
+                "GPTQ recovery code refresh requires calibrated Hessians and packed-state "
+                "rollback; use fixed codes with distill_code_refresh_interval=0")
+
+
+def recovery_patience_exhausted(stale_steps: int, config: BlockRotationTrainConfig) -> bool:
+    patience = config.distill_early_stopping_patience
+    return patience > 0 and stale_steps >= patience
 
 
 def distill_packed_model(model: nn.Module, calls: Sequence[TeacherCall], device,
                          compute_dtype: torch.dtype,
                          config: BlockRotationTrainConfig) -> dict[str, Any]:
-    """Fine-tune deployed rotations/scales with fixed 3-bit code indices."""
+    """Fine-tune deployed parameters and select on disjoint teacher calls."""
     required = (config.distill_train_batches
                 + config.distill_validation_batches
                 + config.distill_selection_batches)
     if len(calls) < required:
         raise ValueError(f"distillation requires {required} teacher calls")
+    validate_recovery_inputs(model, calls[:required], config)
+    checkpoint_path = config.distill_checkpoint_path
+    checkpoint = None
+    if config.distill_resume and checkpoint_path and Path(checkpoint_path).exists():
+        checkpoint = _load_distill_checkpoint(
+            checkpoint_path, distillation_loss_contract(config))
     train_end = config.distill_train_batches
     validation_end = train_end + config.distill_validation_batches
     train_calls = calls[:train_end]
@@ -1083,9 +1177,7 @@ def distill_packed_model(model: nn.Module, calls: Sequence[TeacherCall], device,
     steps_run = 0
     resumed = False
     start_step = 1
-    checkpoint_path = config.distill_checkpoint_path
-    if config.distill_resume and checkpoint_path and Path(checkpoint_path).exists():
-        checkpoint = _load_distill_checkpoint(checkpoint_path)
+    if checkpoint is not None:
         if int(checkpoint.get("parameter_count", -1)) != len(parameters):
             raise ValueError("distillation checkpoint parameter layout changed")
         _restore_parameter_snapshot(parameters, checkpoint["parameters"])
@@ -1097,6 +1189,8 @@ def distill_packed_model(model: nn.Module, calls: Sequence[TeacherCall], device,
         stale_steps = int(checkpoint["stale_steps"])
         steps_run = int(checkpoint["steps_run"])
         start_step = steps_run + 1
+        if recovery_patience_exhausted(stale_steps, config):
+            start_step = config.distill_steps + 1
         resumed = True
         if config.distill_code_refresh_interval:
             for module in quant_linears:
@@ -1111,6 +1205,8 @@ def distill_packed_model(model: nn.Module, calls: Sequence[TeacherCall], device,
         for call in step_calls:
             loss = _teacher_call_loss(
                 model, call, device, compute_dtype, config)
+            if not torch.isfinite(loss):
+                raise FloatingPointError("recovery produced a non-finite training loss")
             train_value += float(loss.detach().item()) / len(step_calls)
             (loss / len(step_calls)).backward()
         if rotation_params and config.distill_angle_l2:
@@ -1120,6 +1216,9 @@ def distill_packed_model(model: nn.Module, calls: Sequence[TeacherCall], device,
                     rotation_params, angle_reference)
             ]).mean()
             (config.distill_angle_l2 * angle_loss).backward()
+        if any(parameter.grad is not None and not torch.isfinite(parameter.grad).all()
+               for parameter in parameters):
+            raise FloatingPointError("recovery produced non-finite gradients; no optimiser step applied")
         if config.distill_max_grad_norm:
             torch.nn.utils.clip_grad_norm_(
                 parameters, config.distill_max_grad_norm)
@@ -1151,7 +1250,8 @@ def distill_packed_model(model: nn.Module, calls: Sequence[TeacherCall], device,
         if (checkpoint_path and config.distill_checkpoint_interval
                 and step % config.distill_checkpoint_interval == 0):
             _save_distill_checkpoint(checkpoint_path, {
-                "format": "rotquant-distill-v1",
+                "format": "rotquant-distill-v2",
+                "loss_contract": distillation_loss_contract(config),
                 "parameter_count": len(parameters),
                 "parameters": _parameter_snapshot(parameters),
                 "optimizer": optimizer.state_dict(),
@@ -1162,8 +1262,7 @@ def distill_packed_model(model: nn.Module, calls: Sequence[TeacherCall], device,
                 "stale_steps": stale_steps,
                 "steps_run": steps_run,
             })
-        if (validated and config.distill_early_stopping_patience
-                and stale_steps >= config.distill_early_stopping_patience):
+        if validated and recovery_patience_exhausted(stale_steps, config):
             break
 
     _restore_parameter_snapshot(parameters, best_snapshot)
@@ -1230,6 +1329,10 @@ def distill_packed_model(model: nn.Module, calls: Sequence[TeacherCall], device,
         ),
         "validation_interval": config.distill_validation_interval,
         "teacher_topk": config.distill_teacher_topk,
+        "loss_contract": distillation_loss_contract(config),
+        "selection_kl_objective": (
+            "coarsened_topk_tail_kl" if any(
+                call.logits is None for call in selection_calls) else "dense_teacher_kl"),
         "accepted": accepted,
         "lora_rank": config.distill_lora_rank,
         "lora_init": config.distill_lora_init,

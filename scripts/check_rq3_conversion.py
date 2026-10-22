@@ -15,6 +15,7 @@ import torch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from rotquant.checkpoint import save_packed_checkpoint
+from rotquant.gguf_v2 import BACKBONE_FORMATS
 from rotquant.patch import PatchConfig, patch_model
 from rotquant.quantize import QuantConfig
 from rotquant.vocabulary import VocabularyConfig, install_packed_vocabulary, quantize_vocabulary
@@ -36,11 +37,12 @@ def fake_vocab(converter):
     writer.add_add_bos_token(False)
 
 
-def check(library, llama_dir, output, backend):
+def check(library, llama_dir, output, backend, *, backbone_bits=5, group_size=128):
     from transformers import Qwen3_5ForCausalLM, Qwen3_5TextConfig
 
-    if backend == "CPU":
-        raise ValueError("choose a GPU; CPU and HF are always included as references")
+    scale_bits = 16 if backbone_bits == 2 else 8
+    if (backbone_bits, group_size, scale_bits) not in BACKBONE_FORMATS:
+        raise ValueError("unsupported native backbone format")
     output.mkdir(parents=True, exist_ok=False)
     sys.path.insert(0, str(llama_dir.resolve()))
     sys.path.insert(0, str(llama_dir.resolve() / "gguf-py"))
@@ -58,8 +60,14 @@ def check(library, llama_dir, output, backend):
     model = Qwen3_5ForCausalLM(config).half().eval()
     owner = quantize_vocabulary(model.get_input_embeddings().weight.detach(), VocabularyConfig(bits=6, chunk_rows=128))
     owner.execution_dtype, owner.projection_mode = torch.float16, "dense_equivalent"
-    patch_model(model, PatchConfig(quant=QuantConfig(bits=5, group_size=128, scale_bits=8, scale="rms"),
-                                  exclude=["lm_head", "in_proj_a", "in_proj_b"]))
+    if backbone_bits == 2:
+        from rotquant.ternary_train import TernaryTrainConfig, train_and_patch_ternary
+        train_and_patch_ternary(model, [{"input_ids": torch.arange(3, 20)[None]}],
+                               [{"input_ids": torch.arange(23, 40)[None]}],
+                               TernaryTrainConfig(steps=0, train_batches=1, validation_batches=1), device="cpu")
+    else:
+        patch_model(model, PatchConfig(quant=QuantConfig(bits=backbone_bits, group_size=group_size, scale_bits=8, scale="rms"),
+                                      exclude=["lm_head", "in_proj_a", "in_proj_b"]))
     install_packed_vocabulary(model, owner)
     save_packed_checkpoint(model, output / "checkpoint")
     original_vocab = Qwen3_5TextModel.set_vocab
@@ -72,7 +80,7 @@ def check(library, llama_dir, output, backend):
     rows = []
     original_gate = os.environ.get("ROTQUANT_REQUIRE_GPU")
     try:
-        for device in ("CPU", backend):
+        for device in (("CPU",) if backend == "CPU" else ("CPU", backend)):
             os.environ["ROTQUANT_REQUIRE_GPU"] = "0" if device == "CPU" else "1"
             with runtime.model(output / "export/model.gguf", device, 256) as native:
                 for length in (4, 17, 64):
@@ -92,6 +100,8 @@ def check(library, llama_dir, output, backend):
         else:
             os.environ["ROTQUANT_REQUIRE_GPU"] = original_gate
     return {"protocol": "rq3-offline-hf-conversion-v1", "seed": 331, "backend": backend,
+            "backbone_bits": backbone_bits, "group_size": group_size, "scale_bits": scale_bits,
+            "vocabulary_bits": 6, "gpu_validated": backend != "CPU" and all(r["passed"] for r in rows),
             "settings": execution_settings(), "runtime_files": runtime_identity(library),
             "export_sha256": digest(output / "export/export.json"), "cases": rows,
             "thresholds": {"max_abs_error": .02, "mean_abs_error": .002, "mean_kl": 1e-5, "top1_agreement": 1.},
@@ -106,12 +116,15 @@ if __name__ == "__main__":
     parser.add_argument("--output-dir", type=Path, required=True)
     parser.add_argument("--report", type=Path, required=True)
     parser.add_argument("--backend", required=True)
+    parser.add_argument("--backbone-bits", type=int, choices=[2, 4, 5, 6], default=5)
+    parser.add_argument("--group-size", type=int, choices=[32, 64, 128], default=128)
     args = parser.parse_args()
     if args.report.exists():
         raise FileExistsError(args.report)
     args.report.parent.mkdir(parents=True, exist_ok=True)
     try:
-        report = check(args.library, args.llama_dir, args.output_dir, args.backend)
+        report = check(args.library, args.llama_dir, args.output_dir, args.backend,
+                       backbone_bits=args.backbone_bits, group_size=args.group_size)
     except BaseException as error:
         args.report.write_text(json.dumps({"passed": False, "error": f"{type(error).__name__}: {error}"}, indent=2) + "\n")
         raise

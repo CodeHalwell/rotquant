@@ -10,6 +10,7 @@ import hashlib
 import json
 import os
 import platform
+import re
 import shutil
 import subprocess
 import sys
@@ -34,6 +35,29 @@ def run(command, *, cwd=None, timeout=None):
 
 def git(source, *args):
     return subprocess.check_output(["git", "-C", str(source), *args], text=True).strip()
+
+
+def root_identity(root=ROOT):
+    """Bind a checkout or an explicitly hashed source ZIP to its build receipt."""
+    root = Path(root).resolve()
+    if (root / ".git").exists():
+        return {"root_revision": git(root, "rev-parse", "HEAD"),
+                "root_dirty": bool(git(root, "status", "--porcelain"))}
+    manifest = root / "SOURCE_BUNDLE.json"
+    bundle = json.loads(manifest.read_text())
+    files = bundle.get("files_sha256")
+    if (bundle.get("protocol") != "rotquant-source-bundle-v1"
+            or not re.fullmatch(r"[0-9a-f]{40}", str(bundle.get("revision", "")))
+            or not isinstance(files, dict) or not files):
+        raise ValueError("invalid source bundle manifest")
+    for name, expected in files.items():
+        path = root / name
+        if (Path(name).is_absolute() or ".." in Path(name).parts or name == "SOURCE_BUNDLE.json"
+                or path.is_symlink() or not path.resolve().is_relative_to(root)
+                or not path.is_file() or digest(path) != expected):
+            raise ValueError(f"source bundle mismatch: {name}")
+    return {"root_revision": bundle["revision"], "root_dirty": True,
+            "source_bundle_sha256": digest(manifest)}
 
 
 def verify_patched_source(source, expected, *, repair_known_loader=False):
@@ -101,6 +125,7 @@ def build(source, directory, backend, jobs, *, repair_known_loader=False):
     source, directory = source.resolve(), directory.resolve()
     if directory == source or source in directory.parents:
         raise ValueError("keep build output outside the source checkout")
+    identity = root_identity(ROOT)
     contract = prepare_source(source, repair_known_loader=repair_known_loader)
     directory.mkdir(parents=True, exist_ok=True)
     link_flags = ["-DCMAKE_SHARED_LINKER_FLAGS=-Wl,--no-undefined"] if platform.system() == "Linux" else []
@@ -122,7 +147,7 @@ def build(source, directory, backend, jobs, *, repair_known_loader=False):
                        *ROOT.joinpath("native").rglob("*.hpp"), *ROOT.joinpath("native").rglob("CMakeLists.txt")])
     receipt = {"protocol": "rq3-native-build-v1", "backend": backend,
         "base_revision": REVISION, "patch_sha256": contract["patch_sha256"],
-        "root_revision": git(ROOT, "rev-parse", "HEAD"), "root_dirty": bool(git(ROOT, "status", "--porcelain")),
+        **identity,
         "external_sources": {str(p.relative_to(ROOT)): digest(p) for p in external if p.is_file()},
         "library": str(libraries[0]), "library_sha256": digest(libraries[0]),
         "compiler": subprocess.check_output(["cmake", "--version"], text=True).splitlines()[0],

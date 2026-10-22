@@ -37,8 +37,9 @@ class NativeTests:
 
     def operator(self, backend, matrix: NativeV3Matrix, signs, inputs, mode=0, rows=None, columns=None, *, benchmark=None):
         matrix.validate()
-        if matrix.layout.group_size != 128 or matrix.layout.in_features % 128:
-            raise ValueError("operator tests require g128/aligned inputs")
+        if (matrix.layout.group_size not in (32, 64, 128) or matrix.layout.in_features % 128
+                or (mode and matrix.layout.group_size != 128)):
+            raise ValueError("operator tests require g32/g64/g128 aligned inputs, vocabulary g128")
         if mode not in (0, 1, 2):
             raise ValueError("invalid operator mode")
         inputs = np.ascontiguousarray(inputs)

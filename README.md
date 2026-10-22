@@ -1,6 +1,21 @@
 # rotquant-eval
 
-**Next Colab run:** [overnight native runtime experiment](notebooks/qwen35_4b_native_overnight_colab.ipynb)
+**Next Colab run:** [ternary QAT comparison](notebooks/qwen35_4b_ternary_research_colab.ipynb)
+against Bonsai2-4B, FP16 and fresh W4/W5/W6 controls. It separates ternary
+initialization, block-wise QAT and fixed-code teacher recovery, then measures
+held-out quality, complete deployed bytes and native speed. Upload the source
+ZIP and run the [ternary runbook](docs/ternary_research_plan.md).
+Focused local tests and tiny CPU inference checks pass; full-model CUDA results
+are pending.
+
+**W4 ablation study:** [W4 research comparison](notebooks/qwen35_4b_w4_research_colab.ipynb)
+against fresh FP16 and the current W5/W6 recipe. It tests activation-aware
+scales, smaller groups, code refinement and corrected scale-only recovery;
+compares held-out quality, complete bytes and native speed; and accepts an
+uploaded source ZIP. See the [research runbook](docs/w4_research_plan.md).
+The new W4 paths pass focused and tiny CPU-model checks; GPU results are pending.
+
+**Previous native-kernel study:** [overnight native runtime experiment](notebooks/qwen35_4b_native_overnight_colab.ipynb)
 on A100 40GB, with an explicit **480-minute active AND wall ceiling**.
 [Backbone1 passed all 29 stages](research/results/native_backbone_2026_09_13/README.md):
 tile8 reached **160.08 prefill / 33.70 decode tok/s** at 128 tokens, versus

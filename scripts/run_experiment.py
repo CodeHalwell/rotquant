@@ -826,6 +826,8 @@ def _prepare_calibration(cfg: dict[str, Any], model, tokenizer, device: str,
                              and rotation_train_cfg.get("objective") == "block")
     needs_hessians = pcfg.enabled and (
         qcfg.error_comp == "gptq"
+        or qcfg.scale_refit != "none"
+        or qcfg.code_refit_passes > 0
         or cfg.get("calibrate", False)
         or rotation_train_cfg.get("objective") == "hessian"
     )
@@ -1109,6 +1111,7 @@ def _prepare_calibration(cfg: dict[str, Any], model, tokenizer, device: str,
                     model, calib_loader[n_block_batches:total_block_batches],
                     device,
                     max_batches=n_distill_batches,
+                    temperature=float(rotation_train_cfg.get("distill_temperature", 2.0)),
                     topk=int(rotation_train_cfg.get(
                         "distill_teacher_topk", 0
                     )))

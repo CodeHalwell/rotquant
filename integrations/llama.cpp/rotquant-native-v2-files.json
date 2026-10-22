@@ -1,11 +1,11 @@
 {
   "base_revision": "17252c769a63c1cb650ce98ae309cf4de0da7778",
-  "patch_sha256": "31e170cb5b5ea2cf5a70fa43199c59ff2f138466fc80e4a658d8f65feac66583",
+  "patch_sha256": "aecff5bb7bd090d3286b5f8a4b8d284dfaab61d1e39d6ca9cee6719731ad84c7",
   "files_sha256": {
     "ggml/src/ggml-backend.cpp": "8197d695b87077912739324f414859f6db7e606ac12798e84924e94844addfd0",
     "ggml/src/ggml-cuda/CMakeLists.txt": "029b62d2189ea25962fdd1a2064aa699c010481081c7d68ec9f3aeaab5198939",
     "ggml/src/ggml-cuda/ggml-cuda.cu": "2d90d7a946f8931d6e2806f2a3180977bccdef553cfe93578599a71dc41c0c73",
-    "ggml/src/ggml-cuda/rq3.cu": "6f0d456e0b1fe5ff3ad6e2ec0c96e961c0dc9dc843cf7e6c3a199974702eb88c",
+    "ggml/src/ggml-cuda/rq3.cu": "1d86a8f7ca50f0ce6022949ec665d5f2fa7c94830d2ad39cbe1d5c0d00b871e5",
     "ggml/src/ggml-metal/CMakeLists.txt": "ef65986ed9f4d318c29ed49ad419066b9f4cf7d977cdbb62c8602ce6d32305b2",
     "ggml/src/ggml-metal/ggml-metal-device.cpp": "bd550f5a0c0ac24f1ad1165bd9665cdee9c3b9466155aa577d4c1bf724c459ef",
     "ggml/src/ggml-metal/ggml-metal-device.h": "7b792f7593738cc6282ee3348ecb26b73143f8400f4a510b458d6e3129352c07",
@@ -14,7 +14,7 @@
     "ggml/src/ggml-metal/ggml-metal-ops.cpp": "675dd8ae7782f1ac0eaa623e01255cc8da49365be562e89971d0bef1d8446c90",
     "ggml/src/ggml-metal/ggml-metal-ops.h": "5177812b085d932c050cece67f8388244a15a29019e270ac0f2383eaa55577cc",
     "ggml/src/ggml-metal/kernels/rotquant.metal": "5ef5d27182ab3cdad464341236e11010a265854c18076ec1efaf99f350d7939e",
-    "ggml/src/ggml-metal/kernels/rq3.metal": "080e3216b31408b10fa4ff12edfa0bec610ec560abb87b6b18775036f0652963",
+    "ggml/src/ggml-metal/kernels/rq3.metal": "c33c83e92aa61d0d1ac8cff0bf22cfe1c8bd7de4c84bd3e090dd706946bab1a6",
     "ggml/src/rotquant-v3.h": "28b349090c04b2422c4791fd92cf3ca74c7d160a426883874d51f3a9f4973795",
     "src/CMakeLists.txt": "bc74933edfa389496ccea0c00f822b1b5e7ece4e3b1f9dbe16d35afcba7ad2cd",
     "src/llama-graph.cpp": "5defcb350af6f0397c7b2090af85d4766622855469b420d9b25773ab2bd8c23b",
@@ -26,10 +26,10 @@
     "src/llama-model.cpp": "768f5cb06bb97d883c8e5e264e7d895648f32ba2103ba4d9aa0001779fa69b7d",
     "src/llama-rotquant.cpp": "575b9f120b8692f630300c6fabbfc6d7fe1bef5187e369859235fc36a3ce47b8",
     "src/llama-rotquant.h": "08b234a1a52dbd3379a4d0935f950585a81c29158cdc491828573fd4849d72d9",
-    "src/llama-rq3.cpp": "84f9f07d9b4f6cf9ddd4521109c742b7b3df51965c38b1b7ab086ff08f6e513e",
+    "src/llama-rq3.cpp": "0acf4cf6292b9b7b3decf4f18fe7d46503169403e87e67f5f56b93b82768c967",
     "src/llama-rq3.h": "41b4e4479076a7837213aebb932da0a4f96fd29beadd905e9189e28490b2ca8b",
     "src/models/models.h": "7cfd965a1d8504e521a25c5f5f79a480bdb2d7cfafe511e3af336801af7d3f41",
-    "src/models/qwen35.cpp": "1044212c7526f179d1435b90bac16cafe1191648fbf015e811c6988c648babcf",
+    "src/models/qwen35.cpp": "8bb7e6eb1e13c7cbb1d694bdb11470cee82ef974d1c95054226e8dc10563e33b",
     "ggml/src/ggml-cuda/rq3-experiment.cuh": "a09de01a751d517b77afff1167e7019718aad0e753150df8f63a21a48ae1da58"
   }
 }

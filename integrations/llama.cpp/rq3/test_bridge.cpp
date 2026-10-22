@@ -24,7 +24,8 @@ static int rq3_test_impl(const char * device, const uint8_t * data, size_t size,
         if (rq_native_v3_validate(data, size, rows, cols) || cols % 128 || !input || !signs || !output ||
             tokens < 1 || tokens > 65535 || mode < 0 || mode > 2 || repeats < 0 || repeats > 20 ||
             iterations < 1 || iterations > 100 || (repeats && !seconds)) { throw std::runtime_error("invalid operator fixture"); }
-        if (data[20] != 128 || data[21] || data[22] || data[23]) { throw std::runtime_error("operator fixture requires g128"); }
+        if ((data[20] != 32 && data[20] != 64 && data[20] != 128) || data[21] || data[22] || data[23] ||
+            (mode && data[20] != 128)) { throw std::runtime_error("operator fixture requires g32/g64/g128, vocabulary g128"); }
         for (int64_t i = 0; i < cols; ++i) {
             if (signs[i] != 1 && signs[i] != -1) { throw std::runtime_error("invalid sign"); }
         }

@@ -1,5 +1,19 @@
 # RotQuant project notes
 
+October 22 ternary follow-up: the [ternary runbook](ternary_research_plan.md) and
+[Colab notebook](../notebooks/qwen35_4b_ternary_research_colab.ipynb) add sequential
+block QAT, exact-parent scale-only recovery and pinned Bonsai2-4B comparison
+alongside FP16/W4/W5/W6. Three-level weights use two-bit slots with FP16 scales;
+the tied vocabulary remains W6. Native ternary and W6 checkpoint conversion
+passes tiny CPU Qwen checks. Full-model training and CUDA quality/speed results
+remain for Colab.
+
+October 19 W4 follow-up: the [research runbook](w4_research_plan.md) describes the
+new FP16/W5/W4 Colab comparison, corrected top-k-plus-tail recovery, activation-aware
+scale/code refinement and native W4 groups128/64/32. Focused tests and tiny CPU
+model checks pass; real 4B quality/speed and CUDA execution await the notebook.
+The dated inventory below describes the earlier implementation.
+
 September 11 follow-up: the [first A100 throughput pilot](../research/results/native_pilot_2026_09_11/README.md)
 passed 13 stages; 2048-token timing exceeded an undersized cap. Completed 128/512
 contexts measured ~36.4 prefill / 19.8 decode tok/s. The next runnable notebook is

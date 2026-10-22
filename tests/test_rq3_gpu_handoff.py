@@ -236,3 +236,26 @@ def test_patch_manifest_is_self_consistent():
     changed = {line.split(" b/", 1)[1] for line in patch.read_text().splitlines() if line.startswith("diff --git ")}
     assert changed == set(contract["files_sha256"])
     assert "ggml/src/ggml-cuda/rq3.cu" in changed and "src/llama-rq3.cpp" in changed
+def test_source_bundle_build_identity_verifies_hashes_and_marks_snapshot_dirty(tmp_path):
+    from scripts.build_rq3_runtime import digest, root_identity
+    source = tmp_path / "native.cpp"
+    source.write_text("// bundled source\n")
+    bundle = {"protocol": "rotquant-source-bundle-v1", "revision": "a" * 40,
+              "files_sha256": {source.name: digest(source)}}
+    manifest = tmp_path / "SOURCE_BUNDLE.json"
+    manifest.write_text(json.dumps(bundle))
+    assert root_identity(tmp_path) == {"root_revision": "a" * 40, "root_dirty": True,
+                                       "source_bundle_sha256": digest(manifest)}
+    source.write_text("// changed after upload\n")
+    with pytest.raises(ValueError, match="source bundle mismatch"):
+        root_identity(tmp_path)
+
+
+@pytest.mark.parametrize("name", ["../outside.cpp", "/outside.cpp", "SOURCE_BUNDLE.json"])
+def test_source_bundle_build_identity_rejects_invalid_paths(tmp_path, name):
+    from scripts.build_rq3_runtime import root_identity
+    (tmp_path / "SOURCE_BUNDLE.json").write_text(json.dumps({
+        "protocol": "rotquant-source-bundle-v1", "revision": "a" * 40,
+        "files_sha256": {name: "b" * 64}}))
+    with pytest.raises(ValueError, match="source bundle mismatch"):
+        root_identity(tmp_path)

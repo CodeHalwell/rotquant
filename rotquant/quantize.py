@@ -33,6 +33,7 @@ from dataclasses import dataclass
 
 import torch
 
+from .activation_refit import ActivationRefitter, StoredScaleGrid
 from .codebooks import (
     ScalarCodebook,
     VectorCodebook,
@@ -125,6 +126,9 @@ class QuantConfig:
     scale_bits: float = 16.0
     scale_quant_group_size: int = 256  # second-level block for 8-bit scales
     collect_scale_diagnostics: bool = False
+    scale_refit: str = "none"
+    scale_refit_passes: int = 1
+    code_refit_passes: int = 0
     sketch_k: int = 64                  # QJL projection dimension (error_comp="turboquant")
     codebook_dim: int | None = None      # spherical marginal dimension; defaults to group_size
     bias_correction: str = "none"       # none | length | mean | length_mean
@@ -231,6 +235,25 @@ class QuantConfig:
             raise ValueError(
                 "calibrated_samples and calibrated_iters must be positive"
             )
+        self.validate_activation_refit(vector)
+
+    def validate_activation_refit(self, vector: bool) -> None:
+        if self.scale_refit not in {"none", "hessian"}:
+            raise ValueError("scale_refit must be 'none' or 'hessian'")
+        for name, minimum in (("scale_refit_passes", 1), ("code_refit_passes", 0)):
+            value = getattr(self, name)
+            if isinstance(value, bool) or not isinstance(value, int) or value < minimum:
+                raise ValueError(f"{name} must be an integer >= {minimum}")
+        if not self.activation_refit:
+            return
+        if vector or self.error_comp not in {"none", "gptq"}:
+            raise ValueError("activation refitting requires scalar codes with none/GPTQ compensation")
+        if self.scale == "turboquant":
+            raise ValueError("activation refitting requires per-group scales")
+
+    @property
+    def activation_refit(self) -> bool:
+        return self.scale_refit != "none" or self.code_refit_passes > 0
 
     @property
     def mse_search_bounds(self) -> tuple[float, float]:
@@ -798,6 +821,8 @@ class Quantizer:
             raise ValueError("quantization weights must be finite")
         if self.cfg.error_comp == "gptq" and H is None:
             raise ValueError("GPTQ requires a calibrated Hessian")
+        if self.cfg.activation_refit and H is None:
+            raise ValueError("activation refitting requires a calibrated Hessian in the weight basis")
         self._ensure_dimension_dependent_codebook(inf)
         if self._auto_calibrated:
             # Exact content digest: summary statistics (sums, norms) collide
@@ -904,6 +929,20 @@ class Quantizer:
             else:
                 q_w = self.codebook.centroids.to(w.device)[idx] * expanded
             scales = corrected_scales
+
+        if self.cfg.activation_refit:
+            refitter = ActivationRefitter(
+                hessian=H.detach().to(device=w.device, dtype=torch.float32),
+                group_size=self.cfg.group_size,
+                scale_passes=self.cfg.scale_refit_passes if self.cfg.scale_refit == "hessian" else 0,
+                code_passes=self.cfg.code_refit_passes,
+            )
+            scales, stored_scales, diagnostics = refitter.refit(
+                w, q_w, idx, self.codebook.centroids.to(w.device),
+                StoredScaleGrid(scales, stored_scales, self.cfg.scale_bits,
+                                self.cfg.scale_quant_group_size, scale_offsets, scale_steps),
+            )
+            scale_diagnostics = {**(scale_diagnostics or {}), "activation_refit": diagnostics}
 
         if not torch.isfinite(q_w).all():
             raise ValueError("quantized weights must be finite")

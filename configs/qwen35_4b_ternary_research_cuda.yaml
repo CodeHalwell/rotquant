@@ -1,0 +1,110 @@
+experiment: QWEN35_TERNARY_RESEARCH_V1
+model: unsloth/Qwen3.5-4B
+model_revision: 3764fa359b9082ea5a1e4a5e3ac3aaf6e9671636
+model_loader: multimodal_lm
+calib_dataset_revision: 1588ec454efa1a09f29cd18ddd04fe05fc8653a2
+device: cuda
+dtype: float16
+seed: 0
+n_calib: 128
+calib_seq_len: 512
+hessian_collection: streamed
+hessian_layers_per_pass: 4
+quant:
+  bits: 5
+  codebook: gaussian
+  scale: mse_search
+  scale_bits: 8
+  group_size: 128
+  error_comp: gptq
+  gptq_block: 128
+  gptq_actorder: true
+  gptq_recompute_scales: true
+  bias_correction: none
+patch:
+  rotation: fwht
+  block: 128
+  mode: consistent
+  share_rotations: false
+  fallback: true
+  include:
+  - model.language_model.layers.
+  exclude:
+  - linear_attn.in_proj_a
+  - linear_attn.in_proj_b
+  - lm_head
+  - embed_out
+vocabulary:
+  bits: 6
+  group_size: 128
+  block: 128
+  chunk_rows: 1024
+research:
+  groups:
+  - 128
+  - 64
+  - 32
+  selection_documents: 16
+  test_documents: 24
+  long_documents: 2
+  long_context: 2048
+  public_samples_per_benchmark: 16
+  recovery_train_documents: 64
+  recovery_validation_documents: 8
+  recovery_selection_documents: 8
+  speed_contexts:
+  - 128
+  - 512
+  - 2048
+  speed_decode_steps: 32
+  speed_repetitions: 3
+  scale_refit_passes: 2
+  code_refit_passes: 2
+  task_margin: 0.01
+recovery:
+  distill_steps: 200
+  distill_train_batches: 64
+  distill_validation_batches: 8
+  distill_selection_batches: 8
+  distill_batches_per_step: 1
+  distill_validation_interval: 20
+  distill_teacher_topk: 128
+  distill_temperature: 2.0
+  distill_kl_weight: 1.0
+  distill_ce_weight: 0.1
+  distill_max_grad_norm: 1.0
+  distill_early_stopping_patience: 4
+  distill_selection_min_improvement: 0.0
+  distill_train_rotations: false
+  distill_train_scales: true
+  distill_scale_lr: 0.001
+  distill_lora_rank: 0
+  distill_code_refresh_interval: 0
+  distill_checkpoint_interval: 20
+  distill_resume: true
+ternary:
+  scope: mlp
+  steps: 100
+  lr: 0.0001
+  scale_lr: 0.001
+  train_batches: 64
+  validation_batches: 8
+  validation_interval: 10
+  early_stopping_patience: 4
+  min_improvement: 0.0
+  max_grad_norm: 1.0
+  checkpoint_interval: 10
+  resume: true
+  max_blocks: 0
+  exclude:
+  - in_proj_a
+  - in_proj_b
+  - lm_head
+  - embed_out
+  quant:
+    group_size: 128
+    rotation_block: 128
+    seed: 0
+    learn_scales: true
+bonsai:
+  packing: PTQ1_0

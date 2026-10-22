@@ -243,7 +243,10 @@ def test_teacher_topk_capture_is_memory_bounded():
     )
     assert calls[0].logits is None
     assert calls[0].topk_indices.shape[-1] == 4
-    assert calls[0].topk_logits.shape[-1] == 4
+    assert calls[0].topk_log_probs.shape[-1] == 4
+    assert calls[0].tail_log_prob.shape == (1, 8)
+    assert calls[0].topk_log_probs.dtype == torch.float32
+    assert calls[0].temperature == 1.0
 
 
 def test_end_to_end_distillation_commits_packed_parameters():

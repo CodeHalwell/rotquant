@@ -9,15 +9,17 @@ import numpy as np
 import torch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-from rotquant.gguf_v2 import NativeProjection, qwen35_permutations
+from rotquant.gguf_v2 import BACKBONE_FORMATS, NativeProjection, qwen35_permutations
 from rotquant.native_v3 import encode_native_v3
 from rotquant.quantize import QuantConfig, Quantizer
 from rotquant.rotate import RandomizedHadamard
 
 
-def make_fixture(output, llama_dir, vocabulary_bits=6, conventional=None):
+def make_fixture(output, llama_dir, vocabulary_bits=6, conventional=None, *, backbone_bits=5, group_size=128):
     if conventional not in (None, "bf16", "q4_0"):
         raise ValueError("Choose BF16 or Q4_0 for a conventional fixture")
+    if (backbone_bits, group_size, 16 if backbone_bits == 2 else 8) not in BACKBONE_FORMATS:
+        raise ValueError("unsupported native backbone format")
     if Path(output).exists():
         raise FileExistsError(output)
     sys.path.insert(0, str(Path(llama_dir) / "gguf-py"))
@@ -64,9 +66,16 @@ def make_fixture(output, llama_dir, vocabulary_bits=6, conventional=None):
             qtype = gguf.GGMLQuantizationType.BF16 if conventional == "bf16" else gguf.GGMLQuantizationType.Q4_0
             writer.add_tensor(name + ".weight", gguf.quants.quantize(values, qtype), raw_dtype=qtype)
             return
-        bits = vocabulary_bits if vocabulary else 5
-        q = Quantizer(QuantConfig(bits=bits, group_size=128, scale="rms", scale_bits=16 if vocabulary else 8)).quantize_weight(
-            torch.from_numpy((rng.standard_normal((rows, cols)) * 0.02).astype(np.float32)))
+        bits = vocabulary_bits if vocabulary else backbone_bits
+        group = 128 if vocabulary else group_size
+        values = torch.from_numpy((rng.standard_normal((rows, cols)) * 0.02).astype(np.float32))
+        if bits == 2 and not vocabulary:
+            from rotquant.ternary import TernaryConfig, TernaryLinear
+            linear = torch.nn.Linear(cols, rows, bias=False)
+            linear.weight.data.copy_(values)
+            q = TernaryLinear.from_linear(linear, TernaryConfig(seed=3703)).to_quant_linear().qweight
+        else:
+            q = Quantizer(QuantConfig(bits=bits, group_size=group, scale="rms", scale_bits=16 if vocabulary else 8)).quantize_weight(values)
         rotation = RandomizedHadamard(cols, block=128, seed=3703)
         rp, cp = qwen35_permutations(source_name, hp)
         projection = NativeProjection(encode_native_v3(q), rotation.signs.numpy().astype(np.int8), rp, cp, vocabulary)
@@ -109,5 +118,8 @@ if __name__ == "__main__":
     parser.add_argument("--llama-dir", type=Path, required=True)
     parser.add_argument("--vocabulary-bits", type=int, choices=(6, 8), default=6)
     parser.add_argument("--conventional", choices=("bf16", "q4_0"))
+    parser.add_argument("--backbone-bits", type=int, choices=(2, 4, 5, 6), default=5)
+    parser.add_argument("--group-size", type=int, choices=(32, 64, 128), default=128)
     args = parser.parse_args()
-    make_fixture(args.output, args.llama_dir, args.vocabulary_bits, args.conventional)
+    make_fixture(args.output, args.llama_dir, args.vocabulary_bits, args.conventional,
+                 backbone_bits=args.backbone_bits, group_size=args.group_size)

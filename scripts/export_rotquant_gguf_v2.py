@@ -1,4 +1,4 @@
-"""Losslessly package a retained W5/scale8 + W6/W8 vocabulary checkpoint.
+"""Losslessly package ternary/W4/W5/W6 backbones with a tied W6/W8 vocabulary.
 
 This is an experimental GGUF-v2 exporter, not a claim of runtime readiness.
 It never re-quantizes a weight or regenerates a rotation. Non-text tensors are
@@ -24,6 +24,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from rotquant.checkpoint import MANIFEST_NAME, resolve_checkpoint_directory, verify_checkpoint
 from rotquant.gguf_v2 import (
+    BACKBONE_FORMATS,
     GGUF_VERSION,
     NativeProjection,
     checkpoint_matrix,
@@ -45,12 +46,15 @@ def validate_recipe(manifest: dict) -> None:
     for module in modules:
         rotation = module["rotation"]
         qweight = module["qweight"]
+        if qweight["packed"]["bits"] == 2 and qweight["codebook"].get("name") != "ternary":
+            raise ValueError("two-bit backbone requires explicit ternary semantics")
         if (module.get("has_bias") or module.get("lora_rank", 0)
                 or module.get("activation_bits") is not None
                 or rotation != {"kind": "fwht", "block": 128, "dim": module["in_features"]}
                 or qweight["in_features"] != module["in_features"]
                 or qweight["out_features"] != module["out_features"]
-                or qweight["packed"]["bits"] != 5 or qweight.get("scale_bits_main", 16) != 8):
+                or (qweight["packed"]["bits"], qweight["group_size"],
+                    qweight.get("scale_bits_main", 16)) not in BACKBONE_FORMATS):
             raise ValueError(f"unsupported retained backbone recipe: {module['name']}")
     vocabulary = manifest.get("tied_vocabulary") or {}
     if (vocabulary.get("execution_dtype") != "float16"
@@ -176,6 +180,7 @@ def make_converter(base_class, gguf, checkpoint: Path, manifest: dict, audit: di
             audit["matrices"].append({
                 "stem": stem, "bits": projection.matrix.layout.bits,
                 "scale_bits": projection.matrix.layout.scale_bits,
+                "group_size": projection.matrix.layout.group_size,
                 "rows": projection.matrix.layout.out_features,
                 "columns": projection.matrix.layout.in_features,
                 "vocabulary": projection.vocabulary,
@@ -218,6 +223,7 @@ def export_checkpoint(checkpoint: Path, output: Path, llama_cpp: Path) -> dict:
     output.parent.mkdir(parents=True, exist_ok=True)
     staging = Path(tempfile.mkdtemp(prefix=f".{output.name}.staging-", dir=output.parent))
     audit = {"protocol": "rotquant-gguf-v2-export-v1", "runtime_validated": False,
+             "required_runtime_features": ["rq3-scalar-group-size-v1", "rq3-ternary-w6-v1"],
              "checkpoint_manifest_sha256": file_digest(checkpoint / MANIFEST_NAME),
              "source_files_sha256": manifest["files_sha256"], "converter_revision": revision,
              "scope": "text runtime; original non-text tensors retained in auxiliary.safetensors"}

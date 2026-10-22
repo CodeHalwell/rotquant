@@ -24,12 +24,12 @@ def test_preserve_explicit_hybrid_topology_instead_of_default_interval():
         recurrent_layer_map({"num_hidden_layers": 2, "layer_types": ["linear_attention", "unknown"]})
 
 
-@pytest.fixture
-def retained(tmp_path):
+@pytest.fixture(params=[(5, 128), (4, 128), (4, 64), (4, 32)])
+def retained(tmp_path, request):
     packed = {}
 
-    def weight(name, rows, bits, scale_bits):
-        q = Quantizer(QuantConfig(bits=bits, group_size=128, scale="rms", scale_bits=scale_bits,
+    def weight(name, rows, bits, scale_bits, group_size=128):
+        q = Quantizer(QuantConfig(bits=bits, group_size=group_size, scale="rms", scale_bits=scale_bits,
                                  scale_quant_group_size=4)).quantize_weight(
             torch.randn(rows, 128, generator=torch.Generator().manual_seed(rows)))
         native = encode_native_v3(q)
@@ -39,7 +39,7 @@ def retained(tmp_path):
         spec = {"packed": {"tensor": name + ".codes", "shape": [rows * 128],
                            "numel": rows * 128, "bits": bits},
                 "scales": name + ".scales", "scale_bits_main": scale_bits,
-                "scale_quant_group_size": 4, "group_size": 128,
+                "scale_quant_group_size": 4, "group_size": group_size,
                 "in_features": 128, "out_features": rows,
                 "codebook": {"kind": "scalar", "dimension": 1, "centroids": name + ".centroids"}}
         if scale_bits == 8:
@@ -48,7 +48,8 @@ def retained(tmp_path):
                 packed[spec[key]] = torch.from_numpy(array.copy())
         return spec, native
 
-    backbone, original = weight("backbone", 8, 5, 8)
+    bits, group_size = request.param
+    backbone, original = weight("backbone", 8, bits, 8, group_size)
     chunks = [weight("vocabulary0", 3, 6, 16), weight("vocabulary1", 2, 6, 16)]
     module = {"name": "model.language_model.layers.0.mlp.down_proj", "has_bias": False,
               "in_features": 128, "out_features": 8, "rotation_id": "r0", "lora_rank": 0,
@@ -110,6 +111,7 @@ def test_export_preserves_payload_and_has_one_shared_vocabulary(retained):
                             "token_embd.rqv3", "token_embd.rqsign", "model.language_model.norm.weight"}
     assert audit["auxiliary_source_keys"] == ["model.visual.patch_embed.weight"]
     assert [m["vocabulary"] for m in audit["matrices"]] == [False, True]
+    assert audit["matrices"][0]["group_size"] == original.layout.group_size
     assert np.all(tensors["token_embd.rqsign"] == -1)
 
 
@@ -131,6 +133,19 @@ def test_export_rejects_unimplemented_semantics(retained, change):
     else:
         manifest["tied_vocabulary"]["projection_mode"] = "rotated"
     with pytest.raises(ValueError):
+        validate_recipe(manifest)
+
+
+@pytest.mark.parametrize("bits,group_size,scale_bits", [(3, 128, 8), (5, 32, 8),
+                                                        (4, 16, 8), (4, 256, 8), (4, 32, 16)])
+def test_export_rejects_backbone_formats_without_full_graph_support(retained, bits, group_size, scale_bits):
+    _, saved, _, _ = retained
+    manifest = copy.deepcopy(saved)
+    weight = manifest["quantized_modules"][0]["qweight"]
+    weight["packed"]["bits"] = bits
+    weight["group_size"] = group_size
+    weight["scale_bits_main"] = scale_bits
+    with pytest.raises(ValueError, match="backbone recipe"):
         validate_recipe(manifest)
 
 

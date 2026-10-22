@@ -1,4 +1,4 @@
-"""Lossless matrix assembly for the W5/W6/W8 llama.cpp model integration.
+"""Lossless scalar matrix assembly for the llama.cpp model integration.
 
 GGUF v2 wraps native-matrix v3. Qwen layout permutations are separate index
 tensors: never reorder affine scale codes without their original metadata.
@@ -11,10 +11,11 @@ from dataclasses import dataclass
 
 import numpy as np
 
-from .native_v3 import NativeV3Layout, NativeV3Matrix
+from .native_v3 import NativeV3Layout, NativeV3Matrix, native_codebook
 
 GGUF_VERSION = 2
 ROTATION_BLOCK = 128
+BACKBONE_FORMATS = ((2, 128, 16), (4, 32, 8), (4, 64, 8), (4, 128, 8), (5, 128, 8), (6, 128, 8))
 
 
 def checkpoint_matrix(handle, spec: dict) -> NativeV3Matrix:
@@ -48,8 +49,10 @@ def checkpoint_matrix(handle, spec: dict) -> NativeV3Matrix:
         if spec.get("scale_offsets") or spec.get("scale_steps"):
             raise ValueError("FP16 scales must not carry affine metadata")
         offsets, steps = np.empty(0, dtype="<f2"), np.empty(0, dtype="<f2")
-    return NativeV3Matrix(layout, tensor(packed["tensor"]), tensor(spec.get("scales")),
-                          offsets, steps, tensor(spec["codebook"]["centroids"]))
+    words = tensor(packed["tensor"])
+    book = native_codebook(tensor(spec["codebook"]["centroids"]), words, layout.bits,
+                           spec["codebook"].get("name", ""))
+    return NativeV3Matrix(layout, words, tensor(spec.get("scales")), offsets, steps, book)
 
 
 def join_vocabulary_chunks(chunks: list[NativeV3Matrix]) -> NativeV3Matrix:
@@ -114,8 +117,8 @@ class NativeProjection:
     def __post_init__(self):
         shape = self.matrix.layout
         self.matrix.validate()
-        if shape.group_size != 128 or shape.in_features % 128:
-            raise ValueError("native GGUF v2 requires g128 and FWHT-128-aligned inputs")
+        if shape.group_size not in (32, 64, 128) or shape.in_features % ROTATION_BLOCK:
+            raise ValueError("native GGUF v2 requires g32/g64/g128 and FWHT-128-aligned inputs")
         if (self.signs.dtype != np.int8 or self.signs.shape != (shape.in_features,)
                 or not self.signs.flags.c_contiguous or not np.all(np.abs(self.signs.astype(int)) == 1)):
             raise ValueError("expected exact contiguous int8 FWHT signs")
@@ -126,7 +129,7 @@ class NativeProjection:
                 or not np.array_equal(np.sort(permutation), np.arange(size))
             ):
                 raise ValueError("invalid native permutation")
-        if self.vocabulary and (shape.bits not in (6, 8) or shape.scale_bits != 16
+        if self.vocabulary and (shape.bits not in (6, 8) or shape.scale_bits != 16 or shape.group_size != 128
                                 or self.rows is not None or self.columns is not None):
             raise ValueError("unsupported shared vocabulary projection")
 

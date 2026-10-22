@@ -21,6 +21,20 @@ NATIVE_V3_VERSION = 3
 NATIVE_V3_HEADER = struct.Struct("<8sIIIIQQIIIIQ")
 
 
+def native_codebook(centroids, words, bits, name=""):
+    """Keep three legal trits; pad the wire lookup table's unused fourth slot."""
+    if name != "ternary":
+        return centroids
+    if bits != 2 or centroids.dtype != np.dtype("<f4") or not np.array_equal(centroids, [-1., 0., 1.]):
+        raise ValueError("ternary requires exactly three canonical centroids and two-bit slots")
+    unsigned = words.view(np.uint32)
+    for start in range(0, len(unsigned), 65536):
+        chunk = unsigned[start:start + 65536]
+        if np.any(chunk & (chunk >> 1) & np.uint32(0x55555555)):
+            raise ValueError("ternary contains reserved code 3")
+    return np.array([-1., 0., 1., 0.], dtype="<f4")
+
+
 def positive_integer(value, name):
     if type(value) is not int or not 0 < value <= (1 << 63) - 1:
         raise ValueError(f"{name} must be a positive signed-64-bit integer")
@@ -209,8 +223,9 @@ def encode_native_v3(qweight: QuantizedWeight) -> NativeV3Matrix:
             raise ValueError("scale16 must not carry affine metadata")
         offsets = np.empty(0, dtype="<f2")
         steps = np.empty(0, dtype="<f2")
-    result = NativeV3Matrix(layout, stored(qweight.packed.data), stored(qweight.scales),
-                            offsets, steps, stored(qweight.codebook.centroids))
+    words = stored(qweight.packed.data)
+    book = native_codebook(stored(qweight.codebook.centroids), words, layout.bits, qweight.codebook.name)
+    result = NativeV3Matrix(layout, words, stored(qweight.scales), offsets, steps, book)
     # An immutable payload owns independent compact bytes; no source aliasing.
     return NativeV3Matrix.from_bytes(result.to_bytes())
 

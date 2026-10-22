@@ -61,14 +61,18 @@ jobs:
       - run: uv sync --locked --extra dev --extra eval
       - name: Build and load pinned v2 integration
         run: uv run --no-sync python -m scripts.build_rq3_runtime --source-dir "$RUNNER_TEMP/llama-source" --build-dir "$RUNNER_TEMP/llama-build" --backend CPU --jobs 2
-      - name: Packed operators and tiny W6/W8 graphs
+      - name: Packed operators and tiny ternary/W4/W5/W6 backbone and W6/W8 vocabulary graphs
         run: |
           library="$RUNNER_TEMP/llama-build/bin/librotquant_ggml_test.so"
           uv run --no-sync python -m scripts.check_rq3_gpu --library "$library" --backend CPU --output "$RUNNER_TEMP/operators.json"
-          for bits in 6 8; do
-            model="$RUNNER_TEMP/fixture-w$bits.gguf"
-            uv run --no-sync python -m scripts.make_rq3_model_fixture --llama-dir "$RUNNER_TEMP/llama-source" --output "$model" --vocabulary-bits "$bits"
-            uv run --no-sync python -m scripts.check_rq3_cpu_model --library "$library" --model "$model"
+          for format in 2:128 6:128 5:128 4:128 4:64 4:32; do
+            backbone="${format%:*}"
+            group="${format#*:}"
+            for bits in 6 8; do
+              model="$RUNNER_TEMP/qwen35-rq3-w${backbone}-g${group}-v${bits}.gguf"
+              uv run --no-sync python -m scripts.make_rq3_model_fixture --llama-dir "$RUNNER_TEMP/llama-source" --output "$model" --vocabulary-bits "$bits" --backbone-bits "$backbone" --group-size "$group"
+              uv run --no-sync python -m scripts.check_rq3_cpu_model --library "$library" --model "$model"
+            done
           done
 
   v2-cuda-compile:
