@@ -68,7 +68,7 @@ def test_working_w4_setup_and_runtime_are_preserved_in_separate_notebook():
     assert w4.build_notebook() == before
     assert ternary.OUTPUT != w4.OUTPUT
     assert notebook.cells[4].source == before.cells[4].source  # ZIP checksum/extraction helpers
-    assert notebook.cells[7].source == before.cells[7].source  # uv, pins, torch checks, CUDA smoke
+    assert notebook.cells[7].source == before.cells[7].source  # Isolated pip, pins, torch checks, CUDA smoke
     source = "\n".join(cell.source for cell in notebook.cells)
     for required in ('SOURCE_MODE = "upload"', 'SEEDS = [0]', 'PUBLIC_SAMPLES = 16',
                      'BUDGET_MINUTES = 480', 'REQUIRE_FAST_HADAMARD = True',
@@ -76,7 +76,10 @@ def test_working_w4_setup_and_runtime_are_preserved_in_separate_notebook():
                      '"--expected-torch-file", TORCH_FILE', '"rotquant/ternary_train.py"',
                      'configs/qwen35_4b_ternary_research_cuda.yaml', 'STUDY_VERSION = "ternary-v1"'):
         assert required in source
-    assert '"-m", "pip"' not in source
+    assert '[sys.executable, "-m", "pip", "--isolated", "--python", str(PYTHON)' in source
+    assert '"--require-virtualenv", "--disable-pip-version-check", "install"' in source
+    assert '"--constraint", str(constraints)' in source
+    assert '[uv, "pip"' not in source
     assert "scripts/run_qwen35_w4_research.py" not in source
     assert "rotquant/w4_research" not in source
     assert all(label in source for label in ternary.LABELS)

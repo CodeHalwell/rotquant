@@ -374,7 +374,9 @@ def environment_cells():
                     "matplotlib==3.10.9", "seaborn==0.13.2", "huggingface_hub==1.17.0",
                     "nltk==3.9.2", "langdetect==1.0.9", "immutabledict==4.2.1", "absl-py==2.3.1",
                     "setuptools==80.9.0", "wheel==0.45.1"]
-        install = [uv, "pip", "install", "--python", str(PYTHON), "--constraint", str(constraints)]
+        install = [sys.executable, "-m", "pip", "--isolated", "--python", str(PYTHON),
+                   "--require-virtualenv", "--disable-pip-version-check", "install",
+                   "--constraint", str(constraints)]
         run_live([*install, "-r", str(REPO_DIR / "requirements/native-gpu.txt"), *packages], "dependencies", 1200)
         run_live([*install, "--no-deps", "--no-build-isolation", "-e", str(REPO_DIR)], "install-project", 300)
         run_live([*check, "--output", str(SETUP_LOGS / "torch-after.json")], "torch-after", 60)

@@ -75,7 +75,7 @@ def test_generated_notebook_matches_artifact_and_every_code_cell_parses():
     ast.parse(ast.literal_eval(assignment.value))
 
 
-def test_notebook_defaults_use_upload_uv_and_existing_torch_checks():
+def test_notebook_defaults_use_upload_isolated_pip_and_existing_torch_checks():
     source = "\n".join(cell.source for cell in build_notebook().cells)
     assert 'SOURCE_MODE = "upload"' in source
     assert 'SEEDS = [0]' in source and 'PUBLIC_SAMPLES = 16' in source
@@ -84,8 +84,10 @@ def test_notebook_defaults_use_upload_uv_and_existing_torch_checks():
     assert '"--system-site-packages"' in source
     assert '"--expected-torch-file", TORCH_FILE' in source
     assert '"torch-before.json"' in source and '"torch-final.json"' in source
-    assert '[uv, "pip", "install", "--python", str(PYTHON)' in source
-    assert '"-m", "pip"' not in source
+    assert '[sys.executable, "-m", "pip", "--isolated", "--python", str(PYTHON)' in source
+    assert '"--require-virtualenv", "--disable-pip-version-check", "install"' in source
+    assert '"--constraint", str(constraints)' in source
+    assert '[uv, "pip"' not in source
     assert 'https://astral.sh/uv/{UV_VERSION}/install.sh' in source
     assert 'fast-hadamard-transform.git@v1.1.0.post2' in source
 
