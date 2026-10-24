@@ -13,8 +13,17 @@ if str(ROOT) not in sys.path:
 from scripts.ternary_research_v2_plan import DEFAULT_CONFIG, plan, validate_config
 
 
-def main():
+def load_config(path):
     import yaml
+    text = path.read_text()
+    try:
+        config = json.loads(text)
+    except json.JSONDecodeError:
+        config = yaml.safe_load(text)
+    return validate_config(config)
+
+
+def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--config', type=Path, default=DEFAULT_CONFIG)
     parser.add_argument('--historical-root', type=Path, required=True)
@@ -24,7 +33,7 @@ def main():
     parser.add_argument('--stage', choices=('parity', 'full'), default='parity')
     parser.add_argument('--dry-run', action='store_true')
     args = parser.parse_args()
-    config = validate_config(yaml.safe_load(args.config.read_text()))
+    config = load_config(args.config)
     if not 1 <= args.budget_minutes <= 480:
         parser.error('budget must be 1..480 minutes')
     if args.dry_run:
