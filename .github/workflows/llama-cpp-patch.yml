@@ -9,6 +9,8 @@ name: llama.cpp patch check
       - "scripts/build_rotquant_llama_cpp.sh"
       - "scripts/build_rq3_runtime.py"
       - "scripts/check_rq3_cpu_model.py"
+      - "scripts/check_ternary_inference.py"
+      - "scripts/ternary_inference.py"
       - "scripts/rq3_test_runtime.py"
       - "scripts/make_rq3_model_fixture.py"
       - "native/**"
@@ -22,6 +24,8 @@ name: llama.cpp patch check
       - "scripts/build_rotquant_llama_cpp.sh"
       - "scripts/build_rq3_runtime.py"
       - "scripts/check_rq3_cpu_model.py"
+      - "scripts/check_ternary_inference.py"
+      - "scripts/ternary_inference.py"
       - "scripts/rq3_test_runtime.py"
       - "scripts/make_rq3_model_fixture.py"
       - "native/**"
@@ -72,6 +76,11 @@ jobs:
               model="$RUNNER_TEMP/qwen35-rq3-w${backbone}-g${group}-v${bits}.gguf"
               uv run --no-sync python -m scripts.make_rq3_model_fixture --llama-dir "$RUNNER_TEMP/llama-source" --output "$model" --vocabulary-bits "$bits" --backbone-bits "$backbone" --group-size "$group"
               uv run --no-sync python -m scripts.check_rq3_cpu_model --library "$library" --model "$model"
+              if [ "$backbone:$bits" = "2:6" ]; then
+                uv run --no-sync python -m scripts.check_ternary_inference \
+                  --library "$library" --model "$model" --backend CPU \
+                  --kernel reference --output "$RUNNER_TEMP/ternary-inference.json"
+              fi
             done
           done
 

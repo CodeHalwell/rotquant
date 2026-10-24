@@ -53,7 +53,7 @@ static int rq3_test_impl(const char * device, const uint8_t * data, size_t size,
         ggml_tensor * x = ggml_new_tensor_2d(ctx.get(), mode == 2 ? GGML_TYPE_I32 : GGML_TYPE_F32, mode == 2 ? tokens : cols, mode == 2 ? 1 : tokens);
         ggml_tensor * rp = row_map ? ggml_new_tensor_1d(ctx.get(), GGML_TYPE_I32, rows) : nullptr;
         ggml_tensor * cp = col_map ? ggml_new_tensor_1d(ctx.get(), GGML_TYPE_I32, cols) : nullptr;
-        llama_rq3_state state{s, rp, cp, cols, rows, mode == 1};
+        llama_rq3_state state{s, rp, cp, cols, rows, mode == 1, data[16]};
         ggml_tensor * y = mode == 2 ? llama_rq3_get_rows(ctx.get(), w, x, s) : llama_rq3_mul_mat(ctx.get(), w, x, state);
         ggml_cgraph * graph = ggml_new_graph(ctx.get());
         ggml_build_forward_expand(graph, y);
@@ -105,4 +105,28 @@ extern "C" int rq3_test_benchmark(const char * device, const uint8_t * data, siz
         int repeats, int iterations, double * seconds) {
     return rq3_test_impl(device, data, size, rows, cols, tokens, mode, input, signs, row_map, col_map, output,
                          repeats, iterations, seconds);
+}
+
+extern "C" int rq3_test_greedy(const char * device, const float * input, int64_t count, int32_t * token) {
+    error.clear();
+    try {
+        if (!input || !token || count < 1 || count > 1048576) { throw std::runtime_error("invalid greedy fixture"); }
+        ggml_backend_load_all();
+        std::unique_ptr<ggml_backend, decltype(&ggml_backend_free)> backend(ggml_backend_init_by_name(device, nullptr), ggml_backend_free);
+        if (!backend) { throw std::runtime_error("requested sampler backend unavailable"); }
+        std::unique_ptr<ggml_context, decltype(&ggml_free)> ctx(ggml_init({1024 * 1024, nullptr, true}), ggml_free);
+        auto * x = ggml_new_tensor_1d(ctx.get(), GGML_TYPE_F32, count);
+        auto * y = llama_rq3_greedy(ctx.get(), x);
+        if (!ggml_backend_supports_op(backend.get(), y)) { throw std::runtime_error("greedy operator unsupported; no fallback"); }
+        auto * graph = ggml_new_graph(ctx.get()); ggml_build_forward_expand(graph, y);
+        std::unique_ptr<ggml_backend_buffer, decltype(&ggml_backend_buffer_free)> buffer(
+            ggml_backend_alloc_ctx_tensors(ctx.get(), backend.get()), ggml_backend_buffer_free);
+        if (!buffer) { throw std::runtime_error("sampler buffer allocation failed"); }
+        ggml_backend_tensor_set(x, input, 0, size_t(count) * sizeof(float));
+        if (ggml_backend_graph_compute(backend.get(), graph) != GGML_STATUS_SUCCESS) { throw std::runtime_error("sampler execution failed"); }
+        ggml_backend_synchronize(backend.get());
+        ggml_backend_tensor_get(y, token, 0, sizeof(*token));
+        if (*token < 0) { throw std::runtime_error("device finite-check rejected logits"); }
+        return 0;
+    } catch (const std::exception & e) { error = e.what(); return 1; }
 }

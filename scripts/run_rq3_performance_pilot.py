@@ -67,9 +67,10 @@ def reference_tokens(reference, expected_kernel="reference"):
 
 
 def measure(model, ids, *, context, decode, repetitions, minimum_tps, maximum_vram,
-            memory, persist, clock=time.perf_counter, forced_decode=None, diagnostics=None):
+            memory, persist, clock=time.perf_counter, forced_decode=None, diagnostics=None, compact=False):
     from scripts.native_cuda_diagnostics import difference
 
+    compute = model.greedy if compact else model.evaluate
     prompt = np.resize(ids, context).astype(np.int32)
     if forced_decode is not None and len(forced_decode) != decode:
         raise ValueError("Fixed-token replay length must equal decode steps")
@@ -89,7 +90,7 @@ def measure(model, ids, *, context, decode, repetitions, minimum_tps, maximum_vr
         persist(rows, row)
         before = diagnostics.snapshot() if diagnostics else None
         start = clock()
-        logits = model.evaluate(prompt, reset=True)
+        logits = compute(prompt, reset=True)
         prefill = clock() - start
         if diagnostics:
             row["prefill_profile"] = difference(before, diagnostics.snapshot())
@@ -104,10 +105,10 @@ def measure(model, ids, *, context, decode, repetitions, minimum_tps, maximum_vr
             memory_guard()
             start = clock()
             # Fixed number of cached steps, even at EOS: not task generation.
-            token = int(logits.argmax())
+            token = int(logits if compact else logits.argmax())
             if forced_decode is not None:
                 token = int(forced_decode[step])
-            logits = model.evaluate([token])
+            logits = compute([token])
             elapsed = clock() - start
             if elapsed <= 0 or not np.isfinite(logits).all():
                 raise ValueError("Invalid cached decode measurement")

@@ -82,11 +82,40 @@ class TernaryLinear(nn.Module):
             scales = _initial_scales(rotated, config.group_size)
         self.latent_weight = nn.Parameter(rotated)
         self.log_scales = nn.Parameter(scales.log(), requires_grad=config.learn_scales)
+        self.register_buffer("fixed_codes", None, persistent=False)
         self.register_buffer("bias", None if linear.bias is None else linear.bias.detach().clone())
 
     @classmethod
     def from_linear(cls, linear: nn.Linear, config: TernaryConfig | None = None):
         return cls(linear, config or TernaryConfig())
+
+    @classmethod
+    def from_quant_linear(cls, module: QuantLinear, latent_state: dict | None = None):
+        from .ternary_latents import validate_ternary_module
+        validate_ternary_module(module)
+        result = cls.__new__(cls)
+        nn.Module.__init__(result)
+        result.config = TernaryConfig(module.qweight.group_size, module.act_rotation.block)
+        result.in_features, result.out_features = module.in_features, module.out_features
+        result.act_rotation = copy.deepcopy(module.act_rotation)
+        latent = module.qweight.dequantize().float()
+        scales = module.qweight.scales.float().log()
+        if latent_state is not None:
+            latent = latent_state["latent_weight"].to(latent)
+            scales = latent_state["log_scales"].to(scales)
+        if latent.shape != (result.out_features, result.in_features) or scales.shape != module.qweight.scales.shape:
+            raise ValueError("retained ternary latent shapes differ from the packed checkpoint")
+        if not torch.isfinite(latent).all() or not torch.isfinite(scales).all():
+            raise ValueError("retained ternary latents must be finite")
+        result.latent_weight = nn.Parameter(latent.detach().clone())
+        result.log_scales = nn.Parameter(scales.detach().clone())
+        result.register_buffer("fixed_codes", None, persistent=False)
+        result.register_buffer("bias", None if module.bias is None else module.bias.detach().clone())
+        expected = packed_ternary_state(module)
+        actual = packed_ternary_state(result.to_quant_linear())
+        if any(not torch.equal(actual[key], expected[key]) for key in ("packed", "scales", "signs")):
+            raise ValueError("retained ternary latents do not reproduce the packed checkpoint")
+        return result
 
     def stored_scales(self) -> torch.Tensor:
         scales = self.log_scales.clamp(-16.635532, 11.089866).exp()
@@ -94,6 +123,8 @@ class TernaryLinear(nn.Module):
         return scales + (stored - scales).detach()
 
     def hard_codes(self) -> torch.Tensor:
+        if self.fixed_codes is not None:
+            return self.fixed_codes
         expanded = expand_scales(self.stored_scales(), self.config.group_size, self.in_features)
         normalized = self.latent_weight / expanded
         return torch.where(normalized.abs() > 0.5, normalized.sign(), 0)
@@ -101,11 +132,19 @@ class TernaryLinear(nn.Module):
     def quantized_weight(self) -> torch.Tensor:
         scales = self.stored_scales()
         expanded = expand_scales(scales, self.config.group_size, self.in_features)
+        if self.fixed_codes is not None:
+            return self.fixed_codes * expanded
         # Detaching scale in the latent surrogate leaves its gradient equal to
         # the exact fixed-assignment derivative: sum(dL/dq * ternary_symbol).
         normalized = self.latent_weight / expanded.detach()
         codes = _TernarySTE.apply(normalized)
         return codes * expanded
+
+    @torch.no_grad()
+    def freeze_assignments(self):
+        self.fixed_codes = self.hard_codes().detach().to(torch.int8)
+        self.latent_weight = nn.Parameter(torch.empty(0, device=self.latent_weight.device),
+                                          requires_grad=False)
 
     def forward(self, value: torch.Tensor) -> torch.Tensor:
         rotated = self.act_rotation.rotate_activation(value)

@@ -62,6 +62,10 @@ class TernaryTrainConfig:
     max_blocks: int = 0
     source_id: str = ""
     data_id: str = ""
+    retain_latents: bool = False
+    training_artifact_dir: str | None = None
+    activation_aware: bool = False
+    activation_aware_iterations: int = 4
     exclude: tuple[str, ...] = ("in_proj_a", "in_proj_b", "lm_head", "embed_out")
 
     def __post_init__(self):
@@ -75,6 +79,10 @@ class TernaryTrainConfig:
         self._validate_numbers()
         if self.resume and not self.checkpoint_dir:
             raise ValueError("resume requires checkpoint_dir")
+        if self.retain_latents and not (self.training_artifact_dir or self.checkpoint_dir):
+            raise ValueError("retained latents require a separate training artifact directory")
+        if self.activation_aware_iterations < 1:
+            raise ValueError("activation_aware_iterations must be positive")
 
     def _validate_numbers(self):
         minimums = {"steps": 0, "train_batches": 1, "validation_batches": 1,
@@ -120,6 +128,26 @@ def _make_student(source, global_name, config, device):
         parent, attribute = get_parent(student, name)
         setattr(parent, attribute, module)
     return student
+
+
+def initialise_from_activations(student, source, train, validation, config, device):
+    from .ternary_initialise import activation_aware_initialise, rotated_covariance
+    initial = parameter_snapshot(student)
+    dtypes = {key: value.dtype for key, value in source.state_dict().items()}
+    with torch.no_grad(), _source_precision(student, dtypes):
+        baseline = float(_block_loss(student, validation, device, None))
+        sites = {}
+        for name, module in student.named_modules():
+            if isinstance(module, TernaryLinear):
+                covariance = rotated_covariance(source, name, module.act_rotation, train, device)
+                sites[name] = activation_aware_initialise(
+                    module, covariance, iterations=config.activation_aware_iterations)
+        candidate = float(_block_loss(student, validation, device, None))
+    accepted = math.isfinite(candidate) and candidate < baseline
+    if not accepted:
+        restore_parameters(student, initial)
+    return {"accepted": accepted, "baseline_validation_loss": baseline,
+            "candidate_validation_loss": candidate, "sites": sites}
 
 
 def _block_loss(student, records, device, dtype):
@@ -273,6 +301,14 @@ def _attempt_stats(started, device):
             "peak_cuda_allocated_bytes": peak}
 
 
+def completed_block(source, state, config, contract, device, started):
+    if config.retain_latents:
+        from .ternary_latents import load_selected_latents
+        load_selected_latents(state["stats"]["selected_latents"], state["packed"], contract)
+    result = _restore_completed(source, state["packed"], config, device)
+    return result, {**state["stats"], **_attempt_stats(started, device)}
+
+
 def train_ternary_block(source, name, train_calls, validation_calls, config, *, device=None):
     """Return a deployed block and validation statistics, never the latent model."""
     if not train_calls or not validation_calls:
@@ -286,21 +322,30 @@ def train_ternary_block(source, name, train_calls, validation_calls, config, *, 
     path = None if config.checkpoint_dir is None else Path(config.checkpoint_dir) / f"{name}.pt"
     state = load_training_state(path, contract, config.resume)
     if state is not None and state["complete"]:
-        result = _restore_completed(source, state["packed"], config, device)
-        stats = {**state["stats"], **_attempt_stats(started, device)}
-        return result, stats
+        return completed_block(source, state, config, contract, device, started)
     student = _make_student(source, name, config, device)
+    initialisation = None
+    if config.activation_aware and state is None:
+        initialisation = initialise_from_activations(
+            student, source, train_calls, validation_calls, config, device)
     trainer = _BlockTrainer(student, train_calls, validation_calls, config, contract, path,
                             device, {key: tensor.dtype for key, tensor in source.state_dict().items()})
     if state is not None:
         trainer.restore(state)
     stats = trainer.run()
+    if initialisation is not None:
+        stats["activation_aware_initialisation"] = initialisation
     packed = {name: packed_ternary_state(module.to_quant_linear())
               for name, module in student.named_modules() if isinstance(module, TernaryLinear)}
     result = _pack_student(student, source, device)
     stats["packed_validation_loss"] = float(_evaluate_packed(result, validation_calls, device, None))
     stats.update(_attempt_stats(started, device))
     stats["source_compute_dtype"] = str(parameter.dtype).removeprefix("torch.")
+    if config.retain_latents:
+        from .ternary_latents import save_selected_latents
+        directory = Path(config.training_artifact_dir or config.checkpoint_dir) / "selected_latents"
+        stats["selected_latents"] = save_selected_latents(
+            student, packed, contract, name, directory / f"{name}.latents.pt")
     save_training_state(path, {"contract": contract, "complete": True, "packed": packed, "stats": stats})
     return result, stats
 

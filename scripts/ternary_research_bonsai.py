@@ -250,13 +250,11 @@ def tokenizer_fields(path):
 
 
 def validate_tokenizer(candidate_gguf, reference_gguf):
+    """Validate the shared ID space for the unpadded, direct-decode bridge."""
     candidate, reference = tokenizer_fields(candidate_gguf), tokenizer_fields(reference_gguf)
-    # These metadata defaults do not participate in the frozen-token bridge:
-    # callers provide unpadded IDs, and llama_decode never inserts a BOS token.
-    ignored = {"tokenizer.ggml.padding_token_id"}
-    if (candidate.get("tokenizer.ggml.add_bos_token") is False
-            and reference.get("tokenizer.ggml.add_bos_token") is False):
-        ignored.add("tokenizer.ggml.bos_token_id")
+    # Direct llama_decode consumes frozen unpadded IDs without inserting BOS or padding.
+    ignored = {"tokenizer.ggml.padding_token_id", "tokenizer.ggml.bos_token_id",
+               "tokenizer.ggml.add_bos_token"}
     defaults = {key: {"candidate": candidate.get(key), "reference": reference.get(key)}
                 for key in sorted(ignored) if candidate.get(key) != reference.get(key)}
     candidate = {key: value for key, value in candidate.items() if key not in ignored}
@@ -271,7 +269,7 @@ def validate_tokenizer(candidate_gguf, reference_gguf):
             "tokenizer_metadata_sha256": identity, "compared_keys": sorted(reference),
             "unused_frozen_input_defaults": defaults,
             "reference_gguf": str(Path(reference_gguf).resolve()),
-            "boundary": "Exact token-ID, type, merge and active special-token metadata equality; frozen unpadded IDs bypass vendor templates and disabled BOS/padding defaults"}
+            "boundary": "Exact token-ID, type, merge and active special-token metadata equality; direct decoding of frozen unpadded IDs bypasses vendor templates and BOS/padding defaults; not general tokenizer equivalence"}
 
 
 class BonsaiRuntime:

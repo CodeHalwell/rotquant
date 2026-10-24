@@ -1,8 +1,7 @@
 diff --git a/ggml/src/ggml-backend.cpp b/ggml/src/ggml-backend.cpp
-index e519bdf50..3bf56d230 100644
 --- a/ggml/src/ggml-backend.cpp
 +++ b/ggml/src/ggml-backend.cpp
-@@ -1608,6 +1608,20 @@ static enum ggml_status ggml_backend_sched_compute_splits(ggml_backend_sched_t s
+@@ -1608,6 +1608,20 @@
          int split_backend_id = split->backend_id;
          ggml_backend_t split_backend = sched->backends[split_backend_id];
  
@@ -24,10 +23,9 @@ index e519bdf50..3bf56d230 100644
          // this split, the allocator may have reused buffer regions across splits
          if (split->n_inputs == 0 && prev_backend_id >= 0 && prev_backend_id != split_backend_id) {
 diff --git a/ggml/src/ggml-cuda/CMakeLists.txt b/ggml/src/ggml-cuda/CMakeLists.txt
-index d3953eee9..cc852c1b3 100644
 --- a/ggml/src/ggml-cuda/CMakeLists.txt
 +++ b/ggml/src/ggml-cuda/CMakeLists.txt
-@@ -103,6 +103,7 @@ if (CUDAToolkit_FOUND)
+@@ -103,6 +103,7 @@
      list(APPEND GGML_HEADERS_CUDA "../../include/ggml-cuda.h")
  
      file(GLOB   GGML_SOURCES_CUDA "*.cu")
@@ -36,7 +34,6 @@ index d3953eee9..cc852c1b3 100644
      list(APPEND GGML_SOURCES_CUDA ${SRCS})
      file(GLOB   SRCS "template-instances/fattn-mma*.cu")
 diff --git a/ggml/src/ggml-cuda/ggml-cuda.cu b/ggml/src/ggml-cuda/ggml-cuda.cu
-index 2456f7dcc..b5a08f953 100644
 --- a/ggml/src/ggml-cuda/ggml-cuda.cu
 +++ b/ggml/src/ggml-cuda/ggml-cuda.cu
 @@ -4,6 +4,8 @@
@@ -48,7 +45,7 @@ index 2456f7dcc..b5a08f953 100644
  #include "ggml-cuda/acc.cuh"
  #include "ggml-cuda/add-id.cuh"
  #include "ggml-cuda/arange.cuh"
-@@ -2058,6 +2060,11 @@ static void ggml_cuda_mul_mat_id(ggml_backend_cuda_context & ctx, ggml_tensor *
+@@ -2058,6 +2060,11 @@
  }
  
  static bool ggml_cuda_compute_forward(ggml_backend_cuda_context & ctx, struct ggml_tensor * dst) {
@@ -60,7 +57,7 @@ index 2456f7dcc..b5a08f953 100644
      switch (dst->op) {
          case GGML_OP_ARGMAX:
              ggml_cuda_argmax(ctx, dst);
-@@ -4865,6 +4872,7 @@ static ggml_backend_buffer_type_t ggml_backend_cuda_device_get_host_buffer_type(
+@@ -4865,6 +4872,7 @@
  
  // TODO: move these functions here
  static bool ggml_backend_cuda_device_supports_op(ggml_backend_dev_t dev, const ggml_tensor * op) {
@@ -72,7 +69,7 @@ diff --git a/ggml/src/ggml-cuda/rq3.cu b/ggml/src/ggml-cuda/rq3.cu
 new file mode 100644
 --- /dev/null
 +++ b/ggml/src/ggml-cuda/rq3.cu
-@@ -0,0 +1,393 @@
+@@ -0,0 +1,500 @@
 +#include "common.cuh"
 +#include "rotquant-v3.h"
 +#include "ggml-cuda.h"
@@ -351,7 +348,85 @@ new file mode 100644
 +    }
 +}
 +
++
++static __global__ void kernel_rq3_greedy(const float * logits, int64_t count, int32_t * out) {
++    __shared__ float maxima[256];
++    __shared__ int indices[256], invalid[256];
++    const int lane = threadIdx.x;
++    float best = -INFINITY;
++    int index = INT32_MAX, bad = 0;
++    for (int64_t i = lane; i < count; i += 256) {
++        const float value = logits[i];
++        bad |= !isfinite(value);
++        if (value > best || (value == best && i < index)) { best = value; index = int(i); }
++    }
++    maxima[lane] = best; indices[lane] = index; invalid[lane] = bad;
++    __syncthreads();
++    for (int stride = 128; stride; stride /= 2) {
++        if (lane < stride) {
++            const int other = lane + stride;
++            invalid[lane] |= invalid[other];
++            if (maxima[other] > maxima[lane] || (maxima[other] == maxima[lane] && indices[other] < indices[lane])) {
++                maxima[lane] = maxima[other]; indices[lane] = indices[other];
++            }
++        }
++        __syncthreads();
++    }
++    if (!lane) { *out = invalid[0] ? -1 : indices[0]; }
++}
++
++static __global__ void kernel_rq3_ternary128(rq3_args a, const uchar * src0,
++        const uchar * src1, const uchar * src2, float * out) {
++    const int lane = threadIdx.x % 32;
++    const int64_t dest = int64_t(blockIdx.x) * 4 + threadIdx.x / 32;
++    if (dest >= a.outputs) { return; }
++    const rq3_view v = rq3_parse(src1);
++    const int64_t row = a.permutation ? ((const int *) src2)[dest] : dest;
++    const bool ternary = v.bits == 2 && v.sbits == 16 && v.group == 128;
++    const float * x = (const float *) src0;
++    float sums[4] = {};
++    for (int64_t group = 0; group < a.inputs / 128; ++group) {
++        float scale = 0;
++        if (!lane && ternary) { scale = rq3_half(v.scales + (row * v.groups + group) * 2); }
++        scale = __shfl_sync(0xffffffffu, scale, 0);
++        #pragma unroll
++        for (int p = 0; p < 4; ++p) {
++            const int64_t col = group * 128 + p * 32 + lane;
++            float w;
++            if (ternary) {
++                const uint code = (v.codes[(row * v.cols + col) / 4] >> ((col % 4) * 2)) & 3u;
++                w = code == 3 ? NAN : rq3_round(__uint_as_float(rq3_u32(v.book + code * 4)) * scale);
++            } else { w = rq3_round(rq3_weight(v, row, col)); }
++            sums[p] += w * rq3_round(x[int64_t(blockIdx.y) * v.cols + col]);
++        }
++    }
++    float total = (sums[0] + sums[2]) + (sums[1] + sums[3]);
++    for (int stride = 16; stride; stride /= 2) {
++        const float other = __shfl_down_sync(0xffffffffu, total, stride);
++        if (lane < stride) { total += other; }
++    }
++    if (!lane) { out[int64_t(blockIdx.y) * v.rows + dest] = rq3_round(total); }
++}
++
++static __device__ unsigned long long rq3_dispatch_counts[36];
++static __global__ void rq3_record_dispatch(const uchar * packed, int path) {
++    const rq3_view v = rq3_parse(packed);
++    const int format = v.bits == 2 && v.sbits == 16 && v.group == 128 ? 0 :
++        v.bits == 4 && v.sbits == 8 ? 1 : v.bits == 6 ? 2 : 3;
++    if (path == 6 && format != 0) { path = 1; }
++    atomicAdd(&rq3_dispatch_counts[format * 9 + path], 1ULL);
++}
++extern "C" GGML_BACKEND_API int ggml_cuda_rq3_dispatch_v2(uint64_t * counts, int reset) {
++    if (!counts) { return 0; }
++    CUDA_CHECK(cudaDeviceSynchronize());
++    CUDA_CHECK(cudaMemcpyFromSymbol(counts, rq3_dispatch_counts, sizeof(rq3_dispatch_counts)));
++    if (reset) { uint64_t zero[36] = {}; CUDA_CHECK(cudaMemcpyToSymbol(rq3_dispatch_counts, zero, sizeof(zero))); }
++    return 1;
++}
++
 +#include "rq3-experiment.cuh"
++#include "rq3-w2a8.cuh"
++#include "rq3-tensorcore.cuh"
 +
 +// Process-local diagnostics. Counts describe host dispatches, not CUDA graph
 +// replays. Timings require graphs disabled and intentionally synchronize each
@@ -387,6 +462,20 @@ new file mode 100644
 +void ggml_cuda_rq3(ggml_backend_cuda_context & ctx, ggml_tensor * op) {
 +    GGML_ASSERT(rq3_supported(op));
 +    const auto tag = rq3_kind(op);
++    if (tag == RQ3_GREEDY) {
++        kernel_rq3_greedy<<<1, 256, 0, ctx.stream()>>>((const float *) op->src[0]->data,
++            ggml_nelements(op->src[0]), (int32_t *) op->data);
++        CUDA_CHECK(cudaGetLastError());
++        return;
++    }
++    if (tag == RQ3_W2A8) {
++        rq3_args args = {op->src[0]->ne[0], op->ne[0], ggml_nrows(op->src[0]), 0, int64_t(tag)};
++        rq3_record_dispatch<<<1, 1, 0, ctx.stream()>>>((const uchar *) op->src[1]->data, 7);
++        const size_t scratch = rq3_launch_w2a8(ctx, args, op);
++        std::lock_guard<std::mutex> guard(rq3_profile_mutex);
++        rq3_scratch_peak = std::max(rq3_scratch_peak, uint64_t(scratch));
++        return;
++    }
 +    const int64_t inputs = tag == RQ3_ROWS ? op->ne[0] : op->src[0]->ne[0];
 +    const int64_t tokens = tag == RQ3_ROWS ? ggml_nelements(op->src[0]) : ggml_nrows(op->src[0]);
 +    rq3_args a = {inputs, op->ne[0], tokens, op->src[2]->type == GGML_TYPE_I32, int64_t(tag)};
@@ -394,13 +483,17 @@ new file mode 100644
 +    GGML_ASSERT(groups > 0 && groups <= INT32_MAX && tokens > 0 && tokens <= 65535);
 +    const char * variant = getenv("ROTQUANT_RQ3_KERNEL");
 +    const auto experiment = rq3_experiment_for(variant);
-+    const int w5_tile = experiment.id ? 8 : !variant ? 0 : strcmp(variant, "w5s8") == 0 ? 4 :
++    const bool ternary128 = variant && strcmp(variant, "ternary-g128") == 0;
++    const bool w2a8 = variant && strcmp(variant, "ternary-w2a8") == 0;
++    const bool tensorcore = variant && strcmp(variant, "tensorcore-fused") == 0;
++    const int w5_tile = experiment.id || w2a8 || tensorcore || (variant && strcmp(variant, "tile8") == 0) ? 8 : !variant ? 0 : strcmp(variant, "w5s8") == 0 ? 4 :
 +        strcmp(variant, "w5s8-tile8") == 0 ? 8 : strcmp(variant, "w5s8-tile16") == 0 ? 16 : 0;
-+    GGML_ASSERT(!variant || w5_tile || strcmp(variant, "reference") == 0 || strcmp(variant, "tiled4") == 0 || strcmp(variant, "decode4") == 0);
++    GGML_ASSERT(!variant || tensorcore || w2a8 || ternary128 || w5_tile || strcmp(variant, "reference") == 0 || strcmp(variant, "tiled4") == 0 || strcmp(variant, "decode4") == 0);
 +    const bool decode = variant && (w5_tile || strcmp(variant, "decode4") == 0) && tag == RQ3_MATMUL && tokens == 1;
 +    const bool tiled = variant && (w5_tile || strcmp(variant, "tiled4") == 0 || strcmp(variant, "decode4") == 0) && tag == RQ3_MATMUL && tokens >= 4;
 +    const bool gemm = experiment.rows && tag == RQ3_MATMUL && tokens >= 4;
-+    const bool head = experiment.head && tag == RQ3_HEAD;
++    const bool head = (experiment.head || tensorcore) && tag == RQ3_HEAD;
++    const bool fused = tensorcore && tag == RQ3_MATMUL && tokens >= 4;
 +    size_t scratch = 0;
 +    const char * enabled = getenv("ROTQUANT_RQ3_PROFILE");
 +    const bool profile = enabled && strcmp(enabled, "1") == 0;
@@ -414,7 +507,18 @@ new file mode 100644
 +        CUDA_CHECK(cudaEventCreate(&end));
 +        CUDA_CHECK(cudaEventRecord(begin, ctx.stream()));
 +    }
-+    if (gemm) {
++    const bool specialized = ternary128 && tag == RQ3_MATMUL;
++    if (tag == RQ3_MATMUL || tag == RQ3_HEAD) {
++        const int path = fused ? 8 : specialized ? 6 : gemm ? 5 : head ? 4 : decode ? 1 : tiled ? (w5_tile == 8 ? 3 : 2) : 0;
++        rq3_record_dispatch<<<1, 1, 0, ctx.stream()>>>((const uchar *) op->src[1]->data, path);
++    }
++    if (fused) {
++        scratch = rq3_launch_tensorcore(ctx, a, op);
++    } else if (specialized) {
++        kernel_rq3_ternary128<<<dim3((groups + 3) / 4, tokens), 128, 0, ctx.stream()>>>(a,
++            (const uchar *) op->src[0]->data, (const uchar *) op->src[1]->data,
++            (const uchar *) op->src[2]->data, (float *) op->data);
++    } else if (gemm) {
 +        scratch = experiment.half ? rq3_chunk_gemm<half>(ctx, a, op, experiment.rows) :
 +            rq3_chunk_gemm<float>(ctx, a, op, experiment.rows);
 +    } else if (head) {
@@ -467,10 +571,9 @@ new file mode 100644
 +    if (w5_tile && (decode || (tiled && !gemm))) { rq3_w5_dispatches[w5_tile == 4 ? 0 : w5_tile == 8 ? 1 : 2]++; }
 +}
 diff --git a/ggml/src/ggml-metal/CMakeLists.txt b/ggml/src/ggml-metal/CMakeLists.txt
-index 140c5d809..a17adbe6a 100644
 --- a/ggml/src/ggml-metal/CMakeLists.txt
 +++ b/ggml/src/ggml-metal/CMakeLists.txt
-@@ -33,6 +33,8 @@ set(METALLIB_KERNEL_SOURCES
+@@ -33,6 +33,8 @@
      kernels/fa.metal
      kernels/mul_mv.metal
      kernels/mul_mm.metal
@@ -479,7 +582,7 @@ index 140c5d809..a17adbe6a 100644
      kernels/quantize.metal
      kernels/softmax.metal
      kernels/norm.metal
-@@ -152,11 +154,15 @@ else()
+@@ -152,11 +154,15 @@
      set(AIR_FILES "")
      foreach(src ${METALLIB_KERNEL_SOURCES})
          get_filename_component(name ${src} NAME_WE)
@@ -497,10 +600,9 @@ index 140c5d809..a17adbe6a 100644
              COMMENT "Compiling ${src}"
              VERBATIM
 diff --git a/ggml/src/ggml-metal/ggml-metal-device.cpp b/ggml/src/ggml-metal/ggml-metal-device.cpp
-index a82caa5e4..adc6c3ec3 100644
 --- a/ggml/src/ggml-metal/ggml-metal-device.cpp
 +++ b/ggml/src/ggml-metal/ggml-metal-device.cpp
-@@ -1334,6 +1334,66 @@ ggml_metal_pipeline_with_params ggml_metal_library_get_pipeline_fwht(ggml_metal_
+@@ -1334,6 +1334,66 @@
      return res;
  }
  
@@ -568,10 +670,9 @@ index a82caa5e4..adc6c3ec3 100644
  ggml_metal_pipeline_with_params ggml_metal_library_get_pipeline_top_k(ggml_metal_library_t lib, const ggml_tensor * op) {
      assert(op->op == GGML_OP_TOP_K);
 diff --git a/ggml/src/ggml-metal/ggml-metal-device.h b/ggml/src/ggml-metal/ggml-metal-device.h
-index 003b688db..cb13fcf09 100644
 --- a/ggml/src/ggml-metal/ggml-metal-device.h
 +++ b/ggml/src/ggml-metal/ggml-metal-device.h
-@@ -144,6 +144,12 @@ struct ggml_metal_pipeline_with_params ggml_metal_library_get_pipeline_argmax
+@@ -144,6 +144,12 @@
  struct ggml_metal_pipeline_with_params ggml_metal_library_get_pipeline_argsort           (ggml_metal_library_t lib, const struct ggml_tensor * op);
  struct ggml_metal_pipeline_with_params ggml_metal_library_get_pipeline_argsort_merge     (ggml_metal_library_t lib, const struct ggml_tensor * op);
  struct ggml_metal_pipeline_with_params ggml_metal_library_get_pipeline_fwht              (ggml_metal_library_t lib, int n);
@@ -585,7 +686,6 @@ index 003b688db..cb13fcf09 100644
  struct ggml_metal_pipeline_with_params ggml_metal_library_get_pipeline_top_k_merge       (ggml_metal_library_t lib, const struct ggml_tensor * op);
  struct ggml_metal_pipeline_with_params ggml_metal_library_get_pipeline_bin               (ggml_metal_library_t lib, const struct ggml_tensor * op, int32_t n_fuse );
 diff --git a/ggml/src/ggml-metal/ggml-metal-device.m b/ggml/src/ggml-metal/ggml-metal-device.m
-index 41ce90dc8..82bc7d8ba 100644
 --- a/ggml/src/ggml-metal/ggml-metal-device.m
 +++ b/ggml/src/ggml-metal/ggml-metal-device.m
 @@ -3,6 +3,7 @@
@@ -596,10 +696,11 @@ index 41ce90dc8..82bc7d8ba 100644
  
  #include <Foundation/Foundation.h>
  
-@@ -22,6 +23,14 @@
+@@ -21,6 +22,14 @@
+     TARGET_OS_VISION && __VISION_OS_VERSION_MAX_ALLOWED >= 200000
  #define GGML_METAL_HAS_RESIDENCY_SETS 1
  #endif
- 
++
 +#define GGML_METAL_RQ_ROTATE_MAGIC ((uintptr_t) 0x5251524f54415445ULL)
 +#define GGML_METAL_RQ_MUL_MAT_MAGIC ((uintptr_t) 0x52514d554c4d4154ULL)
 +#define GGML_METAL_RQ_GET_ROWS_MAGIC ((uintptr_t) 0x5251474554524f57ULL)
@@ -607,11 +708,10 @@ index 41ce90dc8..82bc7d8ba 100644
 +#define GGML_METAL_RQ_KV_STORE_V_MAGIC ((uintptr_t) 0x52514b5653544f56ULL)
 +#define GGML_METAL_RQ_KV_LOAD_K_MAGIC  ((uintptr_t) 0x52514b564c4f414bULL)
 +#define GGML_METAL_RQ_KV_LOAD_V_MAGIC  ((uintptr_t) 0x52514b564c4f4156ULL)
-+
+ 
  // overload of MTLGPUFamilyMetalX (not available in some environments)
  static const NSInteger MTLGPUFamilyMetal3_GGML = 5001;
- static const NSInteger MTLGPUFamilyMetal4_GGML = 5002;
-@@ -108,6 +117,8 @@ int ggml_metal_pipeline_max_theads_per_threadgroup(struct ggml_metal_pipeline_wi
+@@ -108,6 +117,8 @@
      X(FA,              fa)             \
      X(MUL_MV,          mul_mv)         \
      X(MUL_MM,          mul_mm)         \
@@ -620,13 +720,13 @@ index 41ce90dc8..82bc7d8ba 100644
      X(QUANTIZE,        quantize)       \
      X(SOFTMAX,         softmax)        \
      X(NORM,            norm)           \
-@@ -1808,6 +1819,92 @@ bool ggml_metal_device_supports_op(ggml_metal_device_t dev, const struct ggml_te
+@@ -1808,6 +1819,92 @@
          case GGML_OP_OPT_STEP_ADAMW:
          case GGML_OP_OPT_STEP_SGD:
              return has_simdgroup_reduction;
 +        case GGML_OP_CUSTOM:
 +            {
-+                if (rq3_kind(op)) { return has_simdgroup_reduction && rq3_supported(op); }
++                if (rq3_kind(op)) { return rq3_kind(op) < RQ3_GREEDY && has_simdgroup_reduction && rq3_supported(op); }
 +                const struct ggml_custom_op_params * params =
 +                    (const struct ggml_custom_op_params *) op->op_params;
 +                const uintptr_t magic = (uintptr_t) params->userdata;
@@ -714,14 +814,12 @@ index 41ce90dc8..82bc7d8ba 100644
              return false;
      }
 diff --git a/ggml/src/ggml-metal/ggml-metal-impl.h b/ggml/src/ggml-metal/ggml-metal-impl.h
-index 49102afe9..3fc035055 100644
 --- a/ggml/src/ggml-metal/ggml-metal-impl.h
 +++ b/ggml/src/ggml-metal/ggml-metal-impl.h
-@@ -1193,6 +1193,68 @@ typedef struct {
-     int32_t nrows;
+@@ -1194,6 +1194,68 @@
  } ggml_metal_kargs_fwht;
  
-+typedef struct {
+ typedef struct {
 +    int64_t  n_embd;
 +    int64_t  n_rows;
 +    int64_t  ne01;
@@ -783,14 +881,14 @@ index 49102afe9..3fc035055 100644
 +    int32_t  value;
 +} ggml_metal_kargs_rotquant_kv_load;
 +
- typedef struct {
++typedef struct {
      int64_t  ne0;
      float    start;
+     float    step;
 diff --git a/ggml/src/ggml-metal/ggml-metal-ops.cpp b/ggml/src/ggml-metal/ggml-metal-ops.cpp
-index f6f2fdc86..6d84d916f 100644
 --- a/ggml/src/ggml-metal/ggml-metal-ops.cpp
 +++ b/ggml/src/ggml-metal/ggml-metal-ops.cpp
-@@ -8,12 +8,21 @@
+@@ -8,11 +8,20 @@
  #include "ggml-metal-common.h"
  #include "ggml-metal-device.h"
  #include "ggml-metal-tuning.h"
@@ -800,7 +898,7 @@ index f6f2fdc86..6d84d916f 100644
  #include <algorithm>
  #include <limits>
  #include <cmath>
- 
++
 +#define GGML_METAL_RQ_ROTATE_MAGIC ((uintptr_t) 0x5251524f54415445ULL)
 +#define GGML_METAL_RQ_MUL_MAT_MAGIC ((uintptr_t) 0x52514d554c4d4154ULL)
 +#define GGML_METAL_RQ_GET_ROWS_MAGIC ((uintptr_t) 0x5251474554524f57ULL)
@@ -808,25 +906,27 @@ index f6f2fdc86..6d84d916f 100644
 +#define GGML_METAL_RQ_KV_STORE_V_MAGIC ((uintptr_t) 0x52514b5653544f56ULL)
 +#define GGML_METAL_RQ_KV_LOAD_K_MAGIC  ((uintptr_t) 0x52514b564c4f414bULL)
 +#define GGML_METAL_RQ_KV_LOAD_V_MAGIC  ((uintptr_t) 0x52514b564c4f4156ULL)
-+
+ 
  static ggml_metal_buffer_id ggml_metal_get_buffer_id(const ggml_tensor * t) {
      if (!t) {
-         return { nullptr, 0 };
-@@ -496,6 +505,10 @@ static int ggml_metal_op_encode_impl(ggml_metal_op_t ctx, int idx) {
+@@ -495,6 +504,10 @@
+         case GGML_OP_COUNT_EQUAL:
              {
                  n_fuse = ggml_metal_op_count_equal(ctx, idx);
-             } break;
++            } break;
 +        case GGML_OP_CUSTOM:
 +            {
 +                n_fuse = ggml_metal_op_rotquant(ctx, idx);
-+            } break;
+             } break;
          default:
              {
-                 GGML_LOG_ERROR("%s: error: node %3d, op = %8s not implemented\n", __func__, idx, ggml_op_name(node->op));
-@@ -2267,6 +2280,166 @@ int ggml_metal_op_fwht(ggml_metal_op_t ctx, int idx) {
-     return 1;
- }
+@@ -2264,6 +2277,166 @@
+     const int64_t n_tg = (nrows + sg_per_tg - 1) / sg_per_tg;
+     ggml_metal_encoder_dispatch_threadgroups(enc, n_tg, 1, 1, 32*sg_per_tg, 1, 1);
  
++    return 1;
++}
++
 +int ggml_metal_op_rotquant(ggml_metal_op_t ctx, int idx) {
 +    ggml_tensor * op = ctx->node(idx);
 +    ggml_metal_library_t lib = ctx->lib;
@@ -984,17 +1084,13 @@ index f6f2fdc86..6d84d916f 100644
 +    ggml_metal_encoder_set_buffer(enc, ggml_metal_get_buffer_id(op),      3);
 +    ggml_metal_encoder_dispatch_threadgroups(
 +        enc, (qweight->ne[1] + nsg - 1) / nsg, ggml_nrows(input), 1, 32 * nsg, 1, 1);
-+    return 1;
-+}
-+
- int ggml_metal_op_pool_2d(ggml_metal_op_t ctx, int idx) {
-     ggml_tensor * op = ctx->node(idx);
+     return 1;
+ }
  
 diff --git a/ggml/src/ggml-metal/ggml-metal-ops.h b/ggml/src/ggml-metal/ggml-metal-ops.h
-index 159a628d0..a495a3854 100644
 --- a/ggml/src/ggml-metal/ggml-metal-ops.h
 +++ b/ggml/src/ggml-metal/ggml-metal-ops.h
-@@ -68,6 +68,7 @@ int ggml_metal_op_cpy               (ggml_metal_op_t ctx, int idx);
+@@ -68,6 +68,7 @@
  int ggml_metal_op_pool_1d           (ggml_metal_op_t ctx, int idx);
  int ggml_metal_op_pool_2d           (ggml_metal_op_t ctx, int idx);
  int ggml_metal_op_fwht              (ggml_metal_op_t ctx, int idx);
@@ -1004,7 +1100,6 @@ index 159a628d0..a495a3854 100644
  int ggml_metal_op_add_id            (ggml_metal_op_t ctx, int idx);
 diff --git a/ggml/src/ggml-metal/kernels/rotquant.metal b/ggml/src/ggml-metal/kernels/rotquant.metal
 new file mode 100644
-index 000000000..cb89d0b90
 --- /dev/null
 +++ b/ggml/src/ggml-metal/kernels/rotquant.metal
 @@ -0,0 +1,394 @@
@@ -1510,10 +1605,9 @@ new file mode 100644
 +}
 diff --git a/ggml/src/rotquant-v3.h b/ggml/src/rotquant-v3.h
 new file mode 100644
-index 000000000..9bb5f2abb
 --- /dev/null
 +++ b/ggml/src/rotquant-v3.h
-@@ -0,0 +1,33 @@
+@@ -0,0 +1,46 @@
 +#pragma once
 +#include "ggml.h"
 +#include "ggml-impl.h"
@@ -1522,16 +1616,29 @@ index 000000000..9bb5f2abb
 +#define RQ3_MATMUL 0x52513302u
 +#define RQ3_HEAD   0x52513303u
 +#define RQ3_ROWS   0x52513304u
++#define RQ3_GREEDY 0x52513305u
++#define RQ3_W2A8   0x52513306u
 +
 +static inline uintptr_t rq3_kind(const struct ggml_tensor * op) {
 +    if (op->op != GGML_OP_CUSTOM) { return 0; }
 +    const struct ggml_custom_op_params * p = (const struct ggml_custom_op_params *) op->op_params;
 +    const uintptr_t tag = (uintptr_t) p->userdata;
-+    return tag >= RQ3_ROTATE && tag <= RQ3_ROWS ? tag : 0;
++    return tag >= RQ3_ROTATE && tag <= RQ3_W2A8 ? tag : 0;
 +}
 +
 +static inline bool rq3_supported(const struct ggml_tensor * op) {
 +    const uintptr_t tag = rq3_kind(op);
++    if (tag == RQ3_GREEDY) {
++        return op->type == GGML_TYPE_I32 && ggml_nelements(op) == 1 && op->src[0] &&
++            op->src[0]->type == GGML_TYPE_F32 && ggml_is_contiguous(op->src[0]);
++    }
++    if (tag == RQ3_W2A8) {
++        return op->type == GGML_TYPE_F32 && ggml_is_contiguous(op) && op->src[0] &&
++            op->src[0]->type == GGML_TYPE_F32 && ggml_is_contiguous(op->src[0]) &&
++            op->src[1] && op->src[1]->type == GGML_TYPE_I8 && op->src[2] && op->src[2]->type == GGML_TYPE_I8 &&
++            op->src[3] && op->src[4] && (op->src[3]->type == GGML_TYPE_I8 || op->src[3]->type == GGML_TYPE_I32) &&
++            (op->src[4]->type == GGML_TYPE_I8 || op->src[4]->type == GGML_TYPE_I32);
++    }
 +    if (!tag || op->type != GGML_TYPE_F32 || !ggml_is_contiguous(op)) { return false; }
 +    for (int i = 0; i < 3; ++i) {
 +        if (!op->src[i] || !ggml_is_contiguous(op->src[i])) { return false; }
@@ -1548,10 +1655,9 @@ index 000000000..9bb5f2abb
 +        (op->src[2]->type == GGML_TYPE_I8 || (tag == RQ3_MATMUL && op->src[2]->type == GGML_TYPE_I32));
 +}
 diff --git a/src/CMakeLists.txt b/src/CMakeLists.txt
-index 8922dc12a..da0611eca 100644
 --- a/src/CMakeLists.txt
 +++ b/src/CMakeLists.txt
-@@ -38,6 +38,8 @@ add_library(llama
+@@ -38,6 +38,8 @@
              llama-model-saver.cpp
              llama-model.cpp
              llama-quant.cpp
@@ -1560,7 +1666,7 @@ index 8922dc12a..da0611eca 100644
              llama-sampler.cpp
              llama-vocab.cpp
              unicode-data.cpp
-@@ -63,6 +65,20 @@ target_compile_features   (llama PRIVATE cxx_std_17) # don't bump
+@@ -63,6 +65,20 @@
  
  target_link_libraries(llama PUBLIC ggml)
  
@@ -1582,7 +1688,6 @@ index 8922dc12a..da0611eca 100644
      set_target_properties(llama PROPERTIES POSITION_INDEPENDENT_CODE ON)
      target_compile_definitions(llama PRIVATE LLAMA_BUILD)
 diff --git a/src/llama-graph.cpp b/src/llama-graph.cpp
-index 8fca8e1bc..523e609e2 100644
 --- a/src/llama-graph.cpp
 +++ b/src/llama-graph.cpp
 @@ -1,4 +1,5 @@
@@ -1599,7 +1704,7 @@ index 8fca8e1bc..523e609e2 100644
  
  #include <cassert>
  #include <cmath>
-@@ -2305,7 +2307,10 @@ ggml_tensor * llm_graph_context::build_moe_ffn(
+@@ -2305,7 +2307,10 @@
  }
  
  // input embeddings with optional lora
@@ -1611,7 +1716,7 @@ index 8fca8e1bc..523e609e2 100644
      const int64_t n_embd_inp = hparams.n_embd_inp();
      const int64_t n_embd     = hparams.n_embd;
  
-@@ -2330,7 +2335,9 @@ ggml_tensor * llm_graph_context::build_inp_embd(ggml_tensor * tok_embd) const {
+@@ -2330,7 +2335,9 @@
      {
          auto & cur = inps[0];
  
@@ -1623,10 +1728,9 @@ index 8fca8e1bc..523e609e2 100644
          // apply lora for embedding tokens if needed
          for (const auto & lora : *loras) {
 diff --git a/src/llama-graph.h b/src/llama-graph.h
-index b388e028c..cdffb8644 100644
 --- a/src/llama-graph.h
 +++ b/src/llama-graph.h
-@@ -1147,7 +1147,10 @@ struct llm_graph_context {
+@@ -1147,7 +1147,10 @@
      // inputs
      //
  
@@ -1639,13 +1743,13 @@ index b388e028c..cdffb8644 100644
      ggml_tensor * build_inp_attn_scale() const;
      ggml_tensor * build_inp_out_ids() const;
 diff --git a/src/llama-hparams.h b/src/llama-hparams.h
-index 1411692a8..ecba4b5ae 100644
 --- a/src/llama-hparams.h
 +++ b/src/llama-hparams.h
-@@ -170,6 +170,16 @@ struct llama_hparams {
+@@ -169,6 +169,16 @@
+ 
      // for hybrid state space models
      std::array<uint32_t, LLAMA_MAX_LAYERS> is_recr_impl;
- 
++
 +    // Native RotQuant frozen mixed-bit KV cache metadata.
 +    bool rotquant_kv_cache = false;
 +    uint32_t rotquant_kv_group_size = 0;
@@ -1655,12 +1759,10 @@ index 1411692a8..ecba4b5ae 100644
 +    float rotquant_kv_effective_bpv = 0.0f;
 +    std::array<uint32_t, LLAMA_MAX_LAYERS> rotquant_kv_key_bits = {};
 +    std::array<uint32_t, LLAMA_MAX_LAYERS> rotquant_kv_value_bits = {};
-+
+ 
      // for State Space Models
      uint32_t ssm_d_conv  = 0;
-     uint32_t ssm_d_inner = 0;
 diff --git a/src/llama-kv-cache.cpp b/src/llama-kv-cache.cpp
-index 8fafcd153..b2ba74dfb 100644
 --- a/src/llama-kv-cache.cpp
 +++ b/src/llama-kv-cache.cpp
 @@ -4,6 +4,7 @@
@@ -1671,7 +1773,7 @@ index 8fafcd153..b2ba74dfb 100644
  
  #include <algorithm>
  #include <array>
-@@ -81,7 +82,7 @@ llama_kv_cache::llama_kv_cache(
+@@ -81,7 +82,7 @@
      const  layer_reuse_cb & reuse,
      const  layer_share_cb & share,
               const char *   name_tag) :
@@ -1680,18 +1782,18 @@ index 8fafcd153..b2ba74dfb 100644
      n_seq_max(n_seq_max), n_stream(unified ? 1 : n_seq_max), n_pad(n_pad), n_swa(n_swa), swa_type(swa_type),
      other(static_cast<llama_kv_cache *>(mem_other)),
      v_cells_impl(other ? other->v_cells_impl : std::make_shared<llama_kv_cells_vec>()),
-@@ -102,6 +103,10 @@ llama_kv_cache::llama_kv_cache(
+@@ -101,6 +102,10 @@
+     GGML_ASSERT(kv_size % n_pad == 0);
  
      const uint32_t n_layer = hparams.n_layer_all;
- 
++
 +    if (hparams.rotquant_kv_cache && v_trans) {
 +        throw std::runtime_error("RotQuant frozen KV cache requires flash attention (--flash-attn on)");
 +    }
-+
+ 
      // define a comparator for the buft -> ctx map to ensure that the order is well-defined:
      struct ggml_backend_buft_comparator {
-         bool operator()(const ggml_backend_buffer_type_t & lhs, const ggml_backend_buffer_type_t & rhs) const {
-@@ -231,8 +236,19 @@ llama_kv_cache::llama_kv_cache(
+@@ -231,8 +236,19 @@
          const bool has_k = true;
          const bool has_v = !is_mla;
  
@@ -1713,7 +1815,7 @@ index 8fafcd153..b2ba74dfb 100644
  
          has_k && ggml_format_name(k, "cache_%sk_l%d", name_tag, il);
          has_v && ggml_format_name(v, "cache_%sv_l%d", name_tag, il);
-@@ -241,13 +257,13 @@ llama_kv_cache::llama_kv_cache(
+@@ -241,13 +257,13 @@
          std::vector<ggml_tensor *> v_stream;
  
          for (uint32_t s = 0; s < n_stream; ++s) {
@@ -1730,18 +1832,18 @@ index 8fafcd153..b2ba74dfb 100644
      }
  
      if (reuse) {
-@@ -305,6 +321,10 @@ llama_kv_cache::llama_kv_cache(
+@@ -303,6 +319,10 @@
+                 (float)(memory_size_k + memory_size_v) / (1024.0f * 1024.0f), kv_size, (int) layers.size(), n_seq_max, n_stream,
+                 ggml_type_name(type_k), (float)memory_size_k / (1024.0f * 1024.0f),
                  ggml_type_name(type_v), (float)memory_size_v / (1024.0f * 1024.0f));
-     }
- 
-+    if (hparams.rotquant_kv_cache) {
-+        LLAMA_LOG_INFO("%s: RotQuant frozen mixed KV cache active: 3.25 bpv, Gaussian 2/3/4-bit, group 64, FWHT-128\n", __func__);
 +    }
 +
++    if (hparams.rotquant_kv_cache) {
++        LLAMA_LOG_INFO("%s: RotQuant frozen mixed KV cache active: 3.25 bpv, Gaussian 2/3/4-bit, group 64, FWHT-128\n", __func__);
+     }
+ 
      // TODO: refactor [TAG_KV_CACHE_SHARE_CELLS]
-     if (other) {
-         n_embd_head_k_all = other->n_embd_head_k_all;
-@@ -1187,6 +1207,9 @@ void llama_kv_cache::apply_ubatch(const slot_info & sinfo, const llama_ubatch &
+@@ -1187,6 +1207,9 @@
  }
  
  bool llama_kv_cache::get_can_shift() const {
@@ -1751,7 +1853,7 @@ index 8fafcd153..b2ba74dfb 100644
      // Step35 uses per-layer RoPE dims; K-shift assumes a single global n_rot.
      if (model.arch == LLM_ARCH_STEP35) {
          return false;
-@@ -1218,11 +1241,11 @@ bool llama_kv_cache::get_has_shift() const {
+@@ -1218,11 +1241,11 @@
  }
  
  ggml_type llama_kv_cache::type_k() const {
@@ -1765,14 +1867,12 @@ index 8fafcd153..b2ba74dfb 100644
  }
  
  std::vector<uint32_t> llama_kv_cache::get_layer_ids() const {
-@@ -1270,11 +1293,18 @@ ggml_tensor * llama_kv_cache::get_k(ggml_context * ctx, int32_t il, uint32_t n_k
+@@ -1270,11 +1293,18 @@
      auto * k = layers[ikv].k;
  
      const uint64_t kv_size      = get_size();
--    const uint64_t n_embd_k_gqa = k->ne[0];
 +    const uint32_t ns = sinfo.s1 - sinfo.s0 + 1;
- 
--    assert(n_embd_k_gqa == hparams.n_embd_k_gqa(il));
++
 +    if (layers[ikv].k_bits) {
 +        ggml_tensor * packed = ggml_view_3d(ctx, k,
 +                k->ne[0], n_kv, ns,
@@ -1780,14 +1880,16 @@ index 8fafcd153..b2ba74dfb 100644
 +        return llama_rotquant_kv_load(ctx, packed,
 +                hparams.n_embd_head_k(il), hparams.n_head_kv(il), layers[ikv].k_bits, false);
 +    }
- 
++
+     const uint64_t n_embd_k_gqa = k->ne[0];
+-
+     assert(n_embd_k_gqa == hparams.n_embd_k_gqa(il));
+-
 -    const uint32_t ns = sinfo.s1 - sinfo.s0 + 1;
-+    const uint64_t n_embd_k_gqa = k->ne[0];
-+    assert(n_embd_k_gqa == hparams.n_embd_k_gqa(il));
  
      return ggml_view_4d(ctx, k,
              hparams.n_embd_head_k(il), hparams.n_head_kv(il), n_kv, ns,
-@@ -1290,13 +1320,22 @@ ggml_tensor * llama_kv_cache::get_v(ggml_context * ctx, int32_t il, uint32_t n_k
+@@ -1290,12 +1320,21 @@
      auto * v = layers[ikv].v;
  
      const uint64_t kv_size      = get_size();
@@ -1806,13 +1908,12 @@ index 8fafcd153..b2ba74dfb 100644
  
      // [TAG_V_CACHE_VARIABLE]
      assert(n_embd_v_gqa >= hparams.n_embd_v_gqa(il));
- 
--    const uint32_t ns = sinfo.s1 - sinfo.s0 + 1;
 -
+-    const uint32_t ns = sinfo.s1 - sinfo.s0 + 1;
+ 
      if (!v_trans) {
          // note: v->nb[1] <= v->nb[2]
-         return ggml_view_4d(ctx, v,
-@@ -1329,6 +1368,10 @@ ggml_tensor * llama_kv_cache::cpy_k(ggml_context * ctx, ggml_tensor * k_cur, ggm
+@@ -1329,6 +1368,10 @@
  
      const int64_t n_embd_gqa = n_embd_head*n_head;
  
@@ -1823,19 +1924,19 @@ index 8fafcd153..b2ba74dfb 100644
      // we can merge dims 0 and 1
      // TODO: add ggml helper function for this?
      GGML_ASSERT(ggml_row_size(k_cur->type, n_embd_head) == k_cur->nb[1]);
-@@ -1364,6 +1407,11 @@ ggml_tensor * llama_kv_cache::cpy_v(ggml_context * ctx, ggml_tensor * v_cur, ggm
+@@ -1363,6 +1406,11 @@
+     const int64_t n_tokens    = v_cur->ne[2];
  
      const int64_t n_embd_gqa = n_embd_head*n_head;
- 
++
 +    if (layers[ikv].v_bits) {
 +        GGML_ASSERT(!v_trans);
 +        return llama_rotquant_kv_store(ctx, v, v_cur, v_idxs, layers[ikv].v_bits, true);
 +    }
-+
+ 
      // we can merge dims 0 and 1
      GGML_ASSERT(ggml_row_size(v_cur->type, n_embd_head) == v_cur->nb[1]);
- 
-@@ -2286,10 +2334,6 @@ void llama_kv_cache::state_write_data(llama_io_write_i & io, const cell_ranges_t
+@@ -2286,10 +2334,6 @@
      // Iterate and write all the keys first, each row is a cell
      // Get whole range at a time
      for (const auto & layer : layers) {
@@ -1846,7 +1947,7 @@ index 8fafcd153..b2ba74dfb 100644
          auto * k = layer.k_stream[cr.strm];
  
          // Write key type
-@@ -2297,7 +2341,7 @@ void llama_kv_cache::state_write_data(llama_io_write_i & io, const cell_ranges_t
+@@ -2297,7 +2341,7 @@
          io.write(&k_type_i, sizeof(k_type_i));
  
          // Write row size of key
@@ -1855,7 +1956,7 @@ index 8fafcd153..b2ba74dfb 100644
          io.write(&k_size_row, sizeof(k_size_row));
  
          // Read each range of cells of k_size length and write out
-@@ -2310,10 +2354,6 @@ void llama_kv_cache::state_write_data(llama_io_write_i & io, const cell_ranges_t
+@@ -2310,10 +2354,6 @@
  
      if (!v_trans) {
          for (const auto & layer : layers) {
@@ -1866,7 +1967,7 @@ index 8fafcd153..b2ba74dfb 100644
              auto * v = layer.v_stream[cr.strm];
              if (!v) {
                  continue;
-@@ -2324,7 +2364,7 @@ void llama_kv_cache::state_write_data(llama_io_write_i & io, const cell_ranges_t
+@@ -2324,7 +2364,7 @@
              io.write(&v_type_i, sizeof(v_type_i));
  
              // Write row size of value
@@ -1875,7 +1976,7 @@ index 8fafcd153..b2ba74dfb 100644
              io.write(&v_size_row, sizeof(v_size_row));
  
              // Read each range of cells of v_size length and write out
-@@ -2558,8 +2598,6 @@ bool llama_kv_cache::state_read_data(llama_io_read_i & io, uint32_t strm, uint32
+@@ -2558,8 +2598,6 @@
      for (const auto & layer : layers) {
          const uint32_t il = layer.il;
  
@@ -1884,7 +1985,7 @@ index 8fafcd153..b2ba74dfb 100644
          auto * k = layer.k_stream[strm];
  
          // Read type of key
-@@ -2574,7 +2612,7 @@ bool llama_kv_cache::state_read_data(llama_io_read_i & io, uint32_t strm, uint32
+@@ -2574,7 +2612,7 @@
          // Read row size of key
          uint64_t k_size_row_ref;
          io.read(&k_size_row_ref, sizeof(k_size_row_ref));
@@ -1893,7 +1994,7 @@ index 8fafcd153..b2ba74dfb 100644
          if (k_size_row != k_size_row_ref) {
              LLAMA_LOG_ERROR("%s: mismatched key row size (%zu != %zu, layer %d)\n", __func__, k_size_row, (size_t) k_size_row_ref, il);
              return false;
-@@ -2598,8 +2636,6 @@ bool llama_kv_cache::state_read_data(llama_io_read_i & io, uint32_t strm, uint32
+@@ -2598,8 +2636,6 @@
          for (const auto & layer : layers) {
              const uint32_t il = layer.il;
  
@@ -1902,7 +2003,7 @@ index 8fafcd153..b2ba74dfb 100644
              auto * v = layer.v_stream[strm];
              if (!v) {
                  continue;
-@@ -2617,7 +2653,7 @@ bool llama_kv_cache::state_read_data(llama_io_read_i & io, uint32_t strm, uint32
+@@ -2617,7 +2653,7 @@
              // Read row size of value
              uint64_t v_size_row_ref;
              io.read(&v_size_row_ref, sizeof(v_size_row_ref));
@@ -1912,10 +2013,9 @@ index 8fafcd153..b2ba74dfb 100644
                  LLAMA_LOG_ERROR("%s: mismatched value row size (%zu != %zu, layer %d)\n", __func__, v_size_row, (size_t) v_size_row_ref, il);
                  return false;
 diff --git a/src/llama-kv-cache.h b/src/llama-kv-cache.h
-index c4d8699de..2b67f70f1 100644
 --- a/src/llama-kv-cache.h
 +++ b/src/llama-kv-cache.h
-@@ -255,10 +255,16 @@ private:
+@@ -255,9 +255,15 @@
          ggml_tensor * k;
          ggml_tensor * v;
  
@@ -1925,18 +2025,16 @@ index c4d8699de..2b67f70f1 100644
          std::vector<ggml_tensor *> k_stream;
          std::vector<ggml_tensor *> v_stream;
      };
- 
++
 +    const ggml_type type_k_base;
 +    const ggml_type type_v_base;
-+
+ 
      bool v_trans = true;  // the value tensor is transposed
  
-     const uint32_t n_seq_max = 1;
 diff --git a/src/llama-model-loader.cpp b/src/llama-model-loader.cpp
-index 1b1f852a0..28c5ba755 100644
 --- a/src/llama-model-loader.cpp
 +++ b/src/llama-model-loader.cpp
-@@ -415,6 +415,7 @@ namespace GGUFMeta {
+@@ -415,6 +415,7 @@
      template bool llama_model_loader::get_arr<std::vector<uint32_t>>(enum llm_kv kid, std::vector<uint32_t> & result, bool required);
      template bool llama_model_loader::get_arr<std::array<uint64_t, LLAMA_MAX_PLE_NGRAM>>(enum llm_kv kid, std::array<uint64_t, LLAMA_MAX_PLE_NGRAM> & result, bool required);
      template bool llama_model_loader::get_arr<std::array<uint64_t, LLAMA_MAX_PLE_HEADS>>(enum llm_kv kid, std::array<uint64_t, LLAMA_MAX_PLE_HEADS> & result, bool required);
@@ -1944,7 +2042,7 @@ index 1b1f852a0..28c5ba755 100644
  
      template<typename T>
      bool llama_model_loader::get_key(const std::string & key, T & result, bool required) {
-@@ -441,6 +442,10 @@ namespace GGUFMeta {
+@@ -441,6 +442,10 @@
      template bool llama_model_loader::get_key<float>      (enum llm_kv kid, float & result,       bool required);
      template bool llama_model_loader::get_key<uint32_t>   (enum llm_kv kid, uint32_t & result,    bool required);
      template bool llama_model_loader::get_key<std::string>(enum llm_kv kid, std::string & result, bool required);
@@ -1955,7 +2053,7 @@ index 1b1f852a0..28c5ba755 100644
  
      template<>
      bool llama_model_loader::get_key(enum llm_kv kid, enum llama_pooling_type & result, bool required) {
-@@ -527,6 +532,7 @@ namespace GGUFMeta {
+@@ -527,6 +532,7 @@
      template bool llama_model_loader::get_key_or_arr<std::array<int,      4>>  (enum llm_kv kid, std::array<int,      4>   & result, uint32_t n, bool required);
      template bool llama_model_loader::get_key_or_arr<std::array<uint32_t, 512>>(enum llm_kv kid, std::array<uint32_t, 512> & result, uint32_t n, bool required);
      template bool llama_model_loader::get_key_or_arr<std::array<float,    512>>(enum llm_kv kid, std::array<float,    512> & result, uint32_t n, bool required);
@@ -1963,7 +2061,7 @@ index 1b1f852a0..28c5ba755 100644
  
  
  llama_model_loader::llama_model_loader(
-@@ -1137,10 +1143,20 @@ struct ggml_tensor * llama_model_loader::create_tensor(
+@@ -1137,10 +1143,20 @@
              return nullptr;
          }
  
@@ -1985,7 +2083,7 @@ index 1b1f852a0..28c5ba755 100644
              op = info.op == GGML_OP_MUL_MAT_ID ? GGML_OP_ADD_ID : GGML_OP_ADD;
          } else if (hparams.router_layer >= 0 && tn.suffix != nullptr &&
                  (strcmp(tn.suffix, "lora_a") == 0 || strcmp(tn.suffix, "lora_b") == 0)) {
-@@ -1161,7 +1176,7 @@ struct ggml_tensor * llama_model_loader::create_tensor(
+@@ -1161,7 +1177,7 @@
          }
  
          // select the buffer type for this tensor
@@ -1994,7 +2092,7 @@ index 1b1f852a0..28c5ba755 100644
          switch (info.layer) {
              case LLM_TENSOR_LAYER_INPUT:
                  buft_list = buft_list_input;
-@@ -1214,6 +1230,16 @@ struct ggml_tensor * llama_model_loader::create_tensor(
+@@ -1214,6 +1230,16 @@
              }
          }
  
@@ -2012,10 +2110,9 @@ index 1b1f852a0..28c5ba755 100644
          auto * buft_dev = ggml_backend_buft_get_device(buft);
          if (use_mmap && buft_dev && buft == ggml_backend_dev_host_buffer_type(buft_dev)) {
 diff --git a/src/llama-model.cpp b/src/llama-model.cpp
-index 65a6702ce..472ddd2a0 100644
 --- a/src/llama-model.cpp
 +++ b/src/llama-model.cpp
-@@ -1481,6 +1481,9 @@ bool llama_model_base::load_tensors(llama_model_loader & ml) {
+@@ -1481,6 +1481,9 @@
      // assign the input layer
      // there is very little benefit to offloading the input layer, so always keep it on the CPU
      pimpl->dev_input = { cpu_dev, &pimpl->cpu_buft_list };
@@ -2027,7 +2124,6 @@ index 65a6702ce..472ddd2a0 100644
      pimpl->dev_layer.resize(n_layer_all);
 diff --git a/src/llama-rotquant.cpp b/src/llama-rotquant.cpp
 new file mode 100644
-index 000000000..9fc1ffb38
 --- /dev/null
 +++ b/src/llama-rotquant.cpp
 @@ -0,0 +1,559 @@
@@ -2592,7 +2688,6 @@ index 000000000..9fc1ffb38
 +}
 diff --git a/src/llama-rotquant.h b/src/llama-rotquant.h
 new file mode 100644
-index 000000000..e17da26ac
 --- /dev/null
 +++ b/src/llama-rotquant.h
 @@ -0,0 +1,41 @@
@@ -2641,12 +2736,14 @@ diff --git a/src/llama-rq3.cpp b/src/llama-rq3.cpp
 new file mode 100644
 --- /dev/null
 +++ b/src/llama-rq3.cpp
-@@ -0,0 +1,141 @@
+@@ -0,0 +1,210 @@
 +#include "llama-rq3.h"
 +#include "rotquant-v3.h"
 +#include <cmath>
 +#include <cstring>
 +#include <vector>
++#include <cstdlib>
++#include <algorithm>
 +
 +static uint32_t u32(const uint8_t * p) {
 +    return uint32_t(p[0]) | (uint32_t(p[1]) << 8) | (uint32_t(p[2]) << 16) | (uint32_t(p[3]) << 24);
@@ -2709,9 +2806,61 @@ new file mode 100644
 +    for (int j = 0; j < 128; ++j) { x[j] *= 0.08838834764831845f; }
 +}
 +
++static void w2a8_compute(ggml_tensor * dst, int ith, int nth) {
++    const matrix_view m(dst->src[1]->data);
++    const auto * input = (const float *) dst->src[0]->data;
++    const auto * signs = (const int8_t *) dst->src[2]->data;
++    const auto * rows = dst->src[3]->type == GGML_TYPE_I32 ? (const int32_t *) dst->src[3]->data : nullptr;
++    const auto * cols = dst->src[4]->type == GGML_TYPE_I32 ? (const int32_t *) dst->src[4]->data : nullptr;
++    auto * output = (float *) dst->data;
++    for (int64_t i = ith; i < ggml_nelements(dst); i += nth) {
++        const int64_t token = i / m.rows, row = rows ? rows[i % m.rows] : i % m.rows;
++        float sum = 0;
++        bool valid = m.bits == 2 && m.sbits == 16 && m.group == 128 &&
++            u32(m.book) == 0xbf800000 && u32(m.book + 4) == 0 && u32(m.book + 8) == 0x3f800000 && u32(m.book + 12) == 0;
++        for (uint64_t start = 0; start < m.cols; start += 128) {
++            float values[128], maximum = 0;
++            for (int j = 0; j < 128; ++j) {
++                const int64_t col = start + j;
++                values[j] = half_round(input[token * m.cols + (cols ? cols[col] : col)]) * signs[col];
++            }
++            fwht(values);
++            for (int j = 0; j < 128; ++j) {
++                values[j] = half_round(values[j]);
++                if (!std::isfinite(values[j])) { valid = false; values[j] = 0; }
++                maximum = std::max(maximum, std::abs(values[j]));
++            }
++            const float scale = maximum == 0 ? 1.f : maximum / 127.f;
++            int dot = 0;
++            for (int j = 0; j < 128; ++j) {
++                const uint64_t col = start + j, index = row * m.cols + col;
++                const int code = (m.codes[index / 4] >> ((index % 4) * 2)) & 3;
++                const int q = int(std::nearbyint(values[j] / scale));
++                if (code == 3) { sum = NAN; }
++                dot += (code - 1) * std::max(-127, std::min(127, q));
++            }
++            const float weight_scale = half_at(m.scales + (row * m.groups + start / 128) * 2);
++            valid = valid && std::isfinite(weight_scale) && weight_scale > 0;
++            sum += float(dot) * (weight_scale * scale);
++        }
++        output[i] = valid ? half_round(sum) : NAN;
++    }
++}
++
 +static void compute(ggml_tensor * dst, int ith, int nth, void * userdata) {
 +    const uintptr_t tag = (uintptr_t) userdata;
++    if (tag == RQ3_W2A8) { w2a8_compute(dst, ith, nth); return; }
 +    const auto * input = (const float *) dst->src[0]->data;
++    if (tag == RQ3_GREEDY) {
++        if (ith) { return; }
++        int32_t best = 0;
++        for (int64_t i = 0; i < ggml_nelements(dst->src[0]); ++i) {
++            if (!std::isfinite(input[i])) { *((int32_t *) dst->data) = -1; return; }
++            if (input[i] > input[best]) { best = int32_t(i); }
++        }
++        *((int32_t *) dst->data) = best;
++        return;
++    }
 +    auto * output = (float *) dst->data;
 +    if (tag == RQ3_ROTATE) {
 +        const int64_t width = dst->ne[0], blocks = ggml_nelements(dst) / 128;
@@ -2763,6 +2912,14 @@ new file mode 100644
 +ggml_tensor * llama_rq3_mul_mat(ggml_context * ctx, ggml_tensor * weight, ggml_tensor * input, const llama_rq3_state & s) {
 +    GGML_ASSERT(input->ne[0] == s.inputs && s.inputs % 128 == 0);
 +    input = ggml_cont(ctx, ggml_cast(ctx, input, GGML_TYPE_F32));
++    const char * kernel = std::getenv("ROTQUANT_RQ3_KERNEL");
++    if (!s.vocabulary && s.bits == 2 && kernel && !strcmp(kernel, "ternary-w2a8")) {
++        ggml_tensor * src[] = {input, weight, s.signs, s.rows ? s.rows : s.signs, s.columns ? s.columns : s.signs};
++        auto * result = ggml_custom_4d(ctx, GGML_TYPE_F32, s.outputs, input->ne[1], input->ne[2], input->ne[3],
++            src, 5, compute, GGML_N_TASKS_MAX, (void *) RQ3_W2A8);
++        ggml_set_name(result, "rq3.ternary-w2a8.fused");
++        return result;
++    }
 +    if (!s.vocabulary) {
 +        ggml_tensor * src[] = {input, s.signs, s.columns ? s.columns : s.signs};
 +        input = ggml_custom_4d(ctx, GGML_TYPE_F32, input->ne[0], input->ne[1], input->ne[2], input->ne[3],
@@ -2783,12 +2940,18 @@ new file mode 100644
 +    ggml_set_name(result, "rq3.rows");
 +    return result;
 +}
++
++ggml_tensor * llama_rq3_greedy(ggml_context * ctx, ggml_tensor * logits) {
++    ggml_tensor * src[] = {logits};
++    auto * result = ggml_custom_4d(ctx, GGML_TYPE_I32, 1, 1, 1, 1, src, 1, compute, 1, (void *) RQ3_GREEDY);
++    ggml_set_name(result, "rq3.greedy.finite");
++    return result;
++}
 diff --git a/src/llama-rq3.h b/src/llama-rq3.h
 new file mode 100644
-index 000000000..c3d8f8119
 --- /dev/null
 +++ b/src/llama-rq3.h
-@@ -0,0 +1,14 @@
+@@ -0,0 +1,17 @@
 +#pragma once
 +#include "ggml.h"
 +
@@ -2799,12 +2962,14 @@ index 000000000..c3d8f8119
 +    int64_t inputs;
 +    int64_t outputs;
 +    bool vocabulary;
++    uint32_t bits = 0;
 +};
 +
 +ggml_tensor * llama_rq3_mul_mat(ggml_context * ctx, ggml_tensor * weight, ggml_tensor * input, const llama_rq3_state & state);
 +ggml_tensor * llama_rq3_get_rows(ggml_context * ctx, ggml_tensor * weight, ggml_tensor * indices, ggml_tensor * signs);
++
++ggml_tensor * llama_rq3_greedy(ggml_context * ctx, ggml_tensor * logits);
 diff --git a/src/models/models.h b/src/models/models.h
-index 9b87a40d5..fe703a26b 100644
 --- a/src/models/models.h
 +++ b/src/models/models.h
 @@ -3,6 +3,7 @@
@@ -2815,7 +2980,7 @@ index 9b87a40d5..fe703a26b 100644
  
  // note: almost all graphs require at least sqrtf, so include cmath globally
  #include <cmath>
-@@ -2234,9 +2235,18 @@ struct llama_model_qwen35 : public llama_model_base {
+@@ -2234,9 +2235,18 @@
      void load_arch_hparams(llama_model_loader & ml) override;
      void load_arch_tensors(llama_model_loader & ml) override;
  
@@ -2835,7 +3000,7 @@ index 9b87a40d5..fe703a26b 100644
          ggml_tensor * build_layer_attn(
          llm_graph_input_attn_kv * inp_attn,
                      ggml_tensor * cur,
-@@ -2264,7 +2274,7 @@ struct llama_model_qwen35 : public llama_model_base {
+@@ -2264,7 +2274,7 @@
                      ggml_tensor * input,
                              int   il);
  
@@ -2976,7 +3141,7 @@ diff --git a/src/models/qwen35.cpp b/src/models/qwen35.cpp
 +            return create_tensor(key, {count}, flags);
 +        };
 +        llama_rq3_state state = {small("rqsign", inputs, false), small("rqrow", outputs, true),
-+                                small("rqcol", inputs, true), inputs, outputs, vocabulary};
++                                small("rqcol", inputs, true), inputs, outputs, vocabulary, bits};
 +        if (vocabulary && (state.rows || state.columns)) { throw std::runtime_error("vocabulary cannot carry GDN maps"); }
 +        ggml_tensor * weight = create_tensor(name, {int64_t(size)}, flags);
 +        rotquant_v3.emplace(weight, state);
@@ -3087,7 +3252,7 @@ diff --git a/src/models/qwen35.cpp b/src/models/qwen35.cpp
      llm_build_delta_net_base(params), model(model) {
      const int64_t n_embd_head = hparams.n_embd_head_v();
  
-@@ -146,7 +304,12 @@
+@@ -146,14 +304,19 @@
      ggml_tensor * cur;
      ggml_tensor * inpL;
  
@@ -3101,7 +3266,26 @@ diff --git a/src/models/qwen35.cpp b/src/models/qwen35.cpp
  
      cb(inpL, "model.input_embed", -1);
  
-@@ -220,12 +383,29 @@
+     auto * inp = build_inp_mem_hybrid();
+ 
+     ggml_tensor * inp_pos     = build_inp_pos();
+-    ggml_tensor * inp_out_ids = build_inp_out_ids();
++    ggml_tensor * inp_out_ids = n_outputs ? build_inp_out_ids() : nullptr;
+ 
+     // MTP/NextN layers are loaded as extra decoder blocks but not executed in the main pass.
+     for (int il = 0; il < n_layer; ++il) {
+@@ -206,6 +369,10 @@
+         inpL = cur;
+     }
+     cur = inpL;
++    if (n_outputs == 0) {
++        ggml_build_forward_expand(gf, cur);
++        return;
++    }
+ 
+     cur = build_norm(cur, model.output_norm, nullptr, LLM_NORM_RMS, -1);
+ 
+@@ -220,12 +387,29 @@
      res->t_embd = cur;
  
      // LM head
@@ -3132,7 +3316,7 @@ diff --git a/src/models/qwen35.cpp b/src/models/qwen35.cpp
  }
  
  std::pair<ggml_tensor *, ggml_tensor *> llama_model_qwen35::graph::build_qkvz(
-@@ -234,11 +414,11 @@
+@@ -234,11 +418,11 @@
      const int64_t n_seqs       = ubatch.n_seqs;
      const int64_t n_seq_tokens = ubatch.n_seq_tokens;
  
@@ -3146,7 +3330,7 @@ diff --git a/src/models/qwen35.cpp b/src/models/qwen35.cpp
      cb(z, "z", il);
  
      return { qkv_mixed, z };
-@@ -267,7 +447,7 @@
+@@ -267,7 +451,7 @@
      // Order: joint QG projection, QG split, Q norm, KV projection, K norm, RoPE, attention
  
      // Qwen3Next uses a single Q projection that outputs query + gate
@@ -3155,7 +3339,7 @@ diff --git a/src/models/qwen35.cpp b/src/models/qwen35.cpp
      cb(Qcur_full, "Qcur_full", il);
  
      ggml_tensor * Qcur = ggml_view_3d(ctx0, Qcur_full, n_embd_head, n_head, n_tokens,
-@@ -279,10 +459,10 @@
+@@ -279,10 +463,10 @@
      Qcur = build_norm(Qcur, model.layers[il].attn_q_norm, nullptr, LLM_NORM_RMS, il);
      cb(Qcur, "Qcur_normed", il);
  
@@ -3168,7 +3352,7 @@ diff --git a/src/models/qwen35.cpp b/src/models/qwen35.cpp
      cb(Vcur, "Vcur", il);
  
      // Apply K normalization
-@@ -330,7 +510,7 @@
+@@ -330,7 +514,7 @@
      cur = ggml_mul(ctx0, cur, gate_sigmoid);
      cb(cur, "attn_gated", il);
  
@@ -3177,7 +3361,7 @@ diff --git a/src/models/qwen35.cpp b/src/models/qwen35.cpp
      cb(cur, "attn_output", il);
  
      return cur;
-@@ -461,7 +641,7 @@
+@@ -461,7 +645,7 @@
      cb(final_output, "final_output", il);
  
      // Output projection
@@ -3186,7 +3370,7 @@ diff --git a/src/models/qwen35.cpp b/src/models/qwen35.cpp
      cb(cur, "linear_attn_out", il);
  
      // Reshape back to original dimensions
-@@ -474,12 +654,13 @@
+@@ -474,12 +658,13 @@
      // Qwen3.5 does not use MoE FFN
      GGML_ASSERT(model.layers[il].ffn_gate_inp == nullptr);
  
@@ -3339,4 +3523,216 @@ new file mode 100644
 +    CUBLAS_CHECK(cublasSetPointerMode(handle, previous_pointer));
 +    CUBLAS_CHECK(cublasSetMathMode(handle, previous_math));
 +    return input_bytes + size_t(chunk) * per_row;
++}
+diff --git a/ggml/src/ggml-cuda/rq3-w2a8.cuh b/ggml/src/ggml-cuda/rq3-w2a8.cuh
+new file mode 100644
+--- /dev/null
++++ b/ggml/src/ggml-cuda/rq3-w2a8.cuh
+@@ -0,0 +1,112 @@
++#pragma once
++
++static constexpr size_t rq3_w2a8_scratch_limit = 256ULL * 1024 * 1024;
++
++static __global__ void rq3_w2a8_rotate_quantize(rq3_args a, const float * input,
++        const int8_t * signs, const int * permutation, int8_t * codes, float * scales) {
++    const int lane = threadIdx.x;
++    const int64_t col = int64_t(blockIdx.x) * 128 + lane;
++    const int64_t token = blockIdx.y;
++    __shared__ float tile[128], next[128];
++    __shared__ int valid;
++    if (!lane) { valid = 1; }
++    __syncthreads();
++    const int64_t source = permutation ? permutation[col] : col;
++    const bool legal = source >= 0 && source < a.inputs && (signs[col] == -1 || signs[col] == 1);
++    const float value = legal ? rq3_round(input[token * a.inputs + source]) * signs[col] : 0.f;
++    if (!legal || !isfinite(value)) { atomicExch(&valid, 0); }
++    tile[lane] = isfinite(value) ? value : 0.f;
++    rq3_fwht(tile, next, lane);
++    const float rotated = rq3_round(tile[lane] * 0.08838834764831845f);
++    if (!isfinite(rotated)) { atomicExch(&valid, 0); }
++    next[lane] = isfinite(rotated) ? fabsf(rotated) : 0.f;
++    __syncthreads();
++    for (int stride = 64; stride; stride /= 2) {
++        if (lane < stride) { next[lane] = fmaxf(next[lane], next[lane + stride]); }
++        __syncthreads();
++    }
++    const float scale = next[0] > 0.f ? __fdiv_rn(next[0], 127.f) : 1.f;
++    const int rounded = __float2int_rn(__fdiv_rn(rotated, scale));
++    codes[token * a.inputs + col] = valid ? int8_t(max(-127, min(127, rounded))) : int8_t(0);
++    if (!lane) { scales[token * (a.inputs / 128) + blockIdx.x] = valid ? scale : NAN; }
++}
++
++__device__ __forceinline__ bool rq3_w2a8_legal(rq3_view v, rq3_args a) {
++    return v.bits == 2 && v.sbits == 16 && v.group == 128 &&
++        v.cols == uint64_t(a.inputs) && v.rows == uint64_t(a.outputs) &&
++        __uint_as_float(rq3_u32(v.book)) == -1.f &&
++        __uint_as_float(rq3_u32(v.book + 4)) == 0.f &&
++        __uint_as_float(rq3_u32(v.book + 8)) == 1.f &&
++        __uint_as_float(rq3_u32(v.book + 12)) == 0.f;
++}
++
++static __global__ void rq3_w2a8_dot(rq3_args a, const uchar * packed,
++        const int * permutation, const int8_t * activation, const float * activation_scales,
++        float * output) {
++    const int lane = threadIdx.x;
++    const int64_t target = blockIdx.x, token = blockIdx.y;
++    const int64_t row = permutation ? permutation[target] : target;
++    const rq3_view view = rq3_parse(packed);
++    if (row < 0 || row >= a.outputs || !rq3_w2a8_legal(view, a)) {
++        if (!lane) { output[token * a.outputs + target] = NAN; }
++        return;
++    }
++    float sum = 0.f;
++    for (int64_t group = 0; group < a.inputs / 128; ++group) {
++        const uint symbols = view.codes[(row * a.inputs + group * 128) / 4 + lane];
++        const int64_t input_offset = token * a.inputs + group * 128 + lane * 4;
++        uint weights = 0, values = 0;
++        bool valid = true;
++        #pragma unroll
++        for (int part = 0; part < 4; ++part) {
++            const int code = (symbols >> (2 * part)) & 3;
++            valid = valid && code != 3;
++            weights |= uint(uint8_t(int8_t(code - 1))) << (8 * part);
++            values |= uint(uint8_t(activation[input_offset + part])) << (8 * part);
++        }
++        const float weight_scale = rq3_half(view.scales + (row * view.groups + group) * 2);
++        const float activation_scale = activation_scales[token * view.groups + group];
++        valid = valid && isfinite(weight_scale) && weight_scale > 0.f && isfinite(activation_scale);
++        if (__ballot_sync(0xffffffffu, !valid)) {
++            if (!lane) { output[token * a.outputs + target] = NAN; }
++            return;
++        }
++        int dot = __dp4a(int(weights), int(values), 0);
++        #pragma unroll
++        for (int stride = 16; stride; stride /= 2) {
++            const int other = __shfl_down_sync(0xffffffffu, dot, stride);
++            if (lane < stride) { dot += other; }
++        }
++        if (!lane) {
++            const float scale = __fmul_rn(weight_scale, activation_scale);
++            sum = __fadd_rn(sum, __fmul_rn(float(dot), scale));
++        }
++    }
++    if (!lane) { output[token * a.outputs + target] = rq3_round(sum); }
++}
++
++static size_t rq3_launch_w2a8(ggml_backend_cuda_context & ctx, rq3_args a, ggml_tensor * op) {
++    GGML_ASSERT(a.inputs > 0 && a.inputs % 128 == 0 && a.inputs <= INT32_MAX);
++    GGML_ASSERT(a.outputs > 0 && a.outputs <= INT32_MAX && a.tokens > 0 && a.tokens <= 65535);
++    const size_t inputs = size_t(a.inputs) * size_t(a.tokens);
++    const size_t groups = inputs / 128;
++    const size_t scratch = inputs * sizeof(int8_t) + groups * sizeof(float);
++    GGML_ASSERT(scratch <= rq3_w2a8_scratch_limit);
++    GGML_ASSERT(op->src[2]->type == GGML_TYPE_I8);
++    GGML_ASSERT(ggml_nelements(op->src[2]) >= a.inputs);
++    const bool rows_permuted = op->src[3]->type == GGML_TYPE_I32;
++    const bool columns_permuted = op->src[4]->type == GGML_TYPE_I32;
++    GGML_ASSERT(!rows_permuted || ggml_nelements(op->src[3]) >= a.outputs);
++    GGML_ASSERT(!columns_permuted || ggml_nelements(op->src[4]) >= a.inputs);
++    ggml_cuda_pool_alloc<int8_t> quantized(ctx.pool(), inputs);
++    ggml_cuda_pool_alloc<float> scales(ctx.pool(), groups);
++    rq3_w2a8_rotate_quantize<<<dim3(a.inputs / 128, a.tokens), 128, 0, ctx.stream()>>>(a,
++        (const float *) op->src[0]->data, (const int8_t *) op->src[2]->data,
++        columns_permuted ? (const int *) op->src[4]->data : nullptr, quantized.get(), scales.get());
++    rq3_w2a8_dot<<<dim3(a.outputs, a.tokens), 32, 0, ctx.stream()>>>(a,
++        (const uchar *) op->src[1]->data,
++        rows_permuted ? (const int *) op->src[3]->data : nullptr,
++        quantized.get(), scales.get(), (float *) op->data);
++    CUDA_CHECK(cudaGetLastError());
++    return scratch;
++}
+diff --git a/ggml/src/ggml-cuda/rq3-tensorcore.cuh b/ggml/src/ggml-cuda/rq3-tensorcore.cuh
+new file mode 100644
+--- /dev/null
++++ b/ggml/src/ggml-cuda/rq3-tensorcore.cuh
+@@ -0,0 +1,90 @@
++#pragma once
++#include <mma.h>
++
++static __global__ void rq3_tensorcore_prefill(rq3_args a, const float * input,
++        const uchar * packed, const int * permutation, float * output) {
++    const int lane = threadIdx.x;
++    const int64_t first_row = int64_t(blockIdx.x) * 16;
++    const int64_t first_token = int64_t(blockIdx.y) * 16;
++#if defined(__CUDA_ARCH__) && __CUDA_ARCH__ >= 800
++    __shared__ __align__(32) half weights[256], activations[256];
++    __shared__ __align__(32) float sums[256];
++    __shared__ int invalid;
++    if (!lane) { invalid = 0; }
++    __syncwarp();
++    const rq3_view view = rq3_parse(packed);
++    if (view.cols != uint64_t(a.inputs) || view.rows != uint64_t(a.outputs)) {
++        for (int index = lane; index < 256; index += 32) {
++            const int64_t row = first_row + index / 16, token = first_token + index % 16;
++            if (row < a.outputs && token < a.tokens) { output[token * a.outputs + row] = NAN; }
++        }
++        return;
++    }
++    const bool ternary = view.bits == 2 && __uint_as_float(rq3_u32(view.book)) == -1.f &&
++        __uint_as_float(rq3_u32(view.book + 4)) == 0.f &&
++        __uint_as_float(rq3_u32(view.book + 8)) == 1.f &&
++        __uint_as_float(rq3_u32(view.book + 12)) == 0.f;
++    nvcuda::wmma::fragment<nvcuda::wmma::matrix_a, 16, 16, 16, half,
++                            nvcuda::wmma::row_major> left;
++    nvcuda::wmma::fragment<nvcuda::wmma::matrix_b, 16, 16, 16, half,
++                            nvcuda::wmma::col_major> right;
++    nvcuda::wmma::fragment<nvcuda::wmma::accumulator, 16, 16, 16, float> accum;
++    nvcuda::wmma::fill_fragment(accum, 0.f);
++    for (int64_t start = 0; start < a.inputs; start += 16) {
++        for (int index = lane; index < 256; index += 32) {
++            const int64_t row = first_row + index / 16;
++            const int64_t token = first_token + index / 16;
++            const int64_t col = start + index % 16;
++            const int64_t source = row < a.outputs && permutation ? permutation[row] : row;
++            float weight = 0.f, activation = 0.f;
++            if (row < a.outputs && col < a.inputs) {
++                if (source < 0 || source >= a.outputs) { atomicExch(&invalid, 1); }
++                else {
++                    weight = rq3_round(rq3_weight(view, source, col));
++                    if (ternary) {
++                        const uint code = (view.codes[(source * view.cols + col) / 4] >> ((col % 4) * 2)) & 3;
++                        if (code == 3) { atomicExch(&invalid, 1); }
++                    }
++                    if (!isfinite(weight)) { atomicExch(&invalid, 1); }
++                }
++            }
++            if (token < a.tokens && col < a.inputs) {
++                activation = rq3_round(input[token * a.inputs + col]);
++                if (!isfinite(activation)) { atomicExch(&invalid, 1); }
++            }
++            weights[index] = __float2half_rn(weight);
++            activations[index] = __float2half_rn(activation);
++        }
++        __syncwarp();
++        nvcuda::wmma::load_matrix_sync(left, weights, 16);
++        nvcuda::wmma::load_matrix_sync(right, activations, 16);
++        nvcuda::wmma::mma_sync(accum, left, right, accum);
++        __syncwarp();
++    }
++    nvcuda::wmma::store_matrix_sync(sums, accum, 16, nvcuda::wmma::mem_row_major);
++    __syncwarp();
++    for (int index = lane; index < 256; index += 32) {
++        const int64_t row = first_row + index / 16;
++        const int64_t token = first_token + index % 16;
++        if (row < a.outputs && token < a.tokens) {
++            output[token * a.outputs + row] = invalid ? NAN : rq3_round(sums[index]);
++        }
++    }
++#else
++    for (int index = lane; index < 256; index += 32) {
++        const int64_t row = first_row + index / 16, token = first_token + index % 16;
++        if (row < a.outputs && token < a.tokens) { output[token * a.outputs + row] = NAN; }
++    }
++#endif
++}
++
++static size_t rq3_launch_tensorcore(ggml_backend_cuda_context & ctx, rq3_args a, ggml_tensor * op) {
++    GGML_ASSERT(a.inputs > 0 && a.inputs % 128 == 0 && a.inputs <= INT32_MAX);
++    GGML_ASSERT(a.outputs > 0 && a.outputs <= INT32_MAX && a.tokens >= 4 && a.tokens <= 65535);
++    GGML_ASSERT(ggml_cuda_info().devices[ctx.device].cc >= 800);
++    rq3_tensorcore_prefill<<<dim3((a.outputs + 15) / 16, (a.tokens + 15) / 16), 32, 0, ctx.stream()>>>(a,
++        (const float *) op->src[0]->data, (const uchar *) op->src[1]->data,
++        a.permutation ? (const int *) op->src[2]->data : nullptr, (float *) op->data);
++    CUDA_CHECK(cudaGetLastError());
++    return 0;
 +}

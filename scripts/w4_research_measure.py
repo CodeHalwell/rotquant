@@ -4,6 +4,7 @@ from __future__ import annotations
 import hashlib
 import json
 import math
+import time
 from contextlib import nullcontext
 from pathlib import Path
 
@@ -59,27 +60,49 @@ class ChunkedNativeModel:
 
     chunk_tokens = 16
 
-    def __init__(self, native_model):
+    def __init__(self, native_model, *, graph_prefill=False, compact_greedy=False):
         self.native_model = native_model
+        self.graph_prefill, self.compact_greedy = graph_prefill, compact_greedy
+        if graph_prefill and not getattr(native_model, "supports_no_logits", False):
+            raise RuntimeError("requested graph no-logits prefill is unavailable")
+        if compact_greedy and not getattr(native_model, "supports_compact_greedy", False):
+            raise RuntimeError("requested compact greedy is unavailable")
 
     def __getattr__(self, name):
         return getattr(self.native_model, name)
 
     def evaluate(self, ids, *, reset=False, selected=1):
         values = token_ids(ids)
-        if type(selected) is not int or not 1 <= selected <= min(16, len(values)):
+        if (type(selected) is not int or not 0 <= selected <= min(16, len(values))
+                or (selected == 0 and not self.graph_prefill)):
             raise ValueError("selected must be an integer from 1 to min(16, token count)")
         selected_start = len(values) - selected
         outputs = []
         for start in range(0, len(values), self.chunk_tokens):
             chunk = values[start:start + self.chunk_tokens]
             needed = max(0, start + len(chunk) - max(start, selected_start))
+            requested = needed if self.graph_prefill or selected == 0 else max(1, needed)
             logits = self.native_model.evaluate(
-                chunk, reset=reset and start == 0, selected=max(1, needed))
+                chunk, reset=reset and start == 0, selected=requested)
             if needed:
                 outputs.append(np.asarray(logits, dtype=np.float32).reshape(needed, -1))
+        if selected == 0:
+            return np.empty((0, getattr(self.native_model, "vocab", 0)), dtype=np.float32)
         result = np.concatenate(outputs)
         return result[0] if selected == 1 else result
+
+    def greedy(self, ids, *, reset=False):
+        if not self.compact_greedy:
+            raise RuntimeError("compact greedy was not selected")
+        values = token_ids(ids)
+        for start in range(0, len(values), self.chunk_tokens):
+            chunk = values[start:start + self.chunk_tokens]
+            if start + len(chunk) < len(values):
+                self.native_model.evaluate(chunk, reset=reset and start == 0,
+                                           selected=0 if self.graph_prefill else 1)
+            else:
+                return self.native_model.greedy(chunk, reset=reset and start == 0)
+        raise ValueError("empty compact prefill")
 
 
 class NativeBackend:
@@ -104,6 +127,9 @@ class NativeBackend:
         values = token_ids(ids)
         if type(max_new_tokens) is not int or max_new_tokens < 1:
             raise ValueError("generation requires a positive integer token cap")
+        started = time.perf_counter()
+        if self.model.compact_greedy:
+            return self.compact_generate(values, max_new_tokens, started)
         logits = None
         for start in range(0, len(values), 8192):
             logits = self.model.evaluate(values[start:start + 8192], reset=start == 0)
@@ -112,11 +138,38 @@ class NativeBackend:
             if not np.isfinite(logits).all():
                 raise ValueError("native generation returned non-finite logits")
             token = int(np.asarray(logits).argmax())
+            if step == 0:
+                first_token = time.perf_counter()
             generated.append(token)
             if token in self.stop_ids or step + 1 == max_new_tokens:
                 break
             logits = self.model.evaluate([token])
+        self.record_generation(generated, started, first_token)
         return generated
+
+    def compact_generate(self, values, max_new_tokens, started):
+        generated = []
+        token = self.model.greedy(values, reset=True)
+        first_token = time.perf_counter()
+        for step in range(max_new_tokens):
+            generated.append(token)
+            if token in self.stop_ids or step + 1 == max_new_tokens:
+                break
+            token = self.model.greedy([token])
+        self.record_generation(generated, started, first_token)
+        return generated
+
+    def record_generation(self, tokens, started, first_token):
+        elapsed = time.perf_counter() - started
+        completed = bool(tokens and tokens[-1] in self.stop_ids)
+        self.last_generation_timing = {
+            "time_to_first_token_seconds": first_token - started,
+            "generation_seconds": elapsed,
+            "time_to_finished_answer_seconds": elapsed if completed else None,
+            "generated_tokens_per_second": len(tokens) / elapsed,
+            "completed_answers_per_second": int(completed) / elapsed,
+            "includes_prefill_and_native_synchronization": True,
+            "compact_sampling": self.model.compact_greedy}
 
 
 def packed_parity(student, path):
@@ -222,6 +275,7 @@ def public_task_row(backend, item, tokenizer, ifeval):
             "input_hash": input_hash(ids), "input_ids": ids.tolist(), "continuation": continuation,
             "generated_tokens": len(continuation), "max_new_tokens": item["max_new_tokens"],
             "stopped_at_eos": eos, "unmapped_ids": unmapped, "output_text": text,
+            "generation_timing": getattr(backend, "last_generation_timing", None),
             **public_task_suite.score(item, text, truncated=not eos, ifeval=ifeval)}
 
 
@@ -305,7 +359,8 @@ def native_speeds(model, speed_inputs, repetitions, output, *, memory=None,
                   for length, (prompt, decode) in frozen.items()}
     report = {"completed": False, "rows": [], "summary": {}, "repetitions": repetitions,
               "prefill_chunk_tokens": getattr(model, "chunk_tokens", None),
-              "frozen_inputs": identities}
+              "frozen_inputs": identities, "compact_sampling": bool(getattr(model, "compact_greedy", False)),
+              "graph_no_logits_prefill": bool(getattr(model, "graph_prefill", False))}
     context = ProcessVRAM() if memory is None else nullcontext(memory)
     with context as tracker:
         for length, (prompt, decode) in frozen.items():
@@ -318,7 +373,8 @@ def native_speeds(model, speed_inputs, repetitions, output, *, memory=None,
 
             rows = measure(model, prompt, context=int(length), decode=len(decode),
                            repetitions=repetitions, minimum_tps=0, maximum_vram=maximum_vram,
-                           memory=tracker, persist=persist, forced_decode=decode.tolist())
+                           memory=tracker, persist=persist, forced_decode=decode.tolist(),
+                           compact=report["compact_sampling"])
             report["summary"][length] = summarize(rows)
         report.update(completed=True, memory=tracker.report())
     write_json(output, report)

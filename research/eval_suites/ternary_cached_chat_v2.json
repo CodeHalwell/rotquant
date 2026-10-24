@@ -1,0 +1,14 @@
+{
+  "protocol": "ternary-cached-chat-prompts-v1",
+  "scope": "Diagnostic only; excluded from fitting and public task selection",
+  "cases": [
+    {"id": "ack", "prompt": "Reply with the single word ACK and nothing else."},
+    {"id": "addition", "prompt": "What is 7 plus 5? Reply with only the integer."},
+    {"id": "json", "prompt": "Return exactly one JSON object with the key status and string value ready. No explanation."},
+    {"id": "code", "prompt": "Write a Python function named square that returns x*x. Return only the function in a code block."},
+    {"id": "list", "prompt": "List two primary colours, one per line, without any other text."},
+    {"id": "sentence", "prompt": "Write exactly one short sentence about rain."},
+    {"id": "boolean", "prompt": "Is 11 an odd number? Reply only true or false in lowercase."},
+    {"id": "stop", "prompt": "Say Done. End your response immediately after the full stop."}
+  ]
+}

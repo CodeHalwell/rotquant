@@ -33,13 +33,39 @@ class TernaryStudy(ResearchStudy):
         from scripts.run_qwen35_vocabulary_budget import runtime_identity
         self.args, self.config = args, config
         self.root, self.work = args.output_dir.resolve(), args.work_dir.resolve()
+        resume_from = getattr(args, "resume_from", None)
+        if resume_from is not None:
+            parent = resume_from.resolve()
+            if self.root == parent or self.root.is_relative_to(parent) or parent.is_relative_to(self.root):
+                raise ValueError("continuation requires a separate child root outside the parent")
+        if (self.root / "continuation.json").exists() and resume_from is None:
+            raise ValueError("this child requires its original --resume-from parent")
         self.identity = bind_run(self.root, config, runtime_identity())
+        self.continuation = None
+        if resume_from is not None:
+            from scripts.ternary_research_continuation import continuation
+            self.continuation = continuation(resume_from, self.root, read(self.root / "identity.json"),
+                                             args.budget_minutes,
+                                             parity_correction=getattr(args, "parity_correction", None),
+                                             fresh_budget=getattr(args, "fresh_budget", False))
+            args.budget_minutes = self.continuation["budget_minutes"]
         self.config_path = self.root / "config.json"
         write_json(self.config_path, config)
-        self.workflow = Workflow(self.root, ROOT, {"identity": self.identity}, args.budget_minutes,
+        controls = {"identity": self.identity}
+        if self.continuation:
+            controls["continuation"] = fingerprint(self.continuation)
+        self.workflow = Workflow(self.root, ROOT, controls, args.budget_minutes,
                                  overnight=args.budget_minutes > 180)
         self.data, self.teacher, self.runtime = None, None, None
         self.prepared, self.exported, self.measured, self.failures = {}, {}, {}, {}
+
+    def command(self, stage, script, *arguments):
+        if getattr(self, "continuation", None):
+            # Imports of the retained scorer must not create __pycache__ files
+            # inside the immutable parent stage.
+            stage.command([sys.executable, "-B", "-u", ROOT / "scripts" / script, *arguments], script)
+        else:
+            super().command(stage, script, *arguments)
 
     def worker_options(self, **options):
         defaults = {"config": self.config_path, "root": self.root, "identity": self.identity}
@@ -136,11 +162,14 @@ class TernaryStudy(ResearchStudy):
 
     def hydrate(self):
         """Reconstruct only the current dependency chain from verified receipts."""
-        self.data = self.saved_worker("freeze")
-        self.runtime = self.saved("runtime", self.identity)
+        if getattr(self, "continuation", None):
+            from scripts.ternary_research_continuation import hydrate_imports
+            hydrate_imports(self, self.continuation)
+        self.data = self.saved_worker("freeze") or self.data
+        self.runtime = self.saved("runtime", self.identity) or self.runtime
         if not self.data or not self.runtime:
             return
-        self.teacher = self.saved_worker("teacher")
+        self.teacher = self.saved_worker("teacher") or self.teacher
         if not self.teacher:
             return
         for arm in arms():
@@ -152,9 +181,13 @@ class TernaryStudy(ResearchStudy):
         if fp16:
             self.exported["fp16"] = fp16
             self.restore_measurement("fp16", **self.native_options("fp16", self.teacher["probes"]))
+        if "fp16" in self.exported:
             self.hydrate_bonsai()
 
     def hydrate_arm(self, arm):
+        if arm.name in self.prepared and arm.name in self.exported:
+            self.restore_measurement(arm.name, **self.native_options(arm.name, self.prepared[arm.name]["probes"]))
+            return
         if arm.parent and arm.parent not in self.prepared:
             return
         options = {"parent": self.prepared[arm.parent]["checkpoint"]} if arm.parent else {}
@@ -202,7 +235,18 @@ class TernaryStudy(ResearchStudy):
             return {"passed": True}, self.stage_files(stage.directory)
         self.workflow.stage("ternary-native-preflight", action, signature=self.runtime, minutes=10, reuse=False)
 
+    def build_runtime(self):
+        if getattr(self, "continuation", None) and self.continuation.get("reused_runtime"):
+            self.runtime = self.continuation["reused_runtime"]["value"]
+            print("CONTINUATION retain verified live runtime and both original passed preflights", flush=True)
+            return
+        super().build_runtime()
+
     def prepare(self, arm):
+        imported = (getattr(self, "continuation", None) or {}).get("prepared_labels", ["w5_v6"])
+        if getattr(self, "continuation", None) and arm.name in imported:
+            print(f"CONTINUATION retain original verified {arm.name} checkpoint/export", flush=True)
+            return
         path = self.root / "arms" / f"{arm.name}.json"
         write_json(path, arm_record(arm))
         options = {"parent": self.prepared[arm.parent]["checkpoint"]} if arm.parent else {}
@@ -216,7 +260,17 @@ class TernaryStudy(ResearchStudy):
             llama_dir=self.runtime["source"], minutes=30)
         self.summarize()
 
+    def measure(self, label, exported, probes):
+        imported = (getattr(self, "continuation", None) or {}).get("imported_labels", ["fp16", "w5_v6"])
+        if getattr(self, "continuation", None) and label in imported:
+            print(f"CONTINUATION retain original verified {label} measurement", flush=True)
+            return
+        super().measure(label, exported, probes)
+
     def bonsai(self):
+        if "bonsai2_4b" in (getattr(self, "continuation", None) or {}).get("imported_labels", []):
+            print("CONTINUATION retain original verified Bonsai measurement", flush=True)
+            return
         asset_dir = self.work / "bonsai2_4b" / "artifacts"
         build_dir = self.work / self.identity[:12] / "bonsai-build"
 
@@ -259,9 +313,10 @@ class TernaryStudy(ResearchStudy):
                 active = "w5_v6"
                 self.prepare(arms()[0])
                 active = "fp16"
-                self.exported["fp16"] = self.worker(
-                    "export-fp16", "export_fp16", source=self.teacher["source"],
-                    quant_export=self.exported["w5_v6"]["native"], llama_dir=self.runtime["source"], minutes=30)
+                if "fp16" not in self.exported:
+                    self.exported["fp16"] = self.worker(
+                        "export-fp16", "export_fp16", source=self.teacher["source"],
+                        quant_export=self.exported["w5_v6"]["native"], llama_dir=self.runtime["source"], minutes=30)
                 self.measure("fp16", self.exported["fp16"], self.teacher["probes"])
                 active = "w5_v6"
                 self.measure(active, self.exported[active], self.prepared[active]["probes"])
@@ -284,6 +339,26 @@ class TernaryStudy(ResearchStudy):
         result["error"] = self.failures or None
         result["selection"] = {"basis": "independent selection documents; all predeclared arms measured",
                                "scores": {k: v["selection"] for k, v in self.prepared.items()}}
+        if getattr(self, "continuation", None):
+            from scripts.ternary_research_continuation import (
+                IMPORTED_LABELS,
+                provenance,
+                runtime_provenance,
+            )
+            result["continuation"] = provenance(self.continuation)
+            result["continuation"]["native_runtime"] = runtime_provenance(self)
+            for row in result["rows"]:
+                origins = self.continuation.get("origins", {})
+                origin = origins.get("measure-" + row["label"])
+                if origin:
+                    row["origin"] = origin
+                elif row["label"] in IMPORTED_LABELS:
+                    row["origin"] = {"identity": self.continuation["parent_identity"],
+                                     "root": self.continuation["parent_root"], "imported": True}
+                elif row["label"] in self.measured:
+                    row["origin"] = {"identity": self.identity, "root": str(self.root), "imported": False}
+                if "prepare-" + row["label"] in origins:
+                    row["preparation_origin"] = origins["prepare-" + row["label"]]
         write_json(self.root / "comparison.json", result)
 
 
@@ -294,11 +369,21 @@ def main():
     parser.add_argument("--output-dir", type=Path, required=True)
     parser.add_argument("--work-dir", type=Path, default=Path("/content/rotquant-ternary-work"))
     parser.add_argument("--budget-minutes", type=int, default=480)
+    parser.add_argument("--resume-from", type=Path,
+                        help="Verify and import the original FP16/W5 controls into a separate child root")
+    parser.add_argument("--fresh-budget", action="store_true",
+                        help="Explicitly allocate a fresh child allowance; reopening never renews it")
+    parser.add_argument("--parity-correction", type=Path,
+                        help="Exact source correction and hashed diagnostic validation receipt")
     parser.add_argument("--dry-run", action="store_true")
     args = parser.parse_args()
     config = validate_config(yaml.safe_load(args.config.read_text()))
     if not 1 <= args.budget_minutes <= 480:
         parser.error("budget must be 1..480 minutes")
+    if args.parity_correction is not None and args.resume_from is None:
+        parser.error("--parity-correction requires --resume-from")
+    if args.fresh_budget and args.resume_from is None:
+        parser.error("--fresh-budget requires --resume-from")
     if args.dry_run:
         print(json.dumps({"labels": LABELS, "arms": [arm_record(a) for a in arms()],
                           "config": config, "budget_minutes": args.budget_minutes}, indent=2))

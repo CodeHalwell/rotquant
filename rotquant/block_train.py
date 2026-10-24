@@ -33,6 +33,7 @@ from .linear import QuantLinear
 from .patch import PatchConfig, commit_rotation_storage, quant_config_for
 from .quantize import QuantConfig, Quantizer
 from .rotate import ButterflyRotation, RandomizedHadamard
+from .teacher_targets import SparseTeacherTarget, capture_union_targets, sparse_teacher_kl
 from .utils import get_logger
 
 logger = get_logger(__name__)
@@ -55,6 +56,8 @@ class TeacherCall:
     tail_log_prob: torch.Tensor | None = None
     temperature: float | None = None
     vocabulary_size: int | None = None
+    topk_valid_mask: torch.Tensor | None = None
+    target_contract: str | None = None
 
 
 @dataclass
@@ -114,6 +117,8 @@ class BlockRotationTrainConfig:
     # Scalable recovery controls. A value of zero keeps the legacy full-epoch
     # update / dense-teacher behavior for small experiments.
     distill_teacher_topk: int = 0
+    distill_teacher_required_ids: tuple[int, ...] = ()
+    distill_teacher_include_response_ids: bool = False
     distill_batches_per_step: int = 0
     distill_validation_interval: int = 1
     distill_checkpoint_path: str | None = None
@@ -121,6 +126,7 @@ class BlockRotationTrainConfig:
     distill_resume: bool = False
 
     def __post_init__(self) -> None:
+        validate_teacher_union_config(self)
         if self.objective != "block":
             raise ValueError("BlockRotationTrainConfig requires objective='block'")
         if self.steps < 1 or self.lr <= 0:
@@ -224,6 +230,14 @@ class BlockRotationTrainConfig:
                 raise ValueError(
                     "distillation must train rotations, scales, LoRA, or "
                     "existing parameters")
+
+
+def validate_teacher_union_config(config):
+    config.distill_teacher_required_ids = tuple(sorted(set(config.distill_teacher_required_ids)))
+    if any(not isinstance(x, int) or x < 0 for x in config.distill_teacher_required_ids):
+        raise ValueError("distill teacher required IDs must be nonnegative integers")
+    if not isinstance(config.distill_teacher_include_response_ids, bool):
+        raise TypeError("distill_teacher_include_response_ids must be boolean")
 
 
 def _tree_copy_cpu(value, storage_dtype=torch.float16):
@@ -402,7 +416,17 @@ def teacher_tail_log_probability(log_probs: torch.Tensor,
 
 
 def capture_topk_teacher(inputs: dict, logits: torch.Tensor, topk: int,
-                         temperature: float) -> TeacherCall:
+                         temperature: float, *, required_ids=(),
+                         include_response_ids=False) -> TeacherCall:
+    if required_ids or include_response_ids:
+        target = capture_union_targets(
+            logits, topk, temperature, required_ids,
+            inputs.get("input_ids") if include_response_ids else None)
+        return TeacherCall(
+            inputs=inputs, topk_indices=target.indices, topk_log_probs=target.log_probs,
+            tail_log_prob=target.tail_log_prob, temperature=target.temperature,
+            vocabulary_size=target.vocabulary_size, topk_valid_mask=target.valid_mask,
+            target_contract=target.contract)
     log_probs = F.log_softmax(logits.float() / temperature, dim=-1)
     selected, indices = log_probs.topk(min(topk, logits.shape[-1]), dim=-1)
     tail = teacher_tail_log_probability(log_probs, indices)
@@ -415,17 +439,20 @@ def capture_topk_teacher(inputs: dict, logits: torch.Tensor, topk: int,
 
 def capture_teacher_batch(model: nn.Module, batch: dict, device,
                            storage_dtype: torch.dtype, topk: int,
-                           temperature: float) -> TeacherCall:
+                           temperature: float, *, required_ids=(),
+                           include_response_ids=False) -> TeacherCall:
     if not isinstance(batch, dict):
         raise TypeError("model-level distillation requires dict batches")
     inputs = {key: _tree_copy_cpu(value, storage_dtype) for key, value in batch.items()}
     work = {key: (value.to(device) if torch.is_tensor(value) else value)
-            for key, value in batch.items()}
+            for key, value in batch.items() if key not in ("response_mask", "labels")}
     work.setdefault("use_cache", False)
     output = model(**work)
     logits = output.logits if hasattr(output, "logits") else output[0]
     if topk:
-        return capture_topk_teacher(inputs, logits, topk, temperature)
+        return capture_topk_teacher(inputs, logits, topk, temperature,
+                                    required_ids=required_ids,
+                                    include_response_ids=include_response_ids)
     return TeacherCall(inputs=inputs, logits=_tree_copy_cpu(logits, storage_dtype))
 
 
@@ -435,6 +462,8 @@ def collect_teacher_calls(model: nn.Module, dataloader: Iterable, device,
                           storage_dtype: torch.dtype = torch.float16,
                           topk: int = 0,
                           temperature: float = 1.0,
+                          required_ids: Sequence[int] = (),
+                          include_response_ids: bool = False,
                           ) -> list[TeacherCall]:
     """Capture dense logits or FP32 top-k and tail probabilities at one temperature."""
     if topk < 0:
@@ -447,7 +476,8 @@ def collect_teacher_calls(model: nn.Module, dataloader: Iterable, device,
         if index >= max_batches:
             break
         calls.append(capture_teacher_batch(
-            model, batch, device, storage_dtype, topk, temperature))
+            model, batch, device, storage_dtype, topk, temperature,
+            required_ids=required_ids, include_response_ids=include_response_ids))
     if len(calls) < max_batches:
         raise RuntimeError(
             f"captured {len(calls)} teacher calls, expected {max_batches}")
@@ -876,7 +906,17 @@ def _patch_source_block(source: nn.Module, global_name: str,
     return patched
 
 
+def teacher_union(call: TeacherCall, stop=None) -> SparseTeacherTarget:
+    cut = slice(None, stop)
+    return SparseTeacherTarget(call.topk_indices[:, cut], call.topk_log_probs[:, cut],
+                               call.topk_valid_mask[:, cut], call.tail_log_prob[:, cut],
+                               call.temperature, call.vocabulary_size)
+
+
 def validate_teacher_probabilities(call: TeacherCall) -> None:
+    if call.topk_valid_mask is not None:
+        teacher_union(call).validate()
+        return
     indices, selected, tail = call.topk_indices, call.topk_log_probs, call.tail_log_prob
     if indices.shape != selected.shape or selected.shape[:-1] != tail.shape:
         raise ValueError("top-k teacher probability shapes disagree")
@@ -913,6 +953,8 @@ def validate_teacher_target(call: TeacherCall, temperature: float,
 def topk_teacher_kl(student_log_prob: torch.Tensor, call: TeacherCall,
                     temperature: float) -> torch.Tensor:
     validate_teacher_target(call, temperature, student_log_prob.shape[-1])
+    if call.topk_valid_mask is not None:
+        return sparse_teacher_kl(student_log_prob, teacher_union(call, -1))
     indices = call.topk_indices[:, :-1].to(student_log_prob.device, torch.int64)
     teacher = call.topk_log_probs[:, :-1].to(student_log_prob.device, torch.float32)
     student = torch.gather(student_log_prob, -1, indices)
@@ -934,7 +976,8 @@ def _teacher_call_loss(model: nn.Module, call: TeacherCall, device,
     if "input_ids" not in inputs:
         raise ValueError("distillation batches require input_ids")
     inputs.setdefault("use_cache", False)
-    output = model(**inputs)
+    output = model(**{key: value for key, value in inputs.items()
+                      if key not in ("response_mask", "labels")})
     student = output.logits if hasattr(output, "logits") else output[0]
     student = student[:, :-1].float()
     labels = inputs["input_ids"][:, 1:]
@@ -943,6 +986,10 @@ def _teacher_call_loss(model: nn.Module, call: TeacherCall, device,
         token_mask = torch.ones_like(labels, dtype=torch.float32)
     else:
         token_mask = mask[:, 1:].float()
+    if "response_mask" in inputs:
+        if inputs["response_mask"].shape != inputs["input_ids"].shape:
+            raise ValueError("response mask must match input IDs")
+        token_mask = token_mask * inputs["response_mask"][:, 1:].float()
     denominator = token_mask.sum().clamp_min(1.0)
 
     total = student.new_zeros(())
@@ -1038,13 +1085,21 @@ def _save_distill_checkpoint(path: str, state: dict[str, Any]) -> None:
 
 
 def distillation_loss_contract(config: BlockRotationTrainConfig) -> dict[str, Any]:
-    return {
+    contract = {
         "target": "full-mass-topk-tail-v1",
         "temperature": config.distill_temperature,
         "kl_weight": config.distill_kl_weight,
         "ce_weight": config.distill_ce_weight,
         "teacher_topk": config.distill_teacher_topk,
     }
+    if config.distill_teacher_required_ids or config.distill_teacher_include_response_ids:
+        contract.update({
+            "target": "full-mass-topk-union-tail-v1",
+            "required_ids": list(config.distill_teacher_required_ids),
+            "include_response_ids": config.distill_teacher_include_response_ids,
+            "response_mask": "target-position-v1",
+        })
+    return contract
 
 
 def _load_distill_checkpoint(path: str, loss_contract: dict[str, Any]) -> dict[str, Any]:

@@ -51,30 +51,49 @@ def test_tokenizer_gate_accepts_same_ids_with_different_vendor_chat_template(tmp
     assert len(report["tokenizer_metadata_sha256"]) == 64
 
 
-def test_tokenizer_gate_reports_only_unused_bos_and_padding_defaults(tmp_path):
+@pytest.mark.parametrize(("candidate_bos", "reference_bos"), [
+    (False, True), (True, False), (False, None), (None, True), (True, True), (False, False),
+])
+def test_tokenizer_gate_reports_only_unused_bos_and_padding_defaults(
+    tmp_path, candidate_bos, reference_bos
+):
+    candidate_flags = {} if candidate_bos is None else {"tokenizer.ggml.add_bos_token": candidate_bos}
+    reference_flags = {} if reference_bos is None else {"tokenizer.ggml.add_bos_token": reference_bos}
     candidate = write_gguf(tmp_path / "bonsai.gguf", {
-        "tokenizer.ggml.add_bos_token": False, "tokenizer.ggml.bos_token_id": 2,
+        **candidate_flags, "tokenizer.ggml.bos_token_id": 2,
         "tokenizer.ggml.padding_token_id": 2})
     reference = write_gguf(tmp_path / "fp16.gguf", {
-        "tokenizer.ggml.add_bos_token": False, "tokenizer.ggml.padding_token_id": 3})
+        **reference_flags, "tokenizer.ggml.padding_token_id": 3})
     report = bonsai.validate_tokenizer(candidate, reference)
-    assert set(report["unused_frozen_input_defaults"]) == {
+    expected = {
         "tokenizer.ggml.bos_token_id", "tokenizer.ggml.padding_token_id"}
-    write_gguf(candidate, {"tokenizer.ggml.add_bos_token": True,
-                           "tokenizer.ggml.bos_token_id": 2})
-    with pytest.raises(ValueError, match="KL/tasks forbidden"):
-        bonsai.validate_tokenizer(candidate, reference)
+    if candidate_bos != reference_bos:
+        expected.add("tokenizer.ggml.add_bos_token")
+        assert report["unused_frozen_input_defaults"]["tokenizer.ggml.add_bos_token"] == {
+            "candidate": candidate_bos, "reference": reference_bos}
+    assert set(report["unused_frozen_input_defaults"]) == expected
+    assert not expected.intersection(report["compared_keys"])
+    assert report["tokenizer_metadata_sha256"] == bonsai.validate_tokenizer(reference, reference)[
+        "tokenizer_metadata_sha256"]
 
 
 @pytest.mark.parametrize("change", [
     {"tokenizer.ggml.tokens": ["b", "a", "end", "padding"]},
+    {"tokenizer.ggml.tokens": ["a", "b", "different-BOS-text", "padding"]},
     {"tokenizer.ggml.eos_token_id": 1},
+    {"tokenizer.ggml.eot_token_id": 1},
+    {"tokenizer.ggml.eom_token_id": 1},
+    {"tokenizer.ggml.fim_pad_token_id": 1},
+    {"tokenizer.ggml.fim_rep_token_id": 1},
+    {"tokenizer.ggml.fim_sep_token_id": 1},
+    {"tokenizer.ggml.add_eos_token": True},
     {"tokenizer.ggml.merges": ["b a"]},
     {"tokenizer.ggml.token_type": [1, 1, 1, 5]},
 ])
 def test_tokenizer_gate_rejects_semantic_or_special_id_mismatch(tmp_path, change):
-    candidate = write_gguf(tmp_path / "bonsai.gguf", change)
-    reference = write_gguf(tmp_path / "fp16.gguf")
+    candidate = write_gguf(tmp_path / "bonsai.gguf", {
+        "tokenizer.ggml.add_bos_token": False, "tokenizer.ggml.bos_token_id": 2, **change})
+    reference = write_gguf(tmp_path / "fp16.gguf", {"tokenizer.ggml.add_bos_token": True})
     with pytest.raises(ValueError, match="KL/tasks forbidden"):
         bonsai.validate_tokenizer(candidate, reference)
 

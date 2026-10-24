@@ -23,6 +23,48 @@ from scripts.w4_research_model import load_source, prepare_arm
 from scripts.w4_research_plan import Arm
 
 
+def argmax_mismatch(position, actual, reference):
+    actual_id, reference_id = int(actual.argmax()), int(reference.argmax())
+    ids = [actual_id, reference_id]
+    actual_max, reference_max = actual.max(), reference.max()
+    return {"position": int(position), "actual_token_id": actual_id,
+            "reference_token_id": reference_id, "token_ids": ids,
+            "actual_logits": actual[ids].tolist(), "reference_logits": reference[ids].tolist(),
+            "actual_argmax_ids": np.flatnonzero(actual == actual_max).tolist(),
+            "reference_argmax_ids": np.flatnonzero(reference == reference_max).tolist(),
+            "actual_top2_margin": float(actual_max - np.partition(actual, -2)[-2]),
+            "reference_top2_margin": float(reference_max - np.partition(reference, -2)[-2])}
+
+
+def native_argmax_diagnostics(actual, reference):
+    """Compare exact maximum sets without assigning priority to tied token IDs."""
+    actual, reference = np.asarray(actual, dtype=np.float64), np.asarray(reference, dtype=np.float64)
+    if (actual.ndim != 2 or actual.shape != reference.shape or not actual.size
+            or not np.isfinite(actual).all() or not np.isfinite(reference).all()):
+        raise ValueError("invalid native parity logits")
+    actual_max = actual == actual.max(axis=-1, keepdims=True)
+    reference_max = reference == reference.max(axis=-1, keepdims=True)
+    intersections = (actual_max & reference_max).any(axis=-1)
+    mismatches = np.flatnonzero(actual.argmax(axis=-1) != reference.argmax(axis=-1))
+    details = [{**argmax_mismatch(position, actual[position], reference[position]),
+                "argmax_sets_intersect": bool(intersections[position])} for position in mismatches]
+    return {"argmax_set_agreement": float(intersections.mean()), "top1_mismatches": details}
+
+
+def parity_row(actual, reference, *, reload=False):
+    metrics = numerical_metrics(actual, reference)
+    limits = (.002, .0001, 1e-6, 1.) if reload else (.125, .005, 1e-4, .99)
+    top1_key, diagnostics = "top1_agreement", {}
+    if not reload:
+        diagnostics = native_argmax_diagnostics(actual, reference)
+        top1_key = "argmax_set_agreement"
+        metrics[top1_key] = diagnostics.pop(top1_key)
+    passed = all(metrics[key] <= limit for key, limit in zip(
+        ("max_abs_error", "mean_abs_error", "mean_kl"), limits[:3]))
+    return {"metrics": metrics, **diagnostics, "top1_guard": top1_key,
+            "passed": passed and metrics[top1_key] >= limits[3]}
+
+
 class Worker:
     def __init__(self, args):
         self.args = args
@@ -105,13 +147,11 @@ class Worker:
         rows = []
         with np.load(self.args.probes) as expected:
             for item in self.data["documents"]["selection"][:2]:
-                metrics = numerical_metrics(predict(item["input_ids"]), expected[item["id"]])
-                limits = (.002, .0001, 1e-6, 1.) if reload else (.125, .005, 1e-4, .99)
-                passed = all(metrics[key] <= limit for key, limit in zip(
-                    ("max_abs_error", "mean_abs_error", "mean_kl"), limits[:3]))
-                passed = passed and metrics["top1_agreement"] >= limits[3]
-                rows.append({"id": item["id"], "metrics": metrics, "passed": passed})
-        write_json(self.output / "parity.json", {"passed": all(r["passed"] for r in rows), "rows": rows})
+                row = parity_row(predict(item["input_ids"]), expected[item["id"]], reload=reload)
+                rows.append({"id": item["id"], **row})
+        write_json(self.output / "parity.json", {
+            "protocol": "rotquant-deployment-parity-v2", "passed": all(r["passed"] for r in rows),
+            "rows": rows, "boundary": "Reload requires strict top-1 agreement; native numerical conformance uses exact maximum-set intersection and does not assert identical greedy generation."})
         if not rows or not all(r["passed"] for r in rows):
             raise ValueError("deployed model failed parity; quality/speed not accepted")
         return rows
