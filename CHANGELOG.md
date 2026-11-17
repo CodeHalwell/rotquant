@@ -18,7 +18,9 @@ Full record: [`docs/mathematical_review_2026-11-17.md`](docs/mathematical_review
   converged only up to four bits: 0.07 / 0.62 / 5.3 / 27% excess MSE at 5–8
   bits. Codes differ at five bits and above; saved artifacts carry their own
   centroids and load unchanged. `codebook="gaussian_legacy"` and
-  `lloyd_max_gaussian_grid` reproduce the old grid.
+  `lloyd_max_gaussian_grid` reproduce the old grid. This is a correctness
+  fix: on Qwen2.5-0.5B, eight rotation seeds at W5 and three at W8 show no
+  model-level KL difference between the two grids.
 - **Fixed:** `lloyd_max_samples` (the `calibrated` codebook) converges; it was
   12% and 64% above the optimum at five and six bits.
   `QuantConfig.calibrated_iters` now caps refinement at 2000.

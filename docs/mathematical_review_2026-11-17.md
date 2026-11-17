@@ -22,10 +22,15 @@ CUDA or Metal kernel was run and nothing here is a GPU speed result.
   above that. A rotation does not help a *truly* lossless coder; it makes the
   output larger (section 2).
 - **Eleven defects were fixed**, none of which invalidates an archived
-  result. The largest in effect: the Gaussian Lloyd-Max grids were not
+  result. The largest in weight error: the Gaussian Lloyd-Max grids were not
   converged at five bits and above (27% excess MSE at eight bits), the fitted
   ("calibrated") grids were 12% and 64% off at five and six bits, and the
-  finite E8 codebook was asymmetric with a non-zero mean (section 4).
+  finite E8 codebook was asymmetric with a non-zero mean (section 4). At the
+  model level the Gaussian fix made no difference that eight seeds could
+  resolve (section 2.4); it is a correctness fix, not a quality gain.
+- **Seed variation is the practical limit on small claims.** On the 0.5B
+  model the same recipe varies by 10–14% in KL between rotation seeds
+  (section 2.4).
 - **CPU inference is 1.9–2.9× faster for one token and 7–9× faster for a
   batch**, with the same result up to floating-point reassociation
   (section 5.1). The GPU gap to a conventional Q4 file is explained by the
@@ -110,16 +115,42 @@ a goal worth pursuing; the lossless work that pays is in section 2.5.
 Every linear layer of Qwen2.5-0.5B was quantised without calibration data
 (FWHT 128, groups of 128, `mse_search`, exact Gaussian grid, vocabulary left
 in full precision) and scored against the FP32 model on 16 × 127 next-token
-predictions over text from this repository's documentation.
+predictions over text from this repository's documentation. One rotation
+seed, 41-point scale search:
 
-| Recipe | KL(full precision ‖ quantised), nats | Top-1 agreement | ΔNLL |
-|---|---:|---:|---:|
-| W5 | 0.0864 ± 0.0035 | 86.2% | +0.083 |
+| Recipe | Weight NMSE | KL(full precision ‖ quantised), nats | Top-1 agreement | ΔNLL |
+|---|---:|---:|---:|---:|
+| W4 | 7.7e-3 | 0.1883 | 74.1% | +0.160 |
+| W5 | 1.9e-3 | 0.0864 | 86.2% | +0.083 |
+| W6 | 4.8e-4 | 0.0237 | 92.7% | +0.019 |
+| W8 | 3.1e-5 | 0.0012 | 98.0% | +0.0004 |
 
 Read this as the size of the effect, not as a target: a 0.5B model is far more
 sensitive than the 4B model the project evaluates, the text is technical, and
-no GPTQ, refit or recovery is applied. It does show that "5 bits" is not
-"lossless" for a small model, and by how much each extra bit helps.
+no GPTQ, refit or recovery is applied. It does show that five bits is not
+lossless for a small model, that each extra bit divides KL by roughly four
+between five and eight bits, and that KL follows the weight error closely.
+
+**Run-to-run variation is large, and it decides what can be claimed.** The
+same recipe with a different rotation seed gives a different realisation of
+the quantisation error. At W5 over eight seeds (11-point scale search):
+
+| Grid | KL per seed 0–7 | Mean | SD across seeds |
+|---|---|---:|---:|
+| exact | 0.0685, 0.0915, 0.0797, 0.0784, 0.0710, 0.0741, 0.0685, 0.0740 | 0.0757 | 0.0076 |
+| earlier grid | 0.0652, 0.0738, 0.0652, 0.0741, 0.0755, 0.0982, 0.0748, 0.0860 | 0.0766 | 0.0109 |
+
+The paired difference is −0.0009 ± 0.0049 (standard error): no difference.
+After the first three seeds the earlier grid had looked 15% better in every
+one of them, which is what chance looks like at n = 3 with a seed standard
+deviation of 10–14%. At W8 three seeds gave +0.0006 ± 0.0010, again nothing.
+
+Two consequences. The codebook fix is a correctness fix: it lowers 8-bit
+weight error by 7–17% and has no model-level effect that this measurement
+can resolve. And any comparison of two recipes on a model of this size needs
+on the order of eight seeds before a difference below about 15% in KL means
+anything; the prompt-level standard error (0.004 here) does not capture this,
+because it holds the quantisation realisation fixed.
 
 ### 2.5 Where the remaining loss is, in order of size
 
@@ -150,7 +181,8 @@ the old grid at W5/W6: a group of 128 values normalised by its own RMS lies on
 a sphere, its coordinates have thinner tails than a Gaussian, and the old
 grid was accidentally narrower. The `spherical` grid with `codebook_dim=128`
 is the right model and is the best of the three there. Second, none of this is
-a meaningful quality lever below seven bits.
+a meaningful quality lever below seven bits, and section 2.4 shows that even
+the 7% at eight bits is below what a model-level measurement resolves.
 
 The entropy-coding rows rest on one fact: Lloyd-Max levels are not equally
 likely. The real `rans_encode_rows` coder reaches within 0.02% of the order-0
