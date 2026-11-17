@@ -3,7 +3,10 @@
 Scalar grids (fully implemented and unit-tested on a unit Gaussian):
 
 * :func:`lloyd_max_gaussian` -- MSE-optimal scalar grid for a unit Gaussian
-  (the HIGGS / TurboQuant-MSE grid). Anchors the source-coding test.
+  (the HIGGS / TurboQuant-MSE grid), solved to machine precision from the
+  closed-form cell moments. Anchors the source-coding test.
+  :func:`lloyd_max_gaussian_grid` keeps the earlier fixed-iteration grid solver
+  for reproducing artifacts built before 2026-11-17.
 * :func:`lloyd_max_spherical` -- dimension-aware grid for a coordinate of a
   uniformly rotated, RMS-normalised vector (the finite-dimensional TurboQuant
   distribution, rather than its Gaussian limit).
@@ -40,7 +43,15 @@ def turboquant_mse_bound(bits: float) -> float:
         MSE ≤ (sqrt(3)·π/2) · 4^{-b}
 
     which is within ≈2.7× of the Shannon rate-distortion limit for a Gaussian source.
-    ``bits`` can be fractional (e.g. 3.125 for 3-bit codes + 16-bit scale / 128 group).
+    The right-hand side is the Panter-Dite high-resolution distortion of the
+    optimal scalar quantiser; the exact Lloyd-Max distortion lies below it at
+    every integer rate (0.3634, 0.1175, 0.0345, 0.00950 at one to four bits)
+    and approaches it from below as the rate grows.
+
+    ``bits`` counts code bits. A fractional value is accepted so the curve can
+    be drawn against an effective rate, but scale metadata does not lower the
+    distortion along this curve: 3-bit codes with a 16-bit scale per 128
+    weights cost 3.125 bits and still have the 3-bit distortion.
     """
     return (math.sqrt(3) * math.pi / 2) * (4.0 ** -bits)
 
@@ -57,23 +68,32 @@ def _lloyd_max_grid(
     initial: np.ndarray,
     iters: int,
 ) -> np.ndarray:
-    """Solve a one-dimensional Lloyd-Max problem on a weighted grid."""
+    """Solve a one-dimensional Lloyd-Max problem on a sorted weighted grid.
+
+    ``xs`` must be ascending. Cell sums come from two prefix sums, so one
+    iteration costs O(levels log n) instead of O(levels * n). ``iters`` is a
+    cap: the loop stops as soon as no centroid moves by more than 1e-10.
+    A point lying exactly on a boundary belongs to the upper cell, as before.
+    """
     if levels < 1:
         raise ValueError("levels must be >= 1")
     centroids = np.asarray(initial, dtype=np.float64).copy()
     if centroids.shape != (levels,):
         raise ValueError("initial centroids must contain exactly levels entries")
+    xs = np.asarray(xs, dtype=np.float64)
+    weights = np.asarray(weights, dtype=np.float64)
+    mass_prefix = np.concatenate(([0.0], np.cumsum(weights)))
+    moment_prefix = np.concatenate(([0.0], np.cumsum(xs * weights)))
     for _ in range(iters):
         bounds = (centroids[:-1] + centroids[1:]) / 2.0
-        indices = np.searchsorted(bounds, xs, side="right")
+        edges = np.concatenate(
+            ([0], np.searchsorted(xs, bounds, side="left"), [xs.size])
+        )
+        mass = mass_prefix[edges[1:]] - mass_prefix[edges[:-1]]
+        moment = moment_prefix[edges[1:]] - moment_prefix[edges[:-1]]
+        occupied = mass > 0
         new_centroids = centroids.copy()
-        for index in range(levels):
-            mask = indices == index
-            mass = weights[mask].sum()
-            if mass > 0:
-                new_centroids[index] = (
-                    xs[mask] * weights[mask]
-                ).sum() / mass
+        new_centroids[occupied] = moment[occupied] / mass[occupied]
         if np.allclose(new_centroids, centroids, atol=1e-10, rtol=0.0):
             centroids = new_centroids
             break
@@ -81,27 +101,132 @@ def _lloyd_max_grid(
     return np.sort(centroids)
 
 
+def _grid_quantizer_mse(
+    xs: np.ndarray, weights: np.ndarray, centroids: np.ndarray
+) -> float:
+    """Weighted MSE of nearest-centroid quantisation on a sorted grid."""
+    ordered = np.sort(np.asarray(centroids, dtype=np.float64))
+    bounds = (ordered[:-1] + ordered[1:]) / 2.0
+    indices = np.searchsorted(bounds, xs, side="right")
+    total = float(np.sum(weights))
+    return float(np.sum((xs - ordered[indices]) ** 2 * weights) / total)
+
+
 # --------------------------------------------------------------------------- #
 # Scalar grids
 # --------------------------------------------------------------------------- #
-def lloyd_max_gaussian(levels: int, iters: int = 200, grid: int = 200_001,
-                       span: float = 12.0) -> np.ndarray:
-    """MSE-optimal scalar quantiser centroids for a unit (zero-mean, unit-var) Gaussian.
+def _gaussian_cells(
+    centroids: np.ndarray,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+    """Closed-form Voronoi cells of sorted ``centroids`` under N(0, 1).
 
-    Solved by Lloyd's algorithm on a dense pdf grid: alternately set each
-    centroid to the conditional mean of its cell and each boundary to the
-    midpoint of adjacent centroids. Returns ``levels`` sorted centroids.
+    Returns ``(lower, upper, mass, first_moment)``. Each mass is evaluated on
+    the side of the origin where the tail is small, so far-tail cells do not
+    lose their value to cancellation between two numbers close to one.
+    """
+    from scipy.special import ndtr
+
+    inner = (centroids[:-1] + centroids[1:]) / 2.0
+    lower = np.concatenate(([-np.inf], inner))
+    upper = np.concatenate((inner, [np.inf]))
+    mass = np.where(
+        lower > 0, ndtr(-lower) - ndtr(-upper), ndtr(upper) - ndtr(lower)
+    )
+    first_moment = _normal_pdf(lower) - _normal_pdf(upper)
+    return lower, upper, mass, first_moment
+
+
+def _lloyd_max_gaussian_exact(levels: int) -> np.ndarray:
+    """Solve the Lloyd-Max stationarity equations for N(0, 1) by Newton.
+
+    The unknowns are the centroids ``c``; the residual is ``c_i - E[Z | cell
+    i]`` with boundaries at centroid midpoints. Its Jacobian is tridiagonal,
+    so each Newton step is one banded solve. The start is the Panter-Dite
+    compander (quantiles of N(0, 3)), which is already close at every rate,
+    followed by a few plain Lloyd steps. A unit Gaussian is log-concave, so
+    the stationary point is the unique global optimum (Fleischer, 1964).
+
+    Plain Lloyd iteration converges only linearly, with a rate that approaches
+    one as the level count grows: from a uniform start it needs about 2e5
+    iterations at 256 levels, which is why a fixed 200-iteration loop is not a
+    solver at five bits and above.
+    """
+    from scipy.linalg import solve_banded
+    from scipy.special import ndtri
+
+    centroids = math.sqrt(3.0) * ndtri((np.arange(levels) + 0.5) / levels)
+
+    def lloyd_step(values: np.ndarray) -> np.ndarray:
+        _, _, mass, first_moment = _gaussian_cells(values)
+        return first_moment / mass
+
+    for _ in range(50):
+        centroids = lloyd_step(centroids)
+
+    best, best_residual = centroids, np.inf
+    for _ in range(100):
+        _, upper, mass, first_moment = _gaussian_cells(centroids)
+        means = first_moment / mass
+        residual = centroids - means
+        size = float(np.max(np.abs(residual)))
+        if size < best_residual:
+            best, best_residual = centroids, size
+        if size < 1e-12:
+            break
+        inner = upper[:-1]
+        density = _normal_pdf(inner)
+        # d mean_i / d upper_i and d mean_(i+1) / d lower_(i+1); both
+        # boundaries move at half the rate of either neighbouring centroid.
+        d_upper = density * (inner - means[:-1]) / mass[:-1]
+        d_lower = density * (means[1:] - inner) / mass[1:]
+        diagonal = np.ones(levels)
+        diagonal[:-1] -= 0.5 * d_upper
+        diagonal[1:] -= 0.5 * d_lower
+        banded = np.zeros((3, levels))
+        banded[0, 1:] = -0.5 * d_upper
+        banded[1] = diagonal
+        banded[2, :-1] = -0.5 * d_lower
+        step = solve_banded((1, 1), banded, -residual)
+        if not np.all(np.isfinite(step)):
+            break
+        damping = 1.0
+        trial = centroids + step
+        while damping > 1e-6 and not np.all(np.diff(trial) > 0):
+            damping *= 0.5
+            trial = centroids + damping * step
+        if not np.all(np.diff(trial) > 0):
+            break
+        centroids = trial
+
+    centroids = best
+    if best_residual > 1e-9:  # Newton stalled: finish on the fixed point map.
+        for _ in range(200_000):
+            updated = lloyd_step(centroids)
+            if np.max(np.abs(updated - centroids)) < 1e-13:
+                centroids = updated
+                break
+            centroids = updated
+    # The optimum is antisymmetric; remove the last round-off asymmetry.
+    return 0.5 * (centroids - centroids[::-1])
+
+
+def lloyd_max_gaussian_grid(levels: int, iters: int = 200, grid: int = 200_001,
+                            span: float = 12.0) -> np.ndarray:
+    """The pre-2026-11-17 Gaussian solver, kept for reproducing old artifacts.
+
+    It runs at most ``iters`` Lloyd steps on a discretised pdf from a uniform
+    start in ``[-2.5, 2.5]``. That reaches the optimum only up to four bits;
+    the grids it returns carry 0.07%, 0.62%, 5.3% and 27% excess MSE at five,
+    six, seven and eight bits. New work should use :func:`lloyd_max_gaussian`.
     """
     if levels < 1:
         raise ValueError("levels must be >= 1")
     xs = np.linspace(-span, span, grid)
     dx = xs[1] - xs[0]
     pdf = _normal_pdf(xs) * dx
-    # Symmetric initialisation across the support.
     centroids = np.linspace(-2.5, 2.5, levels) if levels > 1 else np.array([0.0])
 
     for _ in range(iters):
-        # Boundaries are midpoints between adjacent centroids.
         bounds = (centroids[:-1] + centroids[1:]) / 2.0
         edges = np.concatenate(([-np.inf], bounds, [np.inf]))
         new_centroids = centroids.copy()
@@ -116,6 +241,23 @@ def lloyd_max_gaussian(levels: int, iters: int = 200, grid: int = 200_001,
             break
         centroids = new_centroids
     return np.sort(centroids)
+
+
+def lloyd_max_gaussian(levels: int, iters: int = 200, grid: int = 200_001,
+                       span: float = 12.0) -> np.ndarray:
+    """MSE-optimal scalar quantiser centroids for a unit (zero-mean, unit-var) Gaussian.
+
+    Returns ``levels`` sorted centroids satisfying the Lloyd-Max conditions
+    (boundaries at centroid midpoints, centroids at conditional means) to
+    about 1e-12. ``iters``, ``grid`` and ``span`` belong to the earlier grid
+    solver and are accepted only so existing call sites keep working; pass
+    them to :func:`lloyd_max_gaussian_grid` to reproduce that solver.
+    """
+    if levels < 1:
+        raise ValueError("levels must be >= 1")
+    if levels == 1:
+        return np.array([0.0])
+    return _lloyd_max_gaussian_exact(levels)
 
 
 def spherical_coordinate_grid(
@@ -154,7 +296,7 @@ def spherical_coordinate_grid(
 def lloyd_max_spherical(
     levels: int,
     dimension: int,
-    iters: int = 200,
+    iters: int = 20_000,
     grid: int = 200_001,
 ) -> np.ndarray:
     """Finite-dimensional TurboQuant scalar centroids with unit RMS.
@@ -164,7 +306,7 @@ def lloyd_max_spherical(
     dimensions used by real model kernels.
     """
     xs, masses = spherical_coordinate_grid(dimension, grid=grid)
-    gaussian = lloyd_max_gaussian(levels, iters=iters, grid=grid)
+    gaussian = lloyd_max_gaussian(levels)
     initial = np.clip(gaussian, xs[0], xs[-1])
     return _lloyd_max_grid(
         xs, masses, levels, initial=initial, iters=iters
@@ -184,13 +326,26 @@ def quantizer_mse_spherical(
     return float(((xs - sorted_centroids[indices]) ** 2 * masses).sum())
 
 
-def lloyd_max_samples(samples, levels: int, iters: int = 200) -> np.ndarray:
+def lloyd_max_samples(samples, levels: int, iters: int = 2000) -> np.ndarray:
     """Fit deterministic Lloyd-Max centroids to representative scalar samples.
 
     Callers should pass values in the same normalised, rotated domain consumed
     by the quantizer.  This is the inexpensive calibrated tier: the resulting
     centroids use the existing artifact/runtime format and require no per-weight
     metadata.
+
+    Lloyd's algorithm only finds a local optimum, and from equal-mass quantiles
+    it approaches one slowly once there are 32 or more levels. Two starts are
+    therefore refined and the one with the lower sample MSE is returned: the
+    equal-mass quantiles, and the exact Gaussian Lloyd-Max grid placed at the
+    sample mean and standard deviation, which is close whenever the samples
+    are rotated weights. ``iters`` caps each refinement; both normally stop
+    earlier on the 1e-10 movement tolerance.
+
+    A fit cannot be better than its sample: with fewer than a few thousand
+    samples per level the tail centroids follow the sample rather than the
+    source. At six bits and above prefer the ``gaussian`` or ``spherical``
+    grids unless the sample holds at least ``4096 * levels`` values.
     """
     if levels < 1:
         raise ValueError("levels must be >= 1")
@@ -202,28 +357,44 @@ def lloyd_max_samples(samples, levels: int, iters: int = 200) -> np.ndarray:
     if values.size < levels:
         raise ValueError("calibration requires at least levels finite samples")
     probabilities = (np.arange(levels, dtype=np.float64) + 0.5) / levels
-    centroids = np.quantile(values, probabilities)
+    starts = [np.quantile(values, probabilities)]
+    spread = float(values.std())
+    if levels > 1 and spread > 0:
+        starts.append(float(values.mean()) + spread * lloyd_max_gaussian(levels))
     # Samples have equal mass.  Sorting once keeps the repeated cell reductions
     # deterministic across platforms and avoids a dense probability grid.
     values.sort()
     weights = np.ones_like(values)
-    return _lloyd_max_grid(
-        values, weights, levels, initial=centroids, iters=iters
-    )
+    best: np.ndarray | None = None
+    best_mse = np.inf
+    for initial in starts:
+        candidate = _lloyd_max_grid(
+            values, weights, levels, initial=initial, iters=iters
+        )
+        mse = _grid_quantizer_mse(values, weights, candidate)
+        if mse < best_mse:
+            best, best_mse = candidate, mse
+    assert best is not None
+    return best
 
 
 def quantizer_mse(centroids: np.ndarray, grid: int = 200_001,
                   span: float = 12.0) -> float:
-    """Expected MSE of a scalar quantiser with given centroids on a unit Gaussian."""
-    xs = np.linspace(-span, span, grid)
-    dx = xs[1] - xs[0]
-    pdf = _normal_pdf(xs) * dx
-    c = np.sort(centroids)
-    bounds = (c[:-1] + c[1:]) / 2.0
-    edges = np.concatenate(([-np.inf], bounds, [np.inf]))
-    idx = np.searchsorted(edges, xs, side="right") - 1
-    q = c[idx]
-    return float(((xs - q) ** 2 * pdf).sum())
+    """Expected MSE of a scalar quantiser with given centroids on a unit Gaussian.
+
+    Evaluated in closed form from the Gaussian cell masses and first and
+    second moments, so the result is exact for any centroid set. ``grid`` and
+    ``span`` belonged to the earlier numerical integration and are ignored.
+    """
+    ordered = np.sort(np.asarray(centroids, dtype=np.float64))
+    lower, upper, mass, first_moment = _gaussian_cells(ordered)
+    with np.errstate(invalid="ignore"):
+        lower_term = np.where(np.isinf(lower), 0.0, lower * _normal_pdf(lower))
+        upper_term = np.where(np.isinf(upper), 0.0, upper * _normal_pdf(upper))
+    second_moment = mass + lower_term - upper_term
+    return float(
+        (second_moment - 2.0 * ordered * first_moment + ordered**2 * mass).sum()
+    )
 
 
 def uniform_signed(levels: int, clip: float = 1.0) -> np.ndarray:
@@ -390,8 +561,9 @@ class VectorCodebook:
 class FiniteE8Codebook(VectorCodebook):
     """Finite-rate, shaped E8 product codebook with a fixed packed index.
 
-    The retained points are the lowest-energy points from both E8 cosets and
-    are normalized to unit coordinate variance. Encoding first uses the exact
+    The retained points are the lowest-energy non-zero points from both E8
+    cosets, scaled for minimum MSE on unit-variance input (see
+    :func:`build_finite_e8_codebook`). Encoding first uses the exact
     infinite-lattice nearest point. A sorted integer-key table maps in-support
     lattice points to their fixed index; rare overload points outside the
     shaping region fall back to exact nearest-neighbour search over the finite
@@ -546,23 +718,102 @@ def build_gaussian_vector_codebook(
     )
 
 
+def _e8_points_up_to(max_energy: int) -> torch.Tensor:
+    """Every non-zero E8 point with squared norm at most ``max_energy``.
+
+    E8 is ``D8`` (integer vectors with even coordinate sum) together with
+    ``D8 + (1/2, ..., 1/2)``. Each coset is enumerated as pairs of 4-tuples so
+    the full ``7**8`` box never has to be materialised. The coordinate ranges
+    cover squared norm 12: an integer coordinate can reach 3 (``3^2 + 1 + 1 +
+    1 = 12``) and a half-integer one 2.5 (``2.5^2 + 7/4 = 8``).
+    """
+    if max_energy > 12:
+        raise ValueError("E8 enumeration is tabulated up to squared norm 12")
+
+    def coset(axis: torch.Tensor) -> torch.Tensor:
+        half_block = torch.cartesian_prod(*([axis] * 4))
+        energy = half_block.square().sum(dim=1)
+        keep = energy <= max_energy
+        half_block, energy = half_block[keep], energy[keep]
+        total = half_block.sum(dim=1)
+        pair_energy = energy[:, None] + energy[None, :]
+        pair_sum = total[:, None] + total[None, :]
+        valid = (pair_energy <= max_energy) & (torch.remainder(pair_sum, 2) == 0)
+        left, right = valid.nonzero(as_tuple=True)
+        return torch.cat([half_block[left], half_block[right]], dim=1)
+
+    integer = coset(torch.arange(-3.0, 4.0))
+    shifted = coset(torch.arange(-3.0, 3.0) + 0.5)
+    points = torch.cat([integer, shifted], dim=0)
+    return points[points.square().sum(dim=1) > 0].contiguous()
+
+
+# Scale of the unit-RMS codebook that minimises MSE on a unit Gaussian, found
+# by a scan on 400,000 samples (see tests/test_vector_quantization.py). Unit
+# RMS itself is not optimal: reconstruction points of an MSE quantiser carry
+# less energy than the source at one bit, and slightly more than the retained
+# shells suggest at two bits because 40% of Gaussian blocks overload them.
+_E8_GAUSSIAN_SCALE = {1: 0.84, 2: 1.04}
+
+
 @functools.cache
 def build_finite_e8_codebook(bits_per_weight: int = 2) -> FiniteE8Codebook:
-    """Build a deterministic 8D E8P-style codebook at an exact finite rate."""
+    """Build a deterministic 8D E8P-style codebook at an exact finite rate.
+
+    The ``2**(8 * bits)`` retained points are the lowest-energy non-zero E8
+    points: every complete shell that fits, then a subset of the next shell
+    made of ``+p``/``-p`` pairs. The set is therefore closed under negation
+    and has zero mean. The origin is left out because, together with complete
+    shells, it would leave an odd number of slots for the last shell, and that
+    cannot be filled symmetrically. The pairs of the partial shell are ordered
+    by an integer hash of the point, which spreads them over the shell without
+    depending on a random number generator's version.
+
+    Before 2026-11-17 the candidates came from the box ``[-2, 2]^8`` and its
+    ``+1/2`` shift ``[-1.5, 2.5]^8``. That box misses lattice points of squared
+    norm 8 and 10 (512 and 3,808 of them at two bits) and is not symmetric, so
+    the old codebook had a non-zero mean and 2.9% more Gaussian MSE.
+    """
 
     if bits_per_weight not in (1, 2):
         raise ValueError("finite E8 supports 1 or 2 bits per weight")
     levels = 1 << (bits_per_weight * 8)
-    axis = torch.arange(-2, 3, dtype=torch.float32)
-    grid = torch.cartesian_prod(*([axis] * 8))
-    even = (grid.to(torch.int64).sum(dim=1) % 2) == 0
-    d8 = grid[even]
-    candidates = torch.cat([d8, d8 + 0.5], dim=0)
+    candidates = _e8_points_up_to(12)
     energy = candidates.square().sum(dim=1)
-    order = torch.argsort(energy, stable=True)[:levels]
-    points = candidates[order].contiguous()
+    chosen: list[torch.Tensor] = []
+    count = 0
+    for shell_energy in torch.unique(energy).tolist():
+        shell = candidates[energy == shell_energy]
+        if count + shell.shape[0] <= levels:
+            chosen.append(shell)
+            count += shell.shape[0]
+            continue
+        needed = levels - count
+        if needed % 2:
+            raise RuntimeError("finite E8 shell fill must be even")
+        if needed:
+            first_nonzero = (shell != 0).to(torch.int64).argmax(dim=1)
+            leading = shell.gather(1, first_nonzero[:, None])[:, 0]
+            representatives = shell[leading > 0]
+            doubled = torch.round(representatives * 2).to(torch.int64) + 8
+            powers = torch.tensor(
+                [17**index for index in range(8)], dtype=torch.int64
+            )
+            key = (doubled * powers).sum(dim=1)
+            mixed = (key * 2654435761) % (1 << 32)
+            order = torch.argsort(mixed * (1 << 34) + key)
+            half = representatives[order[: needed // 2]]
+            chosen.append(torch.cat([half, -half], dim=0))
+        count = levels
+        break
+    if count != levels:
+        raise RuntimeError("finite E8 enumeration holds too few points")
+    points = torch.cat(chosen, dim=0).contiguous()
+    unit_rms = float(points.square().mean().sqrt().item())
     return FiniteE8Codebook(
-        points, name=f"e8p_d8_w{bits_per_weight}"
+        points,
+        normalization=unit_rms / _E8_GAUSSIAN_SCALE[bits_per_weight],
+        name=f"e8p_d8_w{bits_per_weight}",
     )
 
 
@@ -580,6 +831,10 @@ def build_scalar_codebook(
     kind = kind.lower()
     if kind in ("gaussian", "lloyd", "lloyd_max", "mse"):
         return ScalarCodebook(lloyd_max_gaussian(levels), name="gaussian")
+    if kind in ("gaussian_legacy", "gaussian_grid"):
+        return ScalarCodebook(
+            lloyd_max_gaussian_grid(levels), name="gaussian_legacy"
+        )
     if kind in ("sphere", "spherical", "beta", "finite_beta"):
         if dimension is None:
             raise ValueError("spherical codebooks require a dimension")

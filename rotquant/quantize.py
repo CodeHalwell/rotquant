@@ -136,7 +136,7 @@ class QuantConfig:
     vector_samples: int = 16384          # deterministic Gaussian training samples
     vector_iters: int = 25               # Lloyd/k-means refinement iterations
     calibrated_samples: int = 65536      # per-matrix normalized scalar samples
-    calibrated_iters: int = 100          # scalar Lloyd refinement iterations
+    calibrated_iters: int = 2000         # cap on scalar Lloyd refinement iterations
 
     def __post_init__(self) -> None:
         if not isinstance(self.collect_scale_diagnostics, bool):
@@ -149,6 +149,7 @@ class QuantConfig:
             raise ValueError("group_size must be >= 1")
         if self.codebook.lower() not in {
             "gaussian", "lloyd", "lloyd_max", "mse",
+            "gaussian_legacy", "gaussian_grid",
             "sphere", "spherical", "beta", "finite_beta",
             "uniform", "nf", "normalfloat", "normal_float",
             "calibrated", "empirical", "weight_calibrated",
@@ -177,6 +178,7 @@ class QuantConfig:
             # before an expensive model has been loaded or calibrated.
             valid = {
                 "gaussian", "lloyd", "lloyd_max", "mse",
+                "gaussian_legacy", "gaussian_grid",
                 "uniform", "nf", "normalfloat", "normal_float",
             }
             if self.residual_codebook.lower() not in valid:

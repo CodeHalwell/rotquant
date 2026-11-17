@@ -188,7 +188,12 @@ class PackedToyLM(nn.Module):
     def quantize(self):
         rotation = RandomizedHadamard(128, seed=0)
         self.head = QuantLinear.from_linear(
+            # Pinned to the pre-2026-11-17 grid: whether two recovery steps on
+            # this 16-row toy improve its single held-out call depends on the
+            # starting codes, and the acceptance assertions below were tuned on
+            # that grid. The recovery mechanics under test do not.
             self.head, QuantConfig(bits=4, group_size=128, error_comp="gptq",
+                                   codebook="gaussian_legacy",
                                    scale_bits=self.scale_bits, scale_quant_group_size=4),
             weight_rotation=rotation, H=torch.eye(128))
 

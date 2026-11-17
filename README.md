@@ -67,6 +67,10 @@ and negative results, methodological caveats, and the decision taken after each
 trial. Update it alongside raw JSON results so development history remains
 paper-ready and reproducible.
 
+The [mathematical review of 17 November](docs/mathematical_review_2026-11-17.md)
+records what is and is not lossless in this pipeline, the defects it found and
+fixed, the measured CPU kernel speed-up and the ordered GPU kernel changes.
+
 The [science and mathematics guide](docs/how_rotquant_works.md) derives the
 rotation invariant, scalar and vector codebooks, exact rate accounting, GPTQ,
 learned/block objectives, mixed-precision allocation, KV compression, and

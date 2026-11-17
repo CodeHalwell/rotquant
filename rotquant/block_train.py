@@ -683,6 +683,10 @@ def train_fake_quant_block(source: nn.Module, global_name: str,
         if config.max_grad_norm:
             torch.nn.utils.clip_grad_norm_(params, config.max_grad_norm)
         optimizer.step()
+        for module in fake.values():
+            _project_log_multiplier(
+                module.log_scale_multiplier,
+                module.scale_multiplier_min, module.scale_multiplier_max)
 
         steps_run = step
         validated = (
@@ -742,6 +746,20 @@ def train_fake_quant_block(source: nn.Module, global_name: str,
     return trained_states, selection_records, stats
 
 
+@torch.no_grad()
+def _project_log_multiplier(parameter: torch.Tensor | None,
+                            minimum: float, maximum: float) -> None:
+    """Keep a log scale multiplier inside its bounds after an optimiser step.
+
+    The forward pass uses ``exp(p).clamp(min, max)``, whose gradient is zero
+    once ``p`` has left the interval. Without this projection a multiplier
+    that overshoots a bound stays there for the rest of training, even when
+    the loss would pull it back.
+    """
+    if parameter is not None:
+        parameter.clamp_(math.log(minimum), math.log(maximum))
+
+
 def _scale_override(linear: nn.Linear, rotation: nn.Module,
                     quant_cfg: QuantConfig,
                     state: dict[str, torch.Tensor]) -> torch.Tensor | None:
@@ -749,7 +767,11 @@ def _scale_override(linear: nn.Linear, rotation: nn.Module,
     if multiplier is None:
         return None
     with torch.no_grad():
-        rotated = rotation.rotate_weight(linear.weight.detach()).float()
+        # Rotate in fp32, exactly as QuantLinear.from_linear does. Rotating an
+        # fp16/bf16 weight rounds the rotated values to that dtype before the
+        # RMS, which moved a few percent of the stored scales away from the
+        # packed candidate the selection gate had scored.
+        rotated = rotation.rotate_weight(linear.weight.detach().float())
         rms = group_scales_rms(rotated, quant_cfg.group_size)
         return rms * multiplier.to(device=rms.device, dtype=rms.dtype)
 
@@ -854,7 +876,7 @@ def _patch_source_block(source: nn.Module, global_name: str,
         if lora_rank and lora_init == "residual_svd":
             with torch.no_grad():
                 rotated_source = rotation.rotate_weight(
-                    work.weight.detach()).float()
+                    work.weight.detach().float())
                 residual = rotated_source - qlinear.qweight.dequantize().float()
             qlinear.enable_lora(
                 lora_rank,
@@ -1234,6 +1256,10 @@ def _distill_packed_model(model: nn.Module, calls: Sequence[TeacherCall], device
             torch.nn.utils.clip_grad_norm_(
                 parameters, config.distill_max_grad_norm)
         optimizer.step()
+        for module in quant_linears:
+            _project_log_multiplier(
+                module._log_scale_multiplier,
+                module._scale_multiplier_min, module._scale_multiplier_max)
         if (config.distill_code_refresh_interval
                 and step % config.distill_code_refresh_interval == 0):
             for module in quant_linears:
@@ -1297,10 +1323,6 @@ def _distill_packed_model(model: nn.Module, calls: Sequence[TeacherCall], device
             for module in quant_linears:
                 module.refresh_quantization()
 
-    final_train = _distill_eval_loss(
-        model, train_calls, device, compute_dtype, config)
-    final_validation = _distill_eval_loss(
-        model, validation_calls, device, compute_dtype, config)
     scale_multiplier_values = [
         module.scale_finetuning_multiplier().detach().cpu().reshape(-1)
         for module in quant_linears
@@ -1319,6 +1341,13 @@ def _distill_packed_model(model: nn.Module, calls: Sequence[TeacherCall], device
     for parameter in existing_params:
         parameter.requires_grad_(False)
     del optimizer
+    # Measured after the commit loop: committing rounds scales and adapters to
+    # their storage precision and a rejected run removes its adapters, so only
+    # now is this the model that is deployed.
+    final_train = _distill_eval_loss(
+        model, train_calls, device, compute_dtype, config)
+    final_validation = _distill_eval_loss(
+        model, validation_calls, device, compute_dtype, config)
 
     logger.info(
         "end-to-end distillation: train %.6f -> candidate %.6f -> deployed "

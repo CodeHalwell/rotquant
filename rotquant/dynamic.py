@@ -1034,7 +1034,9 @@ def _allocation_candidates(
         candidates[name] = allowed
 
     protected: list[dict[str, Any]] = []
-    count = math.ceil(config.protect_top_fraction * len(candidates))
+    # 0.07 * 100 is 7.000000000000001 in binary floating point; without the
+    # guard ceil() protects one layer more than the fraction asks for.
+    count = math.ceil(config.protect_top_fraction * len(candidates) - 1e-9)
     if count:
         sensitivities = []
         for order, (name, items) in enumerate(candidates.items()):

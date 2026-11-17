@@ -9,6 +9,43 @@ software.
 
 ## [Unreleased]
 
+### Mathematical review, lossless stages and CPU kernel (2026-11-17)
+
+Full record: [`docs/mathematical_review_2026-11-17.md`](docs/mathematical_review_2026-11-17.md).
+
+- **Changed:** `codebook="gaussian"` now returns the exact Lloyd-Max grid
+  (Newton on closed-form cell moments). The previous 200-step grid solver was
+  converged only up to four bits: 0.07 / 0.62 / 5.3 / 27% excess MSE at 5–8
+  bits. Codes differ at five bits and above; saved artifacts carry their own
+  centroids and load unchanged. `codebook="gaussian_legacy"` and
+  `lloyd_max_gaussian_grid` reproduce the old grid.
+- **Fixed:** `lloyd_max_samples` (the `calibrated` codebook) converges; it was
+  12% and 64% above the optimum at five and six bits.
+  `QuantConfig.calibrated_iters` now caps refinement at 2000.
+- **Fixed:** the finite E8 codebook is a negation-closed set of complete
+  lowest-energy shells with an MSE-fitted scale. The old box enumeration
+  missed lattice points, had a non-zero mean and 2.9–5.3% more Gaussian MSE.
+- **Fixed:** `quantizer_mse` is closed-form; weighted Lloyd uses prefix sums.
+- **Fixed:** block recovery rotates in FP32 when deriving learned scales, so
+  the deployed block is the one the gate scored for FP16/BF16 sources;
+  bounded scale multipliers are projected after each optimiser step; reported
+  final recovery losses are measured after commit.
+- **Fixed:** `protect_top_fraction` no longer protects one layer too many for
+  fractions such as 0.07 × 100.
+- **Added:** `rotquant.lossless` — an exactly invertible integer butterfly
+  rotation, an exact fixed-point view of float tensors, code-entropy
+  accounting and a row-wise rANS coder with a bit-exact round trip. The coder
+  is not yet part of the checkpoint or GGUF formats.
+- **Added:** `evaluate_logit_fidelity` reports `paired_prompt_bootstrap`,
+  which resamples prompts rather than tokens.
+- **Performance:** the AVX2 native-v2 kernel decodes each packed row once per
+  call and uses register lookups for small codebooks: 1.9–2.9× faster for one
+  input row and 7–9× for 32–128 rows, identical up to reassociation. Scalar
+  and NEON kernels are unchanged.
+- Not changed: GPU kernels, retained checkpoints, archived results. Open
+  defects are listed in the review.
+
+
 ### W5 backbone kernel screen and confirmation (2026-09-13)
 
 - Archive/audit the completed followup4 profile. Keep custom CUDA-event shares

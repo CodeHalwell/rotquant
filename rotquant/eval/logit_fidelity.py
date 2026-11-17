@@ -9,7 +9,7 @@ from typing import Any
 import torch
 import torch.nn.functional as F
 
-from .statistics import bootstrap_report
+from .statistics import bootstrap_cluster_report, bootstrap_report
 
 
 @dataclass(frozen=True)
@@ -204,7 +204,25 @@ def evaluate_logit_fidelity(
         "nll_delta": (candidate_nll_sum - source_nll_sum) / tokens,
         "input_hashes": [reference.input_hash for reference in references],
         "prompt_metrics": prompt_metrics,
+        # Token resampling treats every token as independent. Tokens of one
+        # prompt are not, so use the prompt-resampled interval for any claim
+        # about how a result generalises to new prompts.
         "paired_token_bootstrap": bootstrap,
+        "paired_prompt_bootstrap": bootstrap_cluster_report(
+            {
+                "mean_teacher_kl": [
+                    row["mean_teacher_kl"] * row["tokens"] for row in prompt_metrics],
+                "mean_logit_cosine": [
+                    row["mean_logit_cosine"] * row["tokens"] for row in prompt_metrics],
+                "top1_agreement": [
+                    row["top1_agreement"] * row["tokens"] for row in prompt_metrics],
+                "nll_delta": [
+                    row["nll_delta"] * row["tokens"] for row in prompt_metrics],
+            },
+            [row["tokens"] for row in prompt_metrics],
+            draws=config.bootstrap_draws,
+            seed=config.bootstrap_seed,
+        ),
     }
     domains = sorted({
         row["domain"] for row in prompt_metrics if row.get("domain") is not None
