@@ -4,9 +4,12 @@ Scalar grids (fully implemented and unit-tested on a unit Gaussian):
 
 * :func:`lloyd_max_gaussian` -- MSE-optimal scalar grid for a unit Gaussian
   (the HIGGS / TurboQuant-MSE grid), solved to machine precision from the
-  closed-form cell moments. Anchors the source-coding test.
-  :func:`lloyd_max_gaussian_grid` keeps the earlier fixed-iteration grid solver
-  for reproducing artifacts built before 2026-11-17.
+  closed-form cell moments. Anchors the source-coding test. Opt in with
+  ``codebook="gaussian_exact"``.
+* :func:`lloyd_max_gaussian_grid` -- the fixed-iteration grid that
+  ``codebook="gaussian"`` has always used. It is converged up to four bits
+  and is baked into native runtimes that do not serialise a codebook (GGUF v1
+  weights and the 2/3/4-bit KV-cache rows), so it stays the default.
 * :func:`lloyd_max_spherical` -- dimension-aware grid for a coordinate of a
   uniformly rotated, RMS-normalised vector (the finite-dimensional TurboQuant
   distribution, rather than its Gaussian limit).
@@ -212,12 +215,16 @@ def _lloyd_max_gaussian_exact(levels: int) -> np.ndarray:
 
 def lloyd_max_gaussian_grid(levels: int, iters: int = 200, grid: int = 200_001,
                             span: float = 12.0) -> np.ndarray:
-    """The pre-2026-11-17 Gaussian solver, kept for reproducing old artifacts.
+    """The grid behind ``codebook="gaussian"``: a frozen runtime contract.
 
     It runs at most ``iters`` Lloyd steps on a discretised pdf from a uniform
-    start in ``[-2.5, 2.5]``. That reaches the optimum only up to four bits;
-    the grids it returns carry 0.07%, 0.62%, 5.3% and 27% excess MSE at five,
-    six, seven and eight bits. New work should use :func:`lloyd_max_gaussian`.
+    start in ``[-2.5, 2.5]``. That reaches the optimum up to four bits; the
+    grids it returns carry 0.07%, 0.62%, 5.3% and 27% excess MSE at five, six,
+    seven and eight bits (:func:`lloyd_max_gaussian` is the exact optimum).
+    The GGUF v1 kernels and the KV-cache runtimes embed its 2-, 3- and 4-bit
+    tables and read no codebook from the file, so these values must not
+    change. On Qwen2.5-0.5B the exact grid made no model-level difference that
+    eight rotation seeds could resolve.
     """
     if levels < 1:
         raise ValueError("levels must be >= 1")
@@ -829,12 +836,11 @@ def build_scalar_codebook(
     is non-mutating and nothing else writes to a built codebook.
     """
     kind = kind.lower()
-    if kind in ("gaussian", "lloyd", "lloyd_max", "mse"):
-        return ScalarCodebook(lloyd_max_gaussian(levels), name="gaussian")
-    if kind in ("gaussian_legacy", "gaussian_grid"):
-        return ScalarCodebook(
-            lloyd_max_gaussian_grid(levels), name="gaussian_legacy"
-        )
+    if kind in ("gaussian", "lloyd", "lloyd_max", "mse", "gaussian_legacy", "gaussian_grid"):
+        # The frozen grid native runtimes embed; see lloyd_max_gaussian_grid.
+        return ScalarCodebook(lloyd_max_gaussian_grid(levels), name="gaussian")
+    if kind in ("gaussian_exact", "lloyd_max_exact"):
+        return ScalarCodebook(lloyd_max_gaussian(levels), name="gaussian_exact")
     if kind in ("sphere", "spherical", "beta", "finite_beta"):
         if dimension is None:
             raise ValueError("spherical codebooks require a dimension")

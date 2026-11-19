@@ -242,7 +242,7 @@ binding constraint.
 
 | # | Location | Defect | Effect | Fix |
 |---|---|---|---|---|
-| 1 | `codebooks.lloyd_max_gaussian` | 200 Lloyd steps from a uniform start are not a solver beyond 16 levels; plain Lloyd needs about 2e5 steps at 256 levels | excess MSE 0.07 / 0.62 / 5.3 / 27% at 5–8 bits; the 8-bit grid exceeded the bound the docs quote | Newton on the closed-form cell moments, residual below 1e-12, a few milliseconds; `gaussian_legacy` reproduces the old grid |
+| 1 | `codebooks.lloyd_max_gaussian` | 200 Lloyd steps from a uniform start are not a solver beyond 16 levels; plain Lloyd needs about 2e5 steps at 256 levels | excess MSE 0.07 / 0.62 / 5.3 / 27% at 5–8 bits; the 8-bit grid exceeded the bound the docs quote | Newton on the closed-form cell moments, residual below 1e-12, a few milliseconds, as `codebook="gaussian_exact"`. `"gaussian"` keeps the old grid because native runtimes embed it (section 8.5) |
 | 2 | `codebooks.quantizer_mse` | numerical integration on a grid | error 1e-7 | closed form |
 | 3 | `codebooks.lloyd_max_samples` | 100 steps from equal-mass quantiles | held-out MSE 0.4 / 12 / 64% above the optimum at 4 / 5 / 6 bits | prefix-sum iterations, two starts, converged; now within 2% |
 | 4 | `codebooks.build_finite_e8_codebook` | candidates from the box `[-2, 2]^8` and its half shift `[-1.5, 2.5]^8` | 512 and 3,808 lattice points of norm² 8 and 10 missing at two bits, 26% of points without their negative, mean up to −0.19 per coordinate; unit-RMS scale not MSE-optimal | complete shells, negation-closed last shell, origin dropped, scale fitted: Gaussian MSE −5.3% (1 bit), −2.9% (2 bits) |
@@ -379,9 +379,9 @@ CUDA build must not contract them into an FMA.
 
 ## 6. Changes in this revision
 
-- `rotquant/codebooks.py`: exact Gaussian solver, closed-form MSE, prefix-sum
-  weighted Lloyd, converged sample fit, symmetric E8 codebook,
-  `gaussian_legacy`.
+- `rotquant/codebooks.py`: exact Gaussian solver (`gaussian_exact`),
+  closed-form MSE, prefix-sum weighted Lloyd, converged sample fit, symmetric
+  E8 codebook.
 - `rotquant/lossless.py` (new): integer lifting rotation, exact fixed-point
   view of float tensors, code entropy, row-wise rANS coder.
 - `rotquant/block_train.py`, `rotquant/dynamic.py`,
@@ -392,10 +392,8 @@ CUDA build must not contract them into an FMA.
 
 Behaviour that changes for existing configurations:
 
-- `codebook="gaussian"` returns the exact grid. Codes change at five bits and
-  above (and by at most 1.5e-3 in centroid value at four bits). Saved
-  artifacts carry their own centroids and load unchanged. Use
-  `codebook="gaussian_legacy"` to reproduce an earlier quantisation.
+- `codebook="gaussian"` is unchanged (corrected on 19 November, section
+  8.5); the exact grid is `codebook="gaussian_exact"`.
 - `codebook="calibrated"` and `"e8p"` produce different, better grids.
 - `QuantConfig.calibrated_iters` now caps the refinement at 2000 (was 100).
 - `evaluate_logit_fidelity` adds `paired_prompt_bootstrap`; the existing
@@ -476,4 +474,19 @@ them.
   is the file rather than the memory in use.
 - Step 8 (trellis or vector quantisation) is a research project of its own.
 - Metal is unchanged.
+
+### 8.5 Correction from the PR review
+
+The first revision of this review made `codebook="gaussian"` return the exact
+grid. That was wrong: the GGUF v1 kernels (4-bit weights) and the KV-cache
+kernels (2-, 3- and 4-bit rows) embed the old grid's tables and read no
+codebook from the file, so a model quantised with the new default would have
+been reconstructed with different centroids by those runtimes (up to 1.5e-3
+per centroid at four bits). CI caught it once, on Python 3.15:
+`test_native_reference_matches_quant_linear` compared the C++ v1 kernel with
+the Python quantiser. `"gaussian"` is the frozen grid again,
+`gaussian_codebook_4bit()` is pinned to it, the exact grid is opt-in as
+`"gaussian_exact"`, and a test checks the default against the tables in both
+patches. Native-v2/v3 artifacts carry their centroids and were never affected.
+The model-level measurements above used the exact grid explicitly and stand.
 

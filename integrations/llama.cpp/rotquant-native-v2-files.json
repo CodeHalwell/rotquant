@@ -1,11 +1,11 @@
 {
   "base_revision": "17252c769a63c1cb650ce98ae309cf4de0da7778",
-  "patch_sha256": "4088da9301b4a20141b322410abb601e7a2527fce18f805b19501c20ce09b643",
+  "patch_sha256": "3a5f8472b2222a23b770dc07609ec13e0294ebe1ec007220279e6a55ecc734b5",
   "files_sha256": {
     "ggml/src/ggml-backend.cpp": "8197d695b87077912739324f414859f6db7e606ac12798e84924e94844addfd0",
     "ggml/src/ggml-cuda/CMakeLists.txt": "029b62d2189ea25962fdd1a2064aa699c010481081c7d68ec9f3aeaab5198939",
     "ggml/src/ggml-cuda/ggml-cuda.cu": "d0ad8ac6f07c6f70bad4e6029037aa8ab3ce2165beff1c18d3b5fe5ff195ae9b",
-    "ggml/src/ggml-cuda/rq3-experiment.cuh": "c6c07ae8953b11a9a081c6469920ab1b1ea96550a43483bbc8ae304779382bf3",
+    "ggml/src/ggml-cuda/rq3-experiment.cuh": "cae4af867cbec48ccac3259c8db213e445e21dcf36177953ce4ac1012f26e822",
     "ggml/src/ggml-cuda/rq3-v2.cuh": "086f58f6e2438e3e5041245696f6e8c3031a42aa0a0950c8bfdd0c508c7ac1e6",
     "ggml/src/ggml-cuda/rq3.cu": "526cd11da0ee86dd9fecd9fba9e4f2e78e9c76e17910de05777d9bc9723d8c5c",
     "ggml/src/ggml-metal/CMakeLists.txt": "ef65986ed9f4d318c29ed49ad419066b9f4cf7d977cdbb62c8602ce6d32305b2",

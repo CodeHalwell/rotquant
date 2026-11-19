@@ -149,7 +149,7 @@ class QuantConfig:
             raise ValueError("group_size must be >= 1")
         if self.codebook.lower() not in {
             "gaussian", "lloyd", "lloyd_max", "mse",
-            "gaussian_legacy", "gaussian_grid",
+            "gaussian_legacy", "gaussian_grid", "gaussian_exact", "lloyd_max_exact",
             "sphere", "spherical", "beta", "finite_beta",
             "uniform", "nf", "normalfloat", "normal_float",
             "calibrated", "empirical", "weight_calibrated",
@@ -178,7 +178,7 @@ class QuantConfig:
             # before an expensive model has been loaded or calibrated.
             valid = {
                 "gaussian", "lloyd", "lloyd_max", "mse",
-                "gaussian_legacy", "gaussian_grid",
+                "gaussian_legacy", "gaussian_grid", "gaussian_exact", "lloyd_max_exact",
                 "uniform", "nf", "normalfloat", "normal_float",
             }
             if self.residual_codebook.lower() not in valid:

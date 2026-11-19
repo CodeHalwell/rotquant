@@ -232,10 +232,11 @@ $$
 
 RotQuant implements these alternatives:
 
-- `gaussian`: Lloyd-Max centroids for a standard Gaussian, solved to machine
-  precision by Newton's method on the closed-form cell moments
-  (`gaussian_legacy` keeps the earlier 200-iteration grid solver, which is
-  converged only up to four bits);
+- `gaussian`: Lloyd-Max centroids for a standard Gaussian from a 200-step grid
+  solver. It is converged up to four bits and is frozen, because the GGUF v1
+  and KV-cache kernels embed its tables;
+- `gaussian_exact`: the same conditions solved to machine precision by
+  Newton's method on the closed-form cell moments (better above six bits);
 - `spherical`: Lloyd-Max centroids for the finite-dimensional sphere marginal;
 - `calibrated`: deterministic Lloyd fitting on normalized rotated weights;
 - `uniform`: a symmetric uniformly spaced control;

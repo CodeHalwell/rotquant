@@ -478,3 +478,19 @@ def test_notebook_mock_run_all_without_network_or_gpu(tmp_path, monkeypatch):
         exec(compile(text, "<offline notebook mock>", "exec"), namespace)  # noqa: S102
     assert len(invoked) == 1 and invoked[0][1]["auto_release"] is True
     assert invoked[0][0][3] == 480
+
+
+def test_every_registry_candidate_is_registered_in_the_cuda_dispatcher():
+    """A candidate the CUDA side does not know is rejected for the wrong reason."""
+    import re
+    patch = (Path(__file__).resolve().parents[1]
+             / "integrations/llama.cpp/rotquant-native-v2.patch").read_text()
+    entries = dict(re.findall(r'if \(!strcmp\(name, "([^"]+)"\)\) \{ return \{([^}]*)\}; \}', patch))
+    assert set(entries) == set(CANDIDATES)
+    order = ("id", "rows", "half", "head", "matmul_v2", "gemm_v2", "head_v2", "head_rotated")
+    for name, spec in CANDIDATES.items():
+        values = [value.strip() for value in entries[name].split(",")]
+        parsed = {key: (value == "true" if value in ("true", "false") else int(value))
+                  for key, value in zip(order, values)}
+        assert parsed == {key: spec[key] for key in order[:len(values)]}, name
+        assert all(not spec[key] for key in order[len(values):]), name

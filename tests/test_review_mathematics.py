@@ -79,18 +79,39 @@ def test_gaussian_distortion_matches_the_published_table_and_the_bounds():
         previous_ratio = ratio
 
 
-def test_earlier_grid_solver_is_kept_and_is_not_converged_above_four_bits():
+def test_default_grid_is_the_frozen_one_and_the_exact_grid_is_opt_in():
     for levels, excess in ((16, 1e-5), (32, 7e-4), (64, 6e-3), (256, 0.26)):
         legacy = quantizer_mse(lloyd_max_gaussian_grid(levels))
         exact = quantizer_mse(lloyd_max_gaussian(levels))
         assert legacy >= exact
         assert legacy / exact - 1.0 == pytest.approx(excess, rel=0.2, abs=1e-5)
-    # The legacy name reproduces the old centroids, e.g. its narrow 8-bit tail.
-    legacy = build_scalar_codebook("gaussian_legacy", 256).centroids
-    assert float(legacy[-1]) == pytest.approx(4.2053, abs=1e-3)
-    assert float(build_scalar_codebook("gaussian", 256).centroids[-1]) == pytest.approx(
+    # "gaussian" keeps the grid the native runtimes embed (GGUF v1, KV rows);
+    # the converged solver is selected explicitly.
+    default = build_scalar_codebook("gaussian", 256).centroids
+    assert float(default[-1]) == pytest.approx(4.2053, abs=1e-3)
+    assert torch.equal(build_scalar_codebook("gaussian_legacy", 256).centroids, default)
+    assert float(build_scalar_codebook("gaussian_exact", 256).centroids[-1]) == pytest.approx(
         4.6035, abs=1e-3)
-    assert QuantConfig(bits=5, codebook="gaussian_legacy").codebook == "gaussian_legacy"
+    assert QuantConfig(bits=5, codebook="gaussian_exact").codebook == "gaussian_exact"
+
+
+def test_default_grid_equals_the_tables_baked_into_the_native_runtimes():
+    """GGUF v1 and the KV-cache kernels read no codebook from the file."""
+    import re
+    from pathlib import Path
+
+    from rotquant.gguf import gaussian_codebook_4bit
+    root = Path(__file__).resolve().parents[1] / "integrations/llama.cpp"
+    text = "".join((root / name).read_text() for name in
+                   ("rotquant-native-v1.patch", "rotquant-native-v2.patch"))
+    embedded = {np.float32(float(value)) for value in re.findall(r"-?\d+\.\d{6,}(?=f)", text)}
+    for bits in (2, 3, 4):
+        centroids = build_scalar_codebook("gaussian", 1 << bits).centroids.numpy()
+        assert all(np.float32(c) in embedded for c in centroids), bits
+        exact = build_scalar_codebook("gaussian_exact", 1 << bits).centroids.numpy()
+        assert not all(np.float32(c) in embedded for c in exact), bits
+    assert np.array_equal(gaussian_codebook_4bit(),
+                          build_scalar_codebook("gaussian", 16).centroids.numpy())
 
 
 def test_prefix_sum_lloyd_iteration_equals_the_direct_cell_sums():

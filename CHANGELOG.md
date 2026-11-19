@@ -51,20 +51,29 @@ compiled and emulated, not run.
   the default output is unchanged. GGUF v2 export reads coded streams.
 - **Tests.** An FP16 projection test now allows one ulp (tiled GEMM order),
   as its own comment described.
+- **Corrected (PR review):** `codebook="gaussian"` is again the frozen grid.
+  The GGUF v1 kernels and the 2/3/4-bit KV-cache kernels embed it and read no
+  codebook from the file, so the earlier switch to the exact grid would have
+  made those runtimes reconstruct different weights from the ones Python
+  quantised. The exact grid is opt-in as `codebook="gaussian_exact"`;
+  `gaussian_codebook_4bit()` is pinned to the frozen grid; a test checks the
+  default against the tables in both patches.
+- **Fixed (PR review):** `v2-fast-sgemm` was in the Python registry but not in
+  the CUDA dispatcher. A test now cross-checks every registry entry against
+  the CUDA registration.
 
 
 ### Mathematical review, lossless stages and CPU kernel (2026-11-17)
 
 Full record: [`docs/mathematical_review_2026-11-17.md`](docs/mathematical_review_2026-11-17.md).
 
-- **Changed:** `codebook="gaussian"` now returns the exact Lloyd-Max grid
-  (Newton on closed-form cell moments). The previous 200-step grid solver was
-  converged only up to four bits: 0.07 / 0.62 / 5.3 / 27% excess MSE at 5–8
-  bits. Codes differ at five bits and above; saved artifacts carry their own
-  centroids and load unchanged. `codebook="gaussian_legacy"` and
-  `lloyd_max_gaussian_grid` reproduce the old grid. This is a correctness
-  fix: on Qwen2.5-0.5B, eight rotation seeds at W5 and three at W8 show no
-  model-level KL difference between the two grids.
+- **Added:** `lloyd_max_gaussian` solves the Gaussian Lloyd-Max conditions
+  exactly (Newton on closed-form cell moments), available as
+  `codebook="gaussian_exact"`. The 200-step grid behind `codebook="gaussian"`
+  is converged only up to four bits (0.07 / 0.62 / 5.3 / 27% excess MSE at
+  5–8 bits) but stays the default: native runtimes embed it (see the
+  2026-11-19 correction). On Qwen2.5-0.5B, eight rotation seeds at W5 and
+  three at W8 show no model-level KL difference between the two grids.
 - **Fixed:** `lloyd_max_samples` (the `calibrated` codebook) converges; it was
   12% and 64% above the optimum at five and six bits.
   `QuantConfig.calibrated_iters` now caps refinement at 2000.
