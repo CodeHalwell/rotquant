@@ -185,7 +185,6 @@ and the pre-write check ran at about 5M codes per second.
 
 Loading through `load_packed_model` or `rotquant.checkpoint._read_quantized_weight`
 (used by `scripts/export_rotquant_gguf.py` and `scripts/verify_rotquant_gguf.py`)
-decodes transparently. `rotquant.gguf_v2.checkpoint_matrix`
-(`scripts/export_rotquant_gguf_v2.py`) reads `packed.tensor` directly and fails
-on a coded stream, whose entry has no such key. To export such an artifact,
-load it and save it again without `code_encoding`.
+decodes transparently, and so does `rotquant.gguf_v2.checkpoint_matrix`
+(`scripts/export_rotquant_gguf_v2.py`), which reads code streams through the
+same reader. The exported GGUF always holds fixed-rate words.
