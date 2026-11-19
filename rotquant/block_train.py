@@ -525,9 +525,12 @@ class _StoragePrecisionButterfly(ButterflyRotation):
         super().__init__(*args, **kwargs)
         self.storage_dtype = storage_dtype
 
-    def _trig(self):
-        angles = self.theta.float()
-        stored = angles.to(self.storage_dtype).float()
+    def _trig(self, dtype: torch.dtype = torch.float32):
+        # Same signature as ButterflyRotation._trig, which computes in float64
+        # for float64 inputs; the deployed angles are the rounded ones either way.
+        work = torch.float64 if dtype == torch.float64 else torch.float32
+        angles = self.theta.to(work)
+        stored = angles.to(self.storage_dtype).to(work)
         angles = angles + (stored - angles).detach()
         return angles.cos(), angles.sin()
 

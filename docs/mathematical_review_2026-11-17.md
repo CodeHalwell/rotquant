@@ -254,11 +254,10 @@ binding constraint.
 | 10 | `native_v2_avx2.cpp` | decode repeated for every input row; scalar code extraction; memory gathers for small codebooks | 2–9× slower than necessary | section 5.1 |
 | 11 | docs, comments | GPTQ "uses `H = I`" when uncalibrated (it now rejects); a test comment quoting 0.0136 for a bound that is 0.0425; `turboquant_mse_bound` implying scale bits lower distortion | misleading | corrected |
 
-### Found, confirmed, not fixed
+### Found, confirmed, not fixed in this revision
 
 These were reproduced by the reviewers' scripts. None is on the path of the
-shipped configurations, and each needs a design decision rather than a
-one-line change.
+shipped configurations. All of them were fixed on 19 November; see section 8.
 
 | Location | Defect | When it bites |
 |---|---|---|
@@ -410,3 +409,71 @@ Behaviour that changes for existing configurations:
 - No full-model recipe was re-quantised or re-evaluated on the Qwen3.5-4B
   protocol. The retained W5/W6 checkpoint is untouched.
 - The defects in the second table of section 4 remain open.
+
+## 8. Follow-up, 19 November 2026
+
+The improvement plan was carried out as far as is possible without a GPU.
+
+### 8.1 Open defects
+
+All eleven rows of the second table in section 4 are fixed, each with a
+regression test that fails on the earlier code
+(`tests/test_recovery_defects.py`, `tests/test_allocator_defects.py`).
+
+| Area | Change | Before → after (reviewers' reproductions) |
+|---|---|---|
+| Code refresh | Refresh keeps the deployed scales and codebook and only reassigns codes; snapshots hold the packed state with the parameters, so restore-best and reject restore it exactly. Refresh refuses up front for layers it cannot keep exact | rejected run: 20% weight change → 0; refresh with nothing changed: 8% → 0 |
+| Reduced-precision training | Distillation steps FP32 masters and writes back the storage-dtype values; block training evaluates angles rounded to their deployed dtype | FP16 angles: non-finite → trained; BF16: 0/384 moved → 384/384; proxy vs packed block 1.5e-2 → 0 |
+| LoRA | `residual_svd` adapters are initialised at the start of distillation from the retained source, never during block training | propagated inputs no longer include untrained adapters |
+| Proxy vs deployed | learned scales with length correction rejected before mutation; scale-multiplier bounds derived from the quantiser's search interval (Gaussian unchanged at 0.5–1.5); the unlearned proxy rounds scales as stored | uniform: 256/256 groups clamped → 0; proxy error 1.1e-2 → 1.8e-7 |
+| `random_pareto` | spends the bpw budget | 4.50–4.75 → 5.0 bpw at a 5.0 target |
+| Local score | deployed forward, QJL sketch included; bias-free denominator | k=64 sketch: scored 2.49 vs deployed 15.9 → equal |
+| Greedy / random ladders | one candidate per size | 4.0 bpw, target missed → 3.5 reached |
+| Narrow byte windows | exact MILP also runs below four buckets; better verified recipe kept | 7/15 suboptimal → 0 |
+| Random controls | protected layers drawn at random | inherited the guided set → independent |
+| Evaluation | padding masked; token-weighted teacher KL; prompt-level bootstrap (section 4) | — |
+| Calibration | Hessians collected undamped by default (GPTQ damps itself) | 1% + 1% → 1% |
+| Float64 butterflies | trigonometry in float64 | orthogonal to 1.5e-7 → 1e-13 |
+
+Changes a user will notice: the shipped `qwen35_4b_recovery_cuda` run now
+trains LoRA against FP16-rounded values and retains the source weights on the
+CPU when `residual_svd` is configured (about 8 GB for a 4B BF16 model); the
+dynamic score cache moved to schema 4; refresh-run checkpoints written earlier
+fail closed. Still open: a distillation that raises mid-run leaves its partly
+trained parameters in the model.
+
+### 8.2 GPU kernels (prepared, not run)
+
+`rq3-v2.cuh` and the registry v2 screen are described in the
+[runbook](native_overnight_experiment_plan.md). In short: bit-exact warp
+kernels for the backbone and head; a decode-once GEMM for prefill (FP32 and
+FP16); the rotated-basis head; and a fused rotation+matmul op that removes one
+launch per projection. Correctness so far rests on a lane-level CPU emulation
+(bitwise equality of the FP32 sums with the reference kernel), sm_80
+compilation with no spills or FMAs, and bitwise CPU equality of fused and
+unfused graphs. No speed or GPU-correctness claim is made until the overnight
+notebook has run.
+
+The retained checkpoint uses 200 distinct rotations, so sharing one rotation
+across projections that read the same input would need a re-export; fusion
+was implemented instead.
+
+### 8.3 Entropy-coded checkpoints
+
+`save_packed_checkpoint(..., code_encoding="rans-rows-v1")` stores each
+primary scalar code stream as one rANS stream per output row. On two layers of
+Qwen2.5-0.5B it saved 3.3–4.7% of code bytes after per-row overhead, and codes
+and logits were bit-exact after reload. Loading decodes at about 15 M codes
+per second on one core, roughly 24 s for a 4B model. The default output is
+unchanged; coded checkpoints are format version 4, and GGUF v2 export reads
+them.
+
+### 8.4 Not done
+
+- Step 7 of the plan (a uniform grid with entropy coding, about 26% lower
+  weight error at equal file size) was not implemented: it needs 8-bit codes
+  in memory, which costs decode bandwidth, and it only pays if the size budget
+  is the file rather than the memory in use.
+- Step 8 (trellis or vector quantisation) is a research project of its own.
+- Metal is unchanged.
+

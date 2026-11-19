@@ -9,6 +9,50 @@ software.
 
 ## [Unreleased]
 
+### Improvement plan: defects, GPU kernels v2, entropy-coded checkpoints (2026-11-19)
+
+Follows the [mathematical review](docs/mathematical_review_2026-11-17.md),
+whose section 8 records the outcome. No GPU was available: the CUDA work is
+compiled and emulated, not run.
+
+- **GPU kernels v2 (opt-in, not yet run on a GPU).** New `rq3-v2.cuh` in the
+  llama.cpp patch: bit-exact warp kernels for the backbone matmul (all token
+  counts) and the vocabulary head; a decode-once cuBLAS GEMM for prefill
+  (FP32 or FP16 Tensor Cores); a rotated-basis head; and an opt-in fused
+  rotation+matmul op (`RQ3_FUSED`) that removes one launch per projection.
+  The graph no longer adds a cast and a copy before every packed matmul.
+  Reference kernels read signs as `signed char`.
+- **Evidence without a GPU.** A lane-level NumPy emulation shows the exact
+  kernels' weight reads and pre-rounding FP32 sums are bitwise equal to the
+  reference kernel across bits 1–8, both scale formats, scale groups and
+  maps (`tests/test_rq3_v2_emulation.py`, pinned to the kernel's hash). The
+  file compiles for sm_80 with no spills or FMAs. On CPU the fused op equals
+  the two ops bitwise, in operators and whole-model logits.
+- **Screen registry v2.** Five screened components, frozen exact and fast
+  combinations, lane-specific parity rules (exact / reordered / rounding),
+  per-candidate speed shapes; fusion is part of a candidate's identity. The
+  overnight notebook and runbook describe the run.
+- **Recovery fixes.** Code refresh keeps deployed scales and restores the
+  exact packed state on restore-best and reject; FP32 masters for FP16/BF16
+  parameters; `residual_svd` LoRA initialised at the start of distillation;
+  proxy/deploy mismatches fixed or rejected before mutation.
+- **Allocator and evaluation fixes.** `random_pareto` spends the bpw budget;
+  local scores use the deployed forward (QJL sketch included) and a
+  bias-free denominator; greedy/random ladders pass equal-size formats; the
+  exact MILP also runs for byte windows narrower than four buckets; random
+  controls draw protected layers at random; logit fidelity masks padding and
+  `teacher_logit_kl` is token-weighted; BitBudget charges vector codes per
+  weight; Hessians are collected undamped by default (GPTQ damps itself);
+  float64 butterflies compute trigonometry in float64. Score-cache schema 4.
+- **Entropy-coded checkpoints (opt-in).**
+  `save_packed_checkpoint(..., code_encoding="rans-rows-v1")` stores each
+  primary scalar code stream as row-wise rANS streams: 3–5% smaller code
+  bytes on real weights, bit-identical after load. Marked format version 4;
+  the default output is unchanged. GGUF v2 export reads coded streams.
+- **Tests.** An FP16 projection test now allows one ulp (tiled GEMM order),
+  as its own comment described.
+
+
 ### Mathematical review, lossless stages and CPU kernel (2026-11-17)
 
 Full record: [`docs/mathematical_review_2026-11-17.md`](docs/mathematical_review_2026-11-17.md).
