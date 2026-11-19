@@ -375,6 +375,8 @@ class QuantizedWeight:
                             * self.sketch_row_norms.element_size() * 8)
         return BitBudget(
             levels=2 ** self.packed.bits,
+            # A vector code addresses ``dim`` weights at once.
+            vector_dim=self.codebook.dim if isinstance(self.codebook, VectorCodebook) else 1,
             group_size=self.group_size,
             scale_bits=(main_scale + extra_scale_bits
                         + extra_code_bits * self.group_size

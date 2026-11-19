@@ -51,8 +51,15 @@ def test_dense_equivalent_projection_matches_stored_reconstruction(bits, dtype):
     dense = torch.cat([chunk for _, chunk in owner.reconstructed_chunks()])
     # The weights are identical; GEMM reduction order can differ by a few FP32
     # ulps when tiling the output dimension, especially the last partial tile.
+    # In FP16/BF16 such a difference can move an output by one unit in the last
+    # place (observed: 1 of 264 FP16 outputs with the exact W6 grid), so allow
+    # one ulp there and nothing more.
+    if dtype == torch.float32:
+        tolerances = {"rtol": 0, "atol": 2e-7}
+    else:
+        tolerances = {"rtol": torch.finfo(dtype).eps, "atol": 0}
     torch.testing.assert_close(owner.project(hidden), torch.nn.functional.linear(hidden, dense),
-                               rtol=0, atol=2e-7 if dtype == torch.float32 else 0)
+                               **tolerances)
     assert not any(tuple(t.shape) == (33, 64) for t in owner.buffers())
 
 
