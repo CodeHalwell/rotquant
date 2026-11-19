@@ -4,6 +4,9 @@ The format module deliberately contains no model or serialization code.  It is
 the small, stable boundary that producers and runtimes can depend on without
 importing Transformers.  Version 1 checkpoints written before the explicit
 ``packing`` block remain valid: the missing block means the v1 defaults below.
+Version 4 is written only when a checkpoint actually stores entropy-coded code
+streams (``code_encoding``); a reader that predates it rejects the version
+instead of misreading the streams.
 """
 from __future__ import annotations
 
@@ -15,7 +18,11 @@ from typing import Any, NoReturn
 
 FORMAT_NAME = "rotquant-packed"
 FORMAT_VERSION = 2
-SUPPORTED_FORMAT_VERSIONS = (1, 2, 3)  # v3 adds a shared packed vocabulary
+VOCABULARY_FORMAT_VERSION = 3
+ENTROPY_CODED_FORMAT_VERSION = 4
+# v3 adds a shared packed vocabulary; v4 adds entropy-coded primary code
+# streams to the v2/v3 layout and is written only when one is stored.
+SUPPORTED_FORMAT_VERSIONS = (1, 2, 3, 4)
 
 PACKED_WORD_BITS = 32
 PACKED_WORD_DTYPE = "int32"
@@ -55,6 +62,53 @@ class PackingContract:
 
 
 CURRENT_PACKING = PackingContract()
+
+
+@dataclass(frozen=True, slots=True)
+class RansRowsEncoding:
+    """Machine-readable definition of the ``rans-rows-v1`` code-stream encoding.
+
+    One static frequency table per tensor (``2**probability_bits`` total), one
+    independent rANS stream per output row with a 32-bit state kept in
+    ``[state_lower_bound, 2**state_bits)`` and 16-bit renormalisation words.
+    Decoding yields the code indices that the fixed-rate packing contract then
+    stores; the encoding changes no code.
+    """
+
+    name: str = "rans-rows-v1"
+    version: int = 1
+    probability_bits: int = 14
+    state_bits: int = 32
+    state_lower_bound: int = 1 << 16
+    renormalization_bits: int = 16
+    row_split: str = "output_row"
+    max_code_bits: int = 14
+    frequencies_dtype: str = "int32"
+    row_words_dtype: str = "int32"
+    words_dtype: str = "int16"
+    decoded_digest: str = "sha256_int32_le_words"
+
+    def to_manifest(self) -> dict[str, Any]:
+        return {
+            "name": self.name,
+            "version": self.version,
+            "probability_bits": self.probability_bits,
+            "state_bits": self.state_bits,
+            "state_lower_bound": self.state_lower_bound,
+            "renormalization_bits": self.renormalization_bits,
+            "row_split": self.row_split,
+            "max_code_bits": self.max_code_bits,
+            "tensor_dtypes": {
+                "frequencies": self.frequencies_dtype,
+                "row_words": self.row_words_dtype,
+                "words": self.words_dtype,
+            },
+            "decoded_digest": self.decoded_digest,
+        }
+
+
+RANS_ROWS_V1 = RansRowsEncoding()
+CODE_ENCODINGS: dict[str, RansRowsEncoding] = {RANS_ROWS_V1.name: RANS_ROWS_V1}
 
 
 def packed_word_count(numel: int, bits: int) -> int:
@@ -110,11 +164,34 @@ def _artifact_name(value: Any, path: str) -> str:
     return value
 
 
-def _packed_spec(value: Any, path: str) -> None:
+def _is_count(value: Any, minimum: int = 0) -> bool:
+    return not isinstance(value, bool) and isinstance(value, int) and value >= minimum
+
+
+def _is_sha256(value: Any) -> bool:
+    return (isinstance(value, str) and len(value) == 64
+            and all(char in "0123456789abcdef" for char in value))
+
+
+def _packed_spec(
+    value: Any,
+    path: str,
+    *,
+    code_encoding: str | None = None,
+    primary: bool = False,
+) -> bool:
+    """Validate one code stream; return whether it is entropy coded.
+
+    ``primary`` marks the main code stream of a backbone module, the only
+    stream that may be entropy coded. ``code_encoding`` is the encoding the
+    manifest declares (format v4), or ``None``.
+    """
     spec = _mapping(value, path)
-    tensor = spec.get("tensor")
-    if not isinstance(tensor, str) or not tensor:
-        _fail(f"{path}.tensor", "must be a non-empty tensor key")
+    encoding = spec.get("encoding")
+    if encoding is None:
+        tensor = spec.get("tensor")
+        if not isinstance(tensor, str) or not tensor:
+            _fail(f"{path}.tensor", "must be a non-empty tensor key")
     shape = spec.get("shape")
     if not isinstance(shape, list):
         _fail(f"{path}.shape", "must be an array")
@@ -136,14 +213,75 @@ def _packed_spec(value: Any, path: str) -> None:
         validate_storage_bits(bits)
     except ValueError as exc:
         _fail(f"{path}.bits", str(exc))
+    if encoding is None:
+        return False
+    if not primary:
+        _fail(f"{path}.encoding",
+              "only primary backbone code streams may be entropy coded")
+    if code_encoding is None:
+        _fail(f"{path}.encoding",
+              f"entropy-coded streams require format v{ENTROPY_CODED_FORMAT_VERSION} "
+              "with a code_encoding declaration")
+    if encoding != code_encoding:
+        _fail(f"{path}.encoding",
+              f"unsupported code encoding {encoding!r}; the manifest declares "
+              f"{code_encoding!r}")
+    contract = CODE_ENCODINGS[code_encoding]
+    if "tensor" in spec:
+        _fail(f"{path}.tensor", "must be absent from an entropy-coded stream")
+    keys = []
+    for field in ("frequencies", "row_words", "words"):
+        key = spec.get(field)
+        if not isinstance(key, str) or not key:
+            _fail(f"{path}.{field}", "must be a non-empty tensor key")
+        keys.append(key)
+    if len(set(keys)) != len(keys):
+        _fail(path, "rANS tensors must use distinct keys")
+    rows, columns = spec.get("rows"), spec.get("columns")
+    if not _is_count(rows, 1) or not _is_count(columns, 1):
+        _fail(f"{path}.rows", "rows and columns must be positive integers")
+    if rows * columns != numel:
+        _fail(f"{path}.rows", f"rows * columns must equal numel ({numel})")
+    if bits > contract.max_code_bits:
+        _fail(f"{path}.bits",
+              f"{contract.name} codes at most {contract.max_code_bits} bits")
+    if not _is_count(spec.get("word_count"), 2 * rows):
+        _fail(f"{path}.word_count", "must count at least two state words per row")
+    if not _is_sha256(spec.get("decoded_sha256")):
+        _fail(f"{path}.decoded_sha256", "must be a SHA-256 hex digest")
+    return True
 
 
-def _optional_packed_spec(value: Any, path: str) -> None:
+def _optional_packed_spec(value: Any, path: str, code_encoding: str | None) -> None:
     if value is not None:
-        _packed_spec(value, path)
+        _packed_spec(value, path, code_encoding=code_encoding)
 
 
-def _validate_module(value: Any, index: int, version: int) -> str:
+def _code_encoding(value: Any, version: int) -> str | None:
+    """Return the declared code-stream encoding, failing closed on unknown ones."""
+    if version < ENTROPY_CODED_FORMAT_VERSION:
+        if value is not None:
+            _fail("code_encoding", f"requires format v{ENTROPY_CODED_FORMAT_VERSION}")
+        return None
+    declaration = _mapping(value, "code_encoding")
+    name = declaration.get("name")
+    contract = CODE_ENCODINGS.get(name) if isinstance(name, str) else None
+    if contract is None:
+        _fail("code_encoding.name",
+              f"unsupported code encoding {name!r}; supported={tuple(CODE_ENCODINGS)}")
+    if declaration != contract.to_manifest():
+        _fail("code_encoding", f"does not match the {contract.name} contract")
+    return contract.name
+
+
+def _validate_module(
+    value: Any,
+    index: int,
+    version: int,
+    code_encoding: str | None = None,
+    *,
+    allow_encoding: bool = True,
+) -> str:
     path = f"quantized_modules[{index}]"
     module = _mapping(value, path)
     name = module.get("name")
@@ -232,7 +370,10 @@ def _validate_module(value: Any, index: int, version: int) -> str:
                 f"{path}.qweight.scale_quant_group_size",
                 "must be an integer >= 2",
             )
-    _packed_spec(qweight.get("packed"), f"{path}.qweight.packed")
+    encoded = _packed_spec(
+        qweight.get("packed"), f"{path}.qweight.packed",
+        code_encoding=code_encoding, primary=allow_encoding,
+    )
     packed_numel = qweight["packed"]["numel"]
     codebook = _mapping(qweight.get("codebook"), f"{path}.qweight.codebook")
     codebook_kind = codebook.get("kind", "scalar")
@@ -255,10 +396,18 @@ def _validate_module(value: Any, index: int, version: int) -> str:
             f"{path}.qweight.packed.numel",
             f"must equal out_features * in_features / dimension ({expected_numel})",
         )
+    if encoded:
+        if codebook_kind != "scalar":
+            _fail(f"{path}.qweight.packed.encoding",
+                  "only scalar-codebook streams may be entropy coded")
+        if (qweight["packed"]["rows"], qweight["packed"]["columns"]) != (
+                module["out_features"], module["in_features"]):
+            _fail(f"{path}.qweight.packed.rows",
+                  "entropy-coded streams hold one row per output feature")
     _optional_packed_spec(
-        qweight.get("residual_packed"), f"{path}.qweight.residual_packed"
+        qweight.get("residual_packed"), f"{path}.qweight.residual_packed", code_encoding
     )
-    _optional_packed_spec(qweight.get("sketch"), f"{path}.qweight.sketch")
+    _optional_packed_spec(qweight.get("sketch"), f"{path}.qweight.sketch", code_encoding)
     if not isinstance(codebook.get("centroids"), str):
         _fail(f"{path}.qweight.codebook.centroids", "must be a tensor key")
     return name
@@ -291,6 +440,7 @@ def validate_checkpoint_manifest(manifest: Any) -> None:
     packing = root.get("packing")
     if packing is not None and packing != CURRENT_PACKING.to_manifest():
         _fail("packing", "does not match the RotQuant v1 packing contract")
+    code_encoding = _code_encoding(root.get("code_encoding"), version)
 
     architecture = root.get("architecture")
     if architecture is not None:
@@ -305,7 +455,7 @@ def validate_checkpoint_manifest(manifest: Any) -> None:
     if not isinstance(modules, list) or not modules:
         _fail("quantized_modules", "must be a non-empty array")
     names = [
-        _validate_module(module, index, version)
+        _validate_module(module, index, version, code_encoding)
         for index, module in enumerate(modules)
     ]
     names.extend(alias for module in modules for alias in module.get("aliases", []))
@@ -313,8 +463,8 @@ def validate_checkpoint_manifest(manifest: Any) -> None:
         _fail("quantized_modules", "module names must be unique")
     vocabulary = root.get("tied_vocabulary")
     if vocabulary is not None:
-        if version != 3:
-            _fail("tied_vocabulary", "requires format v3")
+        if version not in (VOCABULARY_FORMAT_VERSION, ENTROPY_CODED_FORMAT_VERSION):
+            _fail("tied_vocabulary", "requires format v3 (or v4 with entropy-coded backbone)")
         vocabulary = _mapping(vocabulary, "tied_vocabulary")
         aliases = [vocabulary.get(key) for key in ("embedding", "head")]
         if (any(not isinstance(name, str) or not name for name in aliases)
@@ -355,7 +505,8 @@ def validate_checkpoint_manifest(manifest: Any) -> None:
             _validate_module({"name": f"vocabulary_chunk_{index}",
                               "in_features": shape[1], "out_features": chunk.get("out_features"),
                               "has_bias": False, "rotation": {"kind": "fwht", "dim": shape[1],
-                               "block": config.get("block")}, "qweight": chunk}, index, version)
+                               "block": config.get("block")}, "qweight": chunk}, index, version,
+                             allow_encoding=False)
             if (chunk["packed"]["bits"] != config["bits"]
                     or chunk.get("scale_bits_main", 16) != 16
                     or chunk.get("group_size") != config.get("group_size")
@@ -373,7 +524,9 @@ def validate_checkpoint_manifest(manifest: Any) -> None:
 
 
 __all__ = [
+    "CODE_ENCODINGS",
     "CURRENT_PACKING",
+    "ENTROPY_CODED_FORMAT_VERSION",
     "FORMAT_NAME",
     "FORMAT_VERSION",
     "MAX_STORAGE_BITS",
@@ -383,8 +536,11 @@ __all__ = [
     "PACKED_LOGICAL_ORDER",
     "PACKED_WORD_BITS",
     "PACKED_WORD_DTYPE",
+    "RANS_ROWS_V1",
+    "VOCABULARY_FORMAT_VERSION",
     "FormatValidationError",
     "PackingContract",
+    "RansRowsEncoding",
     "packed_word_count",
     "validate_checkpoint_manifest",
     "validate_profile_bits",
