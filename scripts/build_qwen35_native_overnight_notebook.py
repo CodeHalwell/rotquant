@@ -47,7 +47,7 @@ def build_notebook():
         import json, re, shutil, subprocess, sys
 
         REPO_REF = "main"  # publish first; pin the printed full commit for resuming
-        RUN_NAME = "overnight1"
+        RUN_NAME = "overnight-v2"
         ACTIVE_BUDGET_MINUTES = 480
         BUILD_JOBS = 2
         AUTO_RELEASE_RUNTIME = True
@@ -91,18 +91,30 @@ def build_notebook():
         '''), md('''
         ## Frozen experiment and stop rules
 
-        Six independent candidates: two FP32 GEMM chunk sizes, three FP16 GEMM
-        chunk sizes, and an exact warp-based vocabulary head. A seventh combined
-        candidate runs only if its two components independently pass. **Tile8**
-        is the performance control; the original kernel is the operator oracle.
+        Registry **v2** (`rq3-v2.cuh`). Five screened components:
 
-        Both GEMM paths reconstruct a bounded chunk, round operands to the same
-        FP16 boundary already used by native execution, accumulate FP32 and
-        half-round outputs. They change reduction order. The FP32 control
-        disables TF32; the FP16 path permits Tensor Cores but does not claim
-        actual hardware utilization without profiling. No persistent dense model.
-        Requested scratch is capped at **256 MiB**; pool reservations, cuBLAS
-        workspace and process VRAM are additional and reported separately.
+        | Candidate | Replaces | Numerics |
+        |---|---|---|
+        | `v2-matmul` | decode4 at 1 token, tile8 above | **bitwise equal** to the reference |
+        | `v2-head` | reference vocabulary head | **bitwise equal** |
+        | `v2-sgemm` | prefill (2+ tokens): decode once, one FP32 cuBLAS GEMM | reordered sums |
+        | `v2-hgemm` | as above with FP16 Tensor Cores, FP32 accumulation | reordered sums |
+        | `v2-head-rotated` | head: rotate the activation once, plain packed matvec | FP16 rounding moved |
+
+        Two frozen combinations go to whole-model testing when their components
+        pass: **`v2-exact`** (matmul + head; full-model logits must be identical
+        to the control) and **`v2-fast`** (matmul + hgemm + rotated head;
+        `v2-fast-sgemm` if hgemm is rejected). **Tile8** is the performance
+        control; the original kernel is the operator oracle. The v1 GEMM and
+        head-warp candidates are superseded and not screened.
+
+        Exact components must match the reference bit for bit. GEMMs keep the
+        existing operator tolerances. The rotated head must stay within twice
+        the reference kernel's own error against the unrounded float64 result.
+        No persistent dense model. Requested scratch is capped at **256 MiB**;
+        pool reservations, cuBLAS workspace and process VRAM are reported
+        separately. A lane-level CPU emulation of the exact kernels passes, but
+        that is not GPU evidence.
 
         1. Build/restore, original numerical gates and unchanged retained parity.
         2. W1–W8, scales, tails, permutations and long reductions; failures are
@@ -110,8 +122,9 @@ def build_notebook():
            dispatch, timeout or invalid provenance stops the whole workflow.
         3. Warm resident synthetic AB/BA screens; actual model matrix inventory
            is saved separately. These are not frequency-weighted/cold-cache rates.
-        4. At most two backbone finalists plus the head: tiny W6/W8 model gates,
-           retained parity, extended common-input KL/top1/logit/greedy checks.
+        4. The exact and fast combinations (or, if neither forms, at most two
+           backbone finalists plus heads): tiny W6/W8 model gates, retained
+           parity, extended common-input KL/top1/logit/greedy checks.
         5. Full-model 128/512/2048-token fixed replay, counterbalanced candidate
            order and bracketing controls. Fresh conventional controls follow
            only if a candidate survives. One separate diagnostic profile pair.

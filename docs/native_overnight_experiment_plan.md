@@ -6,6 +6,70 @@ launch, purchase, scheduling or GitHub push has occurred as part of this work.
 Use the separate [overnight notebook](../notebooks/qwen35_4b_native_overnight_colab.ipynb);
 the existing notebooks retain their original budgets and defaults.
 
+## Version 2 kernels (prepared 19 November 2026, not yet run on a GPU)
+
+The [mathematical review](mathematical_review_2026-11-17.md) attributed the
+remaining gap to the kernel structure: prefill re-decoded every weight per
+eight-token tile instead of using a GEMM, decode did per-element byte work and
+64-bit divisions, and the head inverse-rotated every vocabulary row per token.
+`ggml/src/ggml-cuda/rq3-v2.cuh` in the integration patch adds:
+
+| Registry name | Implementation | Numerical lane |
+|---|---|---|
+| `v2-matmul` | One warp per output row, eight rows per block. Each 128-column chunk's codes are one coalesced load of 4 × bits words, split with two shuffles and a funnel shift; scales hoisted per scale group; codebook in shared memory; loads run two chunks ahead. One token: `matmul_v2<1>`; more: eight tokens share each decoded weight | Exact (bitwise) |
+| `v2-head` | The same decode feeding the warp-shuffle FWHT of `head-warp` | Exact (bitwise) |
+| `v2-sgemm` | Two or more tokens: decode the whole matrix once when it fits 256 MiB (chunked otherwise), one FP32 cuBLAS GEMM written straight into the output, in-place FP16 rounding | Reordered |
+| `v2-hgemm` | As above with FP16 operands, FP32 accumulation, Tensor Cores permitted | Reordered |
+| `v2-head-rotated` | Rotate the activation once with the reference rotation kernel, then `matmul_v2` on the packed vocabulary | Rounding |
+| fusion (all backbone v2 candidates) | The graph builds one `RQ3_FUSED` op per projection (`ROTQUANT_RQ3_FUSE=1`, set from the registry) instead of a rotation op and a matmul op. At one token on CUDA a single kernel rotates the input into shared memory, in the rotation op's order, then runs the `v2-matmul` row loop; otherwise the two component kernels run inside the one op. Only CUDA and the CPU reference accept the tag; Metal reports it unsupported | Exact (bitwise) |
+| `v2-exact` | `v2-matmul` + `v2-head` | Exact |
+| `v2-fast`, `v2-fast-sgemm` | `v2-matmul` at one token + `v2-hgemm` (or `v2-sgemm`) + `v2-head-rotated` | Rounding |
+
+Only the five components are screened. A combination goes to whole-model
+testing when all its components are eligible, at most one exact and one fast
+combination. If none forms, the version-1 rule (two best backbone candidates
+plus eligible heads) applies.
+
+Parity rules:
+
+- **Exact**: bitwise equality with the reference kernel. `v2-exact` therefore
+  must give full-model logits identical to the tile8 control.
+- **Reordered**: the canonical `.002` relative / `.001` absolute operator
+  limits, as for version 1.
+- **Rounding** (`v2-head-rotated`): the head computes the same linear map but
+  rounds the FWHT-rotated activation instead of each FWHT-rotated vocabulary
+  row. Elementwise agreement with the reference is the wrong test, so its
+  aggregate error against the float64 output of the same quantized matrix may
+  be at most **2×** the reference kernel's own error on the same case. On the
+  real 151,936 × 896 vocabulary of Qwen2.5-0.5B the two contracts were
+  1.05e-6 nats apart (W6) with 100% top-1 agreement.
+
+Evidence available before a GPU run, none of which is GPU evidence:
+
+- `tests/test_rq3_v2_emulation.py` re-expresses the reference kernel and the
+  v2 kernels lane by lane in NumPy float32. Across bits 1–8, 8- and 16-bit
+  scales, scale groups 32/64/128, power-of-two and other metadata blocks and
+  row permutations, the v2 weight reads equal the reference and the FP32 sums
+  before output rounding are bitwise equal. A guard test confirms a swapped
+  reduction order would be detected. The emulation is pinned to the hash of
+  `rq3-v2.cuh` and fails when the kernel changes.
+- The file compiles for sm_80 (clang CUDA front end, `ptxas` 12.8) with no
+  register spills and no fused multiply-adds: `matmul_v2<1>` 64 registers,
+  `<8>` 127, `head_v2<1>` 74, `v2_unpack` 44.
+- The graph no longer inserts a cast and a copy before every packed matmul
+  when the input is already contiguous FP32 (two launches per projection,
+  identical bytes). CPU operator and tiny-model checks pass unchanged.
+- The fused op's CPU reference is bitwise equal to the rotation and matmul ops
+  in 96 operator cases (bits 1–8, both scale formats, 1/3/9 tokens, row and
+  column maps) and in whole-model prefill plus decode logits on three tiny
+  Qwen3.5 fixtures. Fusion cuts the tiny model's custom ops per graph from
+  168 to 90; on the 4B model it removes 200 rotation launches per token,
+  which the decode4 profile put at 1.44 ms per token.
+
+Not done: no kernel has run on a GPU, so correctness on hardware, the
+speed of each path and the scratch high-water mark are unmeasured. Metal is
+unchanged.
+
 ## Implemented first iteration
 
 The design below remains the broader research direction. The first runnable

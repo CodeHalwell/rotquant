@@ -14,7 +14,11 @@ from scripts.native_pilot_controls import phase_minutes
 
 @contextlib.contextmanager
 def kernel_environment(kernel="reference", *, profile=False, graphs_disabled=False):
+    # Fusion is part of a registry candidate's identity, never set separately.
+    from scripts.native_overnight_candidates import CANDIDATES
+    fused = CANDIDATES.get(kernel, {}).get("fused", False)
     values = {"ROTQUANT_RQ3_KERNEL": kernel,
+              "ROTQUANT_RQ3_FUSE": "1" if fused else None,
               "ROTQUANT_RQ3_PROFILE": "1" if profile else None,
               "GGML_CUDA_DISABLE_GRAPHS": "1" if profile or graphs_disabled else None}
     previous = {key: os.environ.get(key) for key in values}
@@ -61,8 +65,9 @@ def comparison(reference, candidate):
         if reference[key] != candidate[key]:
             raise ValueError(f"Comparison mismatch: {key}")
     a, b = dict(reference["settings"]), dict(candidate["settings"])
-    a.pop("rq3_kernel", None)
-    b.pop("rq3_kernel", None)
+    for key in ("rq3_kernel", "rq3_fuse"):  # both are the kernel identity
+        a.pop(key, None)
+        b.pop(key, None)
     if a != b:
         raise ValueError("Comparison settings mismatch")
     tokens = reference["rows"][1]["decode_input_ids"]

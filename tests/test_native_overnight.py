@@ -20,13 +20,21 @@ from scripts import run_native_overnight as pipeline
 from scripts.build_qwen35_native_overnight_notebook import build_notebook
 from scripts.native_overnight_candidates import (
     CANDIDATES,
+    COMBINATIONS,
     CONTROL,
     SCRATCH_LIMIT,
+    SCREEN_CANDIDATES,
     experimental_dispatch,
+    operator_lane,
     requested_scratch,
 )
 from scripts.run_rq3_overnight_fidelity import guards
-from scripts.run_rq3_overnight_screen import NumericalRejection, parity, summarize_pairs
+from scripts.run_rq3_overnight_screen import (
+    NumericalRejection,
+    parity,
+    rounding_parity,
+    summarize_pairs,
+)
 from tests.test_native_performance_study import receipt
 
 
@@ -66,11 +74,92 @@ def test_wall_watchdog_restores_handler():
 def test_scratch_and_dispatch(candidate):
     for rows, width, tokens in ((2560, 9216, 2048), (137, 256, 7), (5, 256, 1)):
         assert 0 <= requested_scratch(candidate, rows, width, tokens) <= SCRATCH_LIMIT
+    spec = CANDIDATES[candidate]
     assert not experimental_dispatch(candidate, 2, 7)
-    assert not experimental_dispatch(candidate, 0, 3)
-    if CANDIDATES[candidate]["rows"]:
+    assert experimental_dispatch(candidate, 0, 3) == bool(spec["matmul_v2"] or spec["gemm_v2"])
+    assert experimental_dispatch(candidate, 1, 1) == bool(spec["head"] or spec["head_v2"] or spec["head_rotated"])
+    if spec["rows"] or spec["gemm_v2"]:
         with pytest.raises(ValueError, match="scratch"):
             requested_scratch(candidate, 1, 2**25, 128)
+
+
+def test_v2_registry_contract():
+    v2 = [name for name in CANDIDATES if name.startswith("v2-")]
+    assert set(SCREEN_CANDIDATES) <= set(v2)
+    assert len({CANDIDATES[name]["id"] for name in CANDIDATES}) == len(CANDIDATES)
+    assert all(0 < CANDIDATES[name]["id"] < 16 for name in CANDIDATES)  # rq3.cu counter array
+    for combination, spec in COMBINATIONS.items():
+        parts = [CANDIDATES[part] for part in spec["parts"]]
+        assert CANDIDATES[combination]["role"] == "combined"
+        for flag in ("matmul_v2", "gemm_v2", "head_v2", "head_rotated", "fused"):
+            assert CANDIDATES[combination][flag] == max(part[flag] for part in parts)
+    # Exact components never change a bit; GEMMs reorder; the rotated head rounds.
+    assert operator_lane("v2-matmul", 0, 1) == operator_lane("v2-matmul", 0, 17) == "exact"
+    assert operator_lane("v2-hgemm", 0, 1) == "exact"
+    assert operator_lane("v2-hgemm", 0, 2) == operator_lane("v2-sgemm", 0, 7) == "reordered"
+    assert operator_lane("v2-head", 1, 4) == "exact"
+    assert operator_lane("v2-head-rotated", 1, 1) == operator_lane("v2-fast", 1, 1) == "rounding"
+    assert operator_lane("v2-head-rotated", 0, 7) == "exact"   # control path, not dispatched
+    assert operator_lane("hgemm-512", 0, 7) == "reordered"
+
+
+def test_fusion_follows_the_registry_and_is_restored():
+    from scripts.native_performance_study import kernel_environment
+    os.environ.pop("ROTQUANT_RQ3_FUSE", None)
+    with kernel_environment("v2-exact"):
+        assert os.environ["ROTQUANT_RQ3_FUSE"] == "1"
+        assert os.environ["ROTQUANT_RQ3_KERNEL"] == "v2-exact"
+    with kernel_environment("v2-head"):
+        assert "ROTQUANT_RQ3_FUSE" not in os.environ
+    with kernel_environment(CONTROL):
+        assert "ROTQUANT_RQ3_FUSE" not in os.environ
+    assert "ROTQUANT_RQ3_FUSE" not in os.environ
+    assert not any(spec["fused"] for name, spec in CANDIDATES.items() if not name.startswith("v2-"))
+
+
+def test_v2_scratch_mirrors_the_cuda_accounting():
+    # Whole-matrix GEMM: input plus every decoded row, no staged output.
+    assert requested_scratch("v2-hgemm", 9216, 2560, 128) == 2560 * 128 * 2 + 9216 * 2560 * 2
+    assert requested_scratch("v2-sgemm", 9216, 2560, 128) == 2560 * 128 * 4 + 9216 * 2560 * 4
+    assert requested_scratch("v2-sgemm", 9216, 2560, 1) == 0     # one token: matmul_v2
+    # Too large for one pass: bounded chunks with a staged output.
+    rows, width, tokens = 151936, 2560, 16
+    inputs, row = width * tokens * 4, width * 4
+    chunk = (SCRATCH_LIMIT - inputs) // (row + tokens * 4)
+    assert requested_scratch("v2-sgemm", rows, width, tokens) == inputs + chunk * (row + tokens * 4)
+    assert requested_scratch("v2-head-rotated", 151936, 2560, 3, mode=1) == 2560 * 3 * 4
+    assert requested_scratch("v2-head", 151936, 2560, 3, mode=1) == 0
+
+
+def test_rounding_parity_holds_the_candidate_to_the_reference_bar():
+    rng = np.random.default_rng(4)
+    truth = rng.normal(size=(3, 50))
+    reference = truth + rng.normal(scale=1e-3, size=truth.shape)
+    close = truth + rng.normal(scale=1.5e-3, size=truth.shape)
+    record = rounding_parity(close.astype(np.float32), reference.astype(np.float32), truth)
+    assert record["candidate_error_vs_unrounded"] < 2 * record["reference_error_vs_unrounded"]
+    with pytest.raises(NumericalRejection, match="Rounding-lane"):
+        rounding_parity((truth + 5e-3).astype(np.float32), reference.astype(np.float32), truth)
+    with pytest.raises(NumericalRejection, match="Non-finite"):
+        rounding_parity(np.full_like(truth, np.nan, dtype=np.float32), reference.astype(np.float32), truth)
+
+
+def test_finalists_prefer_frozen_combinations_then_fall_back():
+    def screen(name):
+        return {"kernel": name, "eligible": True}
+    every = [{"kernel": name, "eligible": True, "score": 1.5} for name in SCREEN_CANDIDATES]
+    assert pipeline.select_finalists(every, screen) == ["v2-exact", "v2-fast"]
+    without_hgemm = [r for r in every if r["kernel"] != "v2-hgemm"]
+    assert pipeline.select_finalists(without_hgemm, screen) == ["v2-exact", "v2-fast-sgemm"]
+    backbone_only = [{"kernel": "v2-sgemm", "eligible": True, "score": 2.0},
+                     {"kernel": "v2-hgemm", "eligible": True, "score": 3.0},
+                     {"kernel": "v2-matmul", "eligible": True, "score": 1.2}]
+    assert pipeline.select_finalists(backbone_only, screen) == ["v2-hgemm", "v2-sgemm"]
+    refused = pipeline.select_finalists(every, lambda name: {"kernel": name, "eligible": False})
+    # Equal scores break ties by name.
+    assert refused == ["v2-hgemm", "v2-matmul", "v2-head", "v2-head-rotated"]
+    assert json.loads(json.dumps(CANDIDATES)) == CANDIDATES
+    assert json.loads(json.dumps(COMBINATIONS)) == COMBINATIONS
 
 
 @pytest.mark.parametrize("seed", range(8))
@@ -262,8 +351,8 @@ def test_mock_end_to_end_all_gates_then_timings(tmp_path, monkeypatch):
     result = pipeline.run(args)
     assert result["completed"]
     assert len(result["control_drift"]) == 3
-    assert "hgemm-512-head" in result["numerically_confirmed"]
-    assert len([x for x in result["finalists"] if x != "head-warp"]) == 2
+    assert result["finalists"] == ["v2-exact", "v2-fast"]
+    assert result["numerically_confirmed"] == ["v2-exact", "v2-fast"]
     assert len(result["comparisons"]) == 3 * len(result["numerically_confirmed"])
     commands = [name for name, _, _ in calls]
     assert commands.index("run_rq3_overnight_screen.py") < commands.index("run_rq3_performance_pilot.py")
@@ -272,15 +361,15 @@ def test_mock_end_to_end_all_gates_then_timings(tmp_path, monkeypatch):
 
 
 def test_mock_numerical_rejection_checks_health_and_continues(tmp_path, monkeypatch):
-    args, calls = fake_pipeline(tmp_path, monkeypatch, reject="sgemm-128")
+    args, calls = fake_pipeline(tmp_path, monkeypatch, reject="v2-hgemm")
     result = pipeline.run(args)
     assert result["completed"]
     assert any(name == "check_rq3_gpu.py" and kernel == CONTROL for name, kernel, _ in calls)
-    assert "sgemm-128" not in result["finalists"]
+    assert result["finalists"] == ["v2-exact", "v2-fast-sgemm"]
 
 
 def test_mock_runtime_failure_is_fatal(tmp_path, monkeypatch):
-    args, calls = fake_pipeline(tmp_path, monkeypatch, reject="sgemm-128", broken=True)
+    args, calls = fake_pipeline(tmp_path, monkeypatch, reject="v2-hgemm", broken=True)
     with pytest.raises(subprocess.CalledProcessError):
         pipeline.run(args)
     assert not any(name == "run_rq3_performance_pilot.py" for name, _, _ in calls)

@@ -23,8 +23,9 @@ from scripts.native_overnight_candidates import (
     OPERATOR_ATOL,
     OPERATOR_RTOL,
     REGISTRY_VERSION,
+    ROUNDING_ERROR_RATIO,
     ExperimentDiagnostics,
-    experimental_dispatch,
+    operator_lane,
     requested_scratch,
 )
 from scripts.native_performance_study import kernel_environment
@@ -48,6 +49,37 @@ def parity(actual, reference, exact):
         raise NumericalRejection(str(error)) from error
     return {"exact": bool(np.array_equal(actual, reference)),
             "max_abs_error": float(np.abs(actual-reference).max())}
+
+
+def rounding_parity(actual, reference, truth):
+    """Rounding lane: no worse than the reference against the unrounded result.
+
+    The candidate puts FP16 rounding somewhere else, so neither bitwise nor
+    elementwise agreement with the reference is the right question. It must be
+    finite and its aggregate error against the float64 result of the same
+    quantized matrix may be at most ROUNDING_ERROR_RATIO times the reference
+    kernel's own error on the same case.
+    """
+    if not np.isfinite(actual).all():
+        raise NumericalRejection("Non-finite candidate output")
+    candidate_error = float(np.linalg.norm(actual.astype(np.float64) - truth))
+    reference_error = float(np.linalg.norm(reference.astype(np.float64) - truth))
+    bound = ROUNDING_ERROR_RATIO * reference_error + 1e-6 * float(np.linalg.norm(truth))
+    if candidate_error > bound:
+        raise NumericalRejection(
+            f"Rounding-lane error {candidate_error:.3e} exceeds {bound:.3e} "
+            f"({ROUNDING_ERROR_RATIO}x reference {reference_error:.3e})")
+    return {"exact": bool(np.array_equal(actual, reference)),
+            "max_abs_error": float(np.abs(actual - reference).max()),
+            "candidate_error_vs_unrounded": candidate_error,
+            "reference_error_vs_unrounded": reference_error}
+
+
+def unrounded(matrix, rotation, inputs):
+    """Float64 head output of the quantized matrix, with no FP16 rounding."""
+    weights = torch.from_numpy(decode_native_v3_rows(matrix)).double()
+    dense = rotation.inverse_activation(weights)
+    return (torch.from_numpy(inputs).double() @ dense.T).numpy()
 
 
 def canonical(matrix, rotation, inputs, mode, rows=None, columns=None):
@@ -95,12 +127,15 @@ def check_operators(runtime, diagnostics, candidate, report, persist):
                 before = diagnostics.snapshot(candidate)
                 actual = runtime.operator("CUDA0", matrix, signs, inputs, mode, rp, cp)
                 dispatch = diagnostics.require(before, candidate, mode=mode, tokens=tokens)
-            exact = CANDIDATES[candidate]["lane"] == "exact" or not experimental_dispatch(candidate, mode, tokens)
-            result = parity(actual, reference, exact)
-            parity(actual, expected, False)
+            lane = operator_lane(candidate, mode, tokens)
+            if lane == "rounding":
+                result = rounding_parity(actual, reference, unrounded(matrix, rotation, inputs))
+            else:
+                result = parity(actual, reference, lane == "exact")
+                parity(actual, expected, False)
             report["rows"].append({"bits": bits, "scale_bits": sbits, "block": block,
                 "outputs": rows, "width": width, "tokens": tokens, "mode": mode,
-                "permuted": rp is not None, "dispatch": dispatch, **result})
+                "permuted": rp is not None, "lane": lane, "dispatch": dispatch, **result})
         persist()
         print(f"OPERATORS {candidate}: {index+1}/{len(list(operator_cases()))} fixtures; {len(report['rows'])} cases passed", flush=True)
 
@@ -126,18 +161,19 @@ def summarize_pairs(rows):
 
 
 def check_speed(runtime, diagnostics, candidate, report, persist):
-    head = CANDIDATES[candidate]["head"] and not CANDIDATES[candidate]["rows"]
+    spec = CANDIDATES[candidate]
+    head = spec["role"] == "head"
     # Checkpoint-representative backbone dimensions, NOT frequency weighted.
     # The head has the correct width but bounded row count; full vocabulary is
     # assessed by retained execution, not extrapolated from this warm fixture.
     shapes = ((4096, 2560),) if head else ((2560, 2560), (9216, 2560), (2560, 9216))
-    counts = (1, 16) if head else (16, 128)
+    counts = spec["speed_tokens"] or ((1, 16) if head else (16, 128))
     for index, (rows, width) in enumerate(shapes):
         matrix = fixture(rows, width, 2903+index, bits=6 if head else 5, scale_bits=16 if head else 8)
         rng = np.random.default_rng(2293+index)
         signs = rng.choice(np.array([-1, 1], dtype=np.int8), width)
         for tokens in counts:
-            requested_scratch(candidate, rows, width, tokens)
+            requested_scratch(candidate, rows, width, tokens, mode=int(head))
             x = rng.normal(0, .5, (tokens, width)).astype(np.float16).astype(np.float32)
             for turn, order in enumerate(((CONTROL, candidate), (candidate, CONTROL))):
                 values, dispatch = {}, {}
@@ -148,9 +184,19 @@ def check_speed(runtime, diagnostics, candidate, report, persist):
                         values[kernel] = runtime.operator("CUDA0", matrix, signs, x, mode=int(head), benchmark=(3, 3))
                         if kernel == candidate:
                             dispatch = diagnostics.require(before, candidate, mode=int(head), tokens=tokens)
-                metrics = parity(values[candidate][0], values[CONTROL][0], CANDIDATES[candidate]["lane"] == "exact")
+                lane = operator_lane(candidate, int(head), tokens)
+                if lane == "rounding":
+                    # Accepted or rejected on numerics in the operator phase;
+                    # here the difference from the control is only recorded.
+                    difference = values[candidate][0] - values[CONTROL][0]
+                    if not np.isfinite(values[candidate][0]).all():
+                        raise NumericalRejection("Non-finite candidate output")
+                    metrics = {"exact": bool(not difference.any()),
+                               "max_abs_error": float(np.abs(difference).max())}
+                else:
+                    metrics = parity(values[candidate][0], values[CONTROL][0], lane == "exact")
                 report["rows"].append({"outputs": rows, "width": width, "tokens": tokens, "mode": int(head),
-                    "round": turn, "order": order, "control_seconds": values[CONTROL][1],
+                    "lane": lane, "round": turn, "order": order, "control_seconds": values[CONTROL][1],
                     "candidate_seconds": values[candidate][1], "iterations": 3, "dispatch": dispatch,
                     "matrix_sha256": hashlib.sha256(matrix.to_bytes()).hexdigest(),
                     "input_sha256": hashlib.sha256(x.tobytes()+signs.tobytes()).hexdigest(), **metrics})

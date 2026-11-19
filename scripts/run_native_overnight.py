@@ -16,6 +16,7 @@ sys.path.insert(0, str(ROOT))
 from scripts.native_gpu_workflow import Workflow, artifacts_match, digest, fingerprint, write_json
 from scripts.native_overnight_candidates import (
     CANDIDATES,
+    COMBINATIONS,
     CONTROL,
     REGISTRY_VERSION,
     SCREEN_CANDIDATES,
@@ -67,6 +68,30 @@ def deadline_watchdog(deadline):
         signal.signal(signal.SIGALRM, previous)
 
 
+def select_finalists(eligible, screen):
+    """Whole-model finalists from the screened components.
+
+    Preferred: frozen combinations whose every component is eligible, at most
+    one per group (one exact, one fast), each re-screened as a unit. If none
+    forms, fall back to the version-1 rule: the two best backbone candidates
+    plus every eligible head.
+    """
+    names = {r["kernel"] for r in eligible}
+    finalists, groups = [], set()
+    for combination, spec in COMBINATIONS.items():
+        if spec["group"] in groups or not all(part in names for part in spec["parts"]):
+            continue
+        if screen(combination)["eligible"]:
+            finalists.append(combination)
+            groups.add(spec["group"])
+    if finalists:
+        return finalists
+    backbone = sorted((r for r in eligible if CANDIDATES[r["kernel"]]["role"] == "backbone"),
+                      key=lambda r: (-r["score"], r["kernel"]))[:2]
+    heads = [r["kernel"] for r in eligible if CANDIDATES[r["kernel"]]["role"] == "head"]
+    return [r["kernel"] for r in backbone] + heads
+
+
 def plan(args):
     if not 10 <= args.active_minutes <= 480 or not 1 <= args.jobs <= 32:
         raise ValueError("Overnight permits 10..480 minutes and 1..32 build jobs")
@@ -78,6 +103,7 @@ def plan(args):
                 raise ValueError("Keep evidence, work, results and private cache disjoint")
     return {"protocol": "rq3-overnight-v1", "registry": REGISTRY_VERSION,
             "candidate_specs": CANDIDATES, "screen_candidates": list(SCREEN_CANDIDATES),
+            "combinations": COMBINATIONS,
             "control": CONTROL, "arm": "b5_v6_s0", "contexts": [128, 512, 2048],
             "maximum_backbone_finalists": 2, "head_separate": True,
             "active_minutes": args.active_minutes, "wall_minutes": args.active_minutes,
@@ -190,11 +216,7 @@ def run(args):
                 for kernel in SCREEN_CANDIDATES:
                     candidate_screen(kernel)
                 eligible = [r for r in result["candidates"] if r["eligible"]]
-                backbone = sorted((r for r in eligible if CANDIDATES[r["kernel"]]["rows"]),
-                                  key=lambda r: (-r["score"], r["kernel"]))[:2]
-                finalists = [r["kernel"] for r in backbone]
-                if any(r["kernel"] == "head-warp" for r in eligible):
-                    finalists.append("head-warp")
+                finalists = select_finalists(eligible, candidate_screen)
                 result["finalists"] = finalists.copy()
                 persist()
                 if not finalists:
@@ -258,14 +280,6 @@ def run(args):
                     if fidelity(kernel, reference_fidelity)["rejected"]:
                         continue
                     confirmed[kernel] = item["path"]
-                # A single frozen combination, only after BOTH components
-                # independently clear retained + extended numerical gates.
-                if "head-warp" in confirmed and "hgemm-512" in confirmed:
-                    combined = candidate_screen("hgemm-512-head")
-                    if combined["eligible"]:
-                        item = retained("hgemm-512-head")
-                        if not item["rejected"] and not fidelity("hgemm-512-head", reference_fidelity)["rejected"]:
-                            confirmed["hgemm-512-head"] = item["path"]
                 result["numerically_confirmed"] = list(confirmed)
                 persist()
                 for index, context in enumerate((128, 512, 2048)):
