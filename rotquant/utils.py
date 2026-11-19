@@ -151,11 +151,17 @@ class BitBudget:
 
     The effective bits/weight for a group of ``group_size`` weights is::
 
-        (group_size * log2(levels) + scale_bits + sign_bits) / group_size
+        (group_size * log2(levels) / vector_dim + scale_bits + sign_bits) / group_size
 
     where ``scale_bits``/``sign_bits`` are per-group metadata costs. This is the
     accounting the spec requires so that a "3-bit" config is never secretly 3.5
     or 8 bits.
+
+    ``levels`` counts the codes of the codebook and ``vector_dim`` the weights
+    one code addresses: 1 for a scalar codebook, ``d`` for a vector codebook of
+    dimension ``d``, whose ``b``-bit-per-weight codebook has ``2**(b * d)``
+    levels.  ``code_bits`` is the width of one code; ``code_bits_per_weight``
+    is what each weight pays for it.
     """
 
     levels: int
@@ -169,10 +175,24 @@ class BitBudget:
     # these fields makes ``bits_per_weight`` describe the bytes actually retained.
     stored_bits: float | None = None
     stored_weights: int | None = None
+    vector_dim: int = 1
+
+    def __post_init__(self) -> None:
+        if (
+            isinstance(self.vector_dim, bool)
+            or not isinstance(self.vector_dim, int)
+            or self.vector_dim < 1
+        ):
+            raise ValueError("vector_dim must be a positive integer")
 
     @property
     def code_bits(self) -> float:
+        """Bits of one code index (``log2(levels)``)."""
         return math.log2(self.levels)
+
+    @property
+    def code_bits_per_weight(self) -> float:
+        return self.code_bits / self.vector_dim
 
     @property
     def bits_per_weight(self) -> float:
@@ -181,14 +201,15 @@ class BitBudget:
                 raise ValueError("stored_weights must be positive when stored_bits is set")
             return self.stored_bits / self.stored_weights
         meta = self.scale_bits + self.sign_bits + self.extra_metadata_bits
-        return (self.group_size * self.code_bits + meta) / self.group_size
+        return (self.group_size * self.code_bits_per_weight + meta) / self.group_size
 
     def assert_matches(self, claimed_bpw: float, tol: float = 1e-6) -> None:
         actual = self.bits_per_weight
         if abs(actual - claimed_bpw) > tol:
             raise AssertionError(
                 f"bits/weight mismatch: claimed {claimed_bpw}, actual {actual:.6f} "
-                f"(levels={self.levels}, group={self.group_size}, "
+                f"(levels={self.levels}, vector_dim={self.vector_dim}, "
+                f"group={self.group_size}, "
                 f"scale_bits={self.scale_bits}, sign_bits={self.sign_bits}, "
                 f"stored_bits={self.stored_bits}, stored_weights={self.stored_weights})"
             )
