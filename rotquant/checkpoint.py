@@ -9,6 +9,10 @@ rebuild each ``QuantLinear`` before the ordinary state is loaded.
 No pickle is used.  The artifact consists of Transformers configuration files,
 ``rotquant_model.safetensors``, ``rotquant_packed.safetensors``, and
 ``rotquant_config.json``.  Cached fallback weights are deliberately excluded.
+
+``code_encoding="rans-rows-v1"`` optionally stores primary scalar code streams
+entropy coded (format v4, see ``docs/packed_format_v2.md``). Loading decodes
+them back to the identical fixed-rate :class:`PackedTensor`.
 """
 from __future__ import annotations
 
@@ -21,6 +25,7 @@ import uuid
 from pathlib import Path
 from typing import Any
 
+import numpy as np
 import torch
 from torch import nn
 
@@ -28,12 +33,25 @@ from ._internal import get_parent
 from .adapters import ModelAdapter, get_model_adapter, resolve_model_adapter
 from .codebooks import ScalarCodebook, VectorCodebook
 from .format import (
+    CODE_ENCODINGS,
     CURRENT_PACKING,
+    ENTROPY_CODED_FORMAT_VERSION,
     FORMAT_NAME,
     FORMAT_VERSION,
+    RANS_ROWS_V1,
+    packed_word_count,
     validate_checkpoint_manifest,
 )
 from .linear import QuantLinear
+from .lossless import (
+    RANS_PROBABILITY_BITS,
+    RANS_RENORMALIZATION_BITS,
+    RANS_STATE_BITS,
+    RANS_STATE_LOWER_BOUND,
+    RansRows,
+    compress_codes,
+    decompress_codes,
+)
 from .pack import PackedTensor
 from .quantize import QuantizedWeight
 from .rotate import (
@@ -141,6 +159,129 @@ def _packed_spec(
     }
 
 
+_RANS_FIELDS = ("frequencies", "row_words", "words")
+_RANS_TENSOR_DTYPES = {
+    "frequencies": torch.int32,
+    "row_words": torch.int32,
+    "words": torch.int16,  # bit pattern of the coder's uint16 words
+}
+
+
+def _require_rans_coder() -> None:
+    """Refuse to read or write ``rans-rows-v1`` with a coder that drifted from it."""
+    coder = (RANS_PROBABILITY_BITS, RANS_STATE_BITS, RANS_STATE_LOWER_BOUND,
+             RANS_RENORMALIZATION_BITS)
+    contract = (RANS_ROWS_V1.probability_bits, RANS_ROWS_V1.state_bits,
+                RANS_ROWS_V1.state_lower_bound, RANS_ROWS_V1.renormalization_bits)
+    if coder != contract:
+        raise RuntimeError(
+            "rotquant.lossless no longer implements rans-rows-v1; a changed coder "
+            "needs a new encoding name"
+        )
+
+
+def _words_sha256(data: torch.Tensor) -> str:
+    """SHA-256 of a fixed-rate word buffer as little-endian int32 bytes."""
+    words = data.detach().to("cpu").contiguous().numpy()
+    return hashlib.sha256(words.astype("<i4", copy=False).tobytes()).hexdigest()
+
+
+def _tensor_bytes(tensor: torch.Tensor) -> int:
+    return tensor.numel() * tensor.element_size()
+
+
+def _rans_ineligibility(qweight: QuantizedWeight) -> str | None:
+    """Why a primary code stream stays fixed-rate, or ``None`` if it may be coded."""
+    if isinstance(qweight.codebook, VectorCodebook):
+        return "vector_codebook"
+    if qweight.packed.bits > RANS_ROWS_V1.max_code_bits:
+        return "code_bits_above_limit"
+    if qweight.packed.numel != qweight.out_features * qweight.in_features:
+        return "unexpected_code_layout"
+    return None
+
+
+def _decode_rans_stream(
+    spec: dict[str, Any],
+    frequencies: torch.Tensor,
+    row_words: torch.Tensor,
+    words: torch.Tensor,
+) -> PackedTensor:
+    """Decode one stored rANS stream and prove it is the recorded fixed-rate stream."""
+    bits, rows, columns = int(spec["bits"]), int(spec["rows"]), int(spec["columns"])
+    for name, tensor in zip(_RANS_FIELDS, (frequencies, row_words, words)):
+        expected = _RANS_TENSOR_DTYPES[name]
+        if tensor.dtype != expected or tensor.ndim != 1:
+            raise ValueError(f"rANS {name} must be a one-dimensional {expected} tensor")
+    if frequencies.numel() != 1 << bits:
+        raise ValueError("rANS frequency table must hold one entry per code value")
+    if row_words.numel() != rows:
+        raise ValueError("rANS stream must hold one word count per output row")
+    if words.numel() != int(spec["word_count"]):
+        raise ValueError("rANS word stream is truncated or padded")
+    if bool((row_words < 2).any()):
+        raise ValueError("rANS row word counts must cover the two state words")
+    coded = RansRows(
+        frequencies.numpy().astype(np.int64),
+        row_words.numpy().astype(np.uint32),
+        words.numpy().view(np.uint16),
+        (rows, columns),
+    )
+    # Raises on a bad table, a short row, trailing words or a wrong final state.
+    packed = decompress_codes(coded, bits, tuple(int(dim) for dim in spec["shape"]))
+    if (packed.numel != int(spec["numel"])
+            or packed.data.numel() != packed_word_count(packed.numel, bits)):
+        raise ValueError("decoded codes do not match the declared packed size")
+    if _words_sha256(packed.data) != spec["decoded_sha256"]:
+        raise ValueError("decoded code stream does not match its recorded SHA-256")
+    return packed
+
+
+def _rans_packed_spec(
+    tensors: dict[str, torch.Tensor],
+    key: str,
+    qweight: QuantizedWeight,
+) -> tuple[dict[str, Any], int] | None:
+    """Store a primary code stream as one rANS stream per output row.
+
+    Returns the manifest entry and the stored bytes, or ``None`` when the coded
+    form (table, row lengths and words) is not smaller than the fixed-rate
+    words; the caller then keeps the fixed-rate stream.
+    """
+    packed = qweight.packed
+    rows, columns = qweight.out_features, qweight.in_features
+    coded = compress_codes(packed, rows=rows)
+    if coded.shape != (rows, columns) or int(coded.row_words.max()) >= 1 << 31:
+        raise ValueError(f"cannot split {key} into {rows} rANS rows")
+    stored = {
+        "frequencies": torch.from_numpy(coded.frequencies.astype(np.int32)),
+        "row_words": torch.from_numpy(coded.row_words.astype(np.int32)),
+        "words": torch.from_numpy(coded.words.view(np.int16)),
+    }
+    stored_bytes = sum(_tensor_bytes(tensor) for tensor in stored.values())
+    if stored_bytes >= _tensor_bytes(packed.data):
+        return None
+    spec = {
+        "encoding": RANS_ROWS_V1.name,
+        "shape": list(packed.shape),
+        "bits": packed.bits,
+        "numel": packed.numel,
+        "rows": rows,
+        "columns": columns,
+        **{field: f"{key}.rans_{field}" for field in _RANS_FIELDS},
+        "word_count": int(stored["words"].numel()),
+        "decoded_sha256": _words_sha256(packed.data),
+    }
+    # Decode exactly as the loader will before anything is written, so a stream
+    # that does not reproduce the deployed words can never be published.
+    restored = _decode_rans_stream(spec, **stored)
+    if not torch.equal(restored.data, packed.data.detach().to("cpu")):
+        raise RuntimeError(f"rANS round trip of {key} is not bit exact")
+    for field in _RANS_FIELDS:
+        tensors[spec[field]] = stored[field]
+    return spec, stored_bytes
+
+
 def _tensor_spec(
     tensors: dict[str, torch.Tensor],
     key: str,
@@ -157,11 +298,41 @@ def _tensor_spec(
     return key
 
 
+def _primary_code_spec(
+    tensors: dict[str, torch.Tensor],
+    key: str,
+    qweight: QuantizedWeight,
+    code_streams: dict[str, Any] | None,
+) -> dict[str, Any]:
+    """Store the primary code stream, entropy coded when requested and smaller.
+
+    ``code_streams`` is ``None`` for the default fixed-rate format; otherwise it
+    accumulates what was coded and the exact bytes stored for these streams.
+    """
+    if code_streams is None:
+        return _packed_spec(tensors, key, qweight.packed)
+    fixed_bytes = _tensor_bytes(qweight.packed.data)
+    code_streams["streams"] += 1
+    code_streams["fixed_rate_bytes"] += fixed_bytes
+    reason = _rans_ineligibility(qweight)
+    encoded = _rans_packed_spec(tensors, key, qweight) if reason is None else None
+    if encoded is not None:
+        spec, stored_bytes = encoded
+        code_streams["encoded_streams"] += 1
+        code_streams["stored_bytes"] += stored_bytes
+        return spec
+    reason = reason or "no_saving"
+    code_streams["not_encoded"][reason] = code_streams["not_encoded"].get(reason, 0) + 1
+    code_streams["stored_bytes"] += fixed_bytes
+    return _packed_spec(tensors, key, qweight.packed)
+
+
 def _quantized_weight_spec(
     index: int,
     qweight: QuantizedWeight,
     tensors: dict[str, torch.Tensor],
     codebook_keys: dict[int, str] | None = None,
+    code_streams: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     prefix = f"layer_{index:05d}"
     primary_codebook_key = None
@@ -188,7 +359,7 @@ def _quantized_weight_spec(
             ),
         }
     return {
-        "packed": _packed_spec(tensors, f"{prefix}.packed", qweight.packed),
+        "packed": _primary_code_spec(tensors, f"{prefix}.packed", qweight, code_streams),
         "scales": _tensor_spec(tensors, f"{prefix}.scales", qweight.scales),
         "scale_offsets": _tensor_spec(
             tensors, f"{prefix}.scale_offsets", qweight.scale_offsets),
@@ -240,9 +411,30 @@ def _quantized_weight_spec(
     }
 
 
-def _read_packed(handle, spec: dict[str, Any] | None) -> PackedTensor | None:
+def _read_packed(
+    handle,
+    spec: dict[str, Any] | None,
+    *,
+    primary: bool = False,
+) -> PackedTensor | None:
     if spec is None:
         return None
+    encoding = spec.get("encoding")
+    if encoding is not None:
+        # Only the primary stream of a backbone module may be entropy coded;
+        # anything else is a producer this loader does not understand.
+        if not primary or encoding not in CODE_ENCODINGS:
+            raise ValueError(
+                f"unsupported code encoding {encoding!r} for this stream; this "
+                f"loader decodes {tuple(CODE_ENCODINGS)} primary streams only"
+            )
+        _require_rans_coder()
+        try:
+            return _decode_rans_stream(
+                spec, **{field: handle.get_tensor(spec[field]) for field in _RANS_FIELDS}
+            )
+        except ValueError as exc:
+            raise ValueError(f"corrupt entropy-coded stream {spec['words']}: {exc}") from exc
     return PackedTensor(
         data=handle.get_tensor(spec["tensor"]),
         shape=tuple(spec["shape"]),
@@ -279,8 +471,11 @@ def _read_quantized_weight(
     handle,
     spec: dict[str, Any],
     codebook_cache: dict[tuple[str, str], ScalarCodebook | VectorCodebook] | None = None,
+    *,
+    entropy_coded: bool = True,
 ) -> QuantizedWeight:
-    packed = _read_packed(handle, spec["packed"])
+    """Rebuild a weight; ``entropy_coded=False`` demands a fixed-rate primary stream."""
+    packed = _read_packed(handle, spec["packed"], primary=entropy_coded)
     codebook = _read_codebook(handle, spec["codebook"], codebook_cache)
     if packed is None or codebook is None:
         raise ValueError("primary packed tensor and codebook are required")
@@ -372,13 +567,21 @@ def verify_checkpoint(checkpoint_dir: str | Path, *, require_integrity: bool = T
 
 
 def save_packed_checkpoint(model: nn.Module, output_dir: str | Path, *,
-                           overwrite: bool = False, **kwargs) -> dict[str, Any]:
+                           overwrite: bool = False, code_encoding: str | None = None,
+                           **kwargs) -> dict[str, Any]:
     """Stage a complete generation before replacing the previous checkpoint.
 
     The old directory is never modified in place. A process interruption in the
     two-rename publication window leaves it at a known recovery location. Hashes
     and the manifest digest bind resume decisions to the exact exported trial.
     Concurrent writers to the same destination are not supported.
+
+    ``code_encoding=None`` (default) writes fixed-rate code words exactly as
+    before. ``"rans-rows-v1"`` stores each primary scalar code stream of a
+    ``QuantLinear`` as one rANS stream per output row when that is smaller,
+    and marks the artifact format v4 if any stream was coded. It shrinks the
+    file only: loading restores bit-identical fixed-rate codes. The result's
+    ``code_streams`` entry reports the exact stored bytes.
     """
     output = Path(output_dir).absolute()
     if output.is_symlink():
@@ -414,7 +617,8 @@ def save_packed_checkpoint(model: nn.Module, output_dir: str | Path, *,
     moved_previous = False
     published = False
     try:
-        result = _write_packed_checkpoint(model, staging, **kwargs)
+        result = _write_packed_checkpoint(
+            model, staging, code_encoding=code_encoding, **kwargs)
         if output.exists():
             os.replace(output, previous)
             moved_previous = True
@@ -446,6 +650,7 @@ def _write_packed_checkpoint(
     processor=None,
     deployment_metadata: dict[str, Any] | None = None,
     overwrite: bool = False,
+    code_encoding: str | None = None,
 ) -> dict[str, Any]:
     """Save a self-contained, pickle-free packed model artifact.
 
@@ -454,6 +659,22 @@ def _write_packed_checkpoint(
     written. Optional deployment metadata must be a plain JSON object and is
     embedded in the manifest. This helper writes only to a fresh staging directory.
     """
+    if code_encoding is not None:
+        if code_encoding not in CODE_ENCODINGS:
+            raise ValueError(
+                f"unsupported code_encoding {code_encoding!r}; use None or one of "
+                f"{tuple(CODE_ENCODINGS)}"
+            )
+        _require_rans_coder()
+    code_streams: dict[str, Any] | None = None if code_encoding is None else {
+        "encoding": code_encoding,
+        "scope": "primary scalar QuantLinear code streams",
+        "streams": 0,
+        "encoded_streams": 0,
+        "fixed_rate_bytes": 0,
+        "stored_bytes": 0,
+        "not_encoded": {},
+    }
     _, _, save_file, save_model = _require_safetensors()
     serialized_deployment = None
     if deployment_metadata is not None:
@@ -492,7 +713,7 @@ def _write_packed_checkpoint(
                 "rotation": _rotation_spec(module.act_rotation),
                 "rotation_id": rotation_id,
                 "qweight": _quantized_weight_spec(
-                    index, module.qweight, packed_tensors, codebook_keys
+                    index, module.qweight, packed_tensors, codebook_keys, code_streams
                 ),
                 "lora_rank": module.lora_rank,
                 "lora_alpha": module.lora_alpha,
@@ -527,6 +748,11 @@ def _write_packed_checkpoint(
                        for i, chunk in enumerate(owner.chunks)],
         }
     artifact_version = 3 if vocabulary_spec is not None else FORMAT_VERSION
+    # A reader that predates entropy coding must reject the artifact, not
+    # misread it; an artifact with no coded stream keeps the older version.
+    entropy_coded = code_streams is not None and code_streams["encoded_streams"] > 0
+    if entropy_coded:
+        artifact_version = ENTROPY_CODED_FORMAT_VERSION
 
     config = getattr(model, "config", None)
     if config is None or not hasattr(config, "save_pretrained"):
@@ -557,6 +783,10 @@ def _write_packed_checkpoint(
         "format": FORMAT_NAME,
         "format_version": artifact_version,
         "packing": CURRENT_PACKING.to_manifest(),
+    }
+    if entropy_coded:
+        manifest["code_encoding"] = CODE_ENCODINGS[code_encoding].to_manifest()
+    manifest |= {
         "base_model": base_model,
         "base_model_revision": base_model_revision,
         "model_loader": model_loader,
@@ -590,7 +820,7 @@ def _write_packed_checkpoint(
     artifact_bytes = sum(
         path.stat().st_size for path in output.rglob("*") if path.is_file()
     )
-    return {
+    result = {
         "path": str(output),
         "format": FORMAT_NAME,
         "format_version": artifact_version,
@@ -600,6 +830,11 @@ def _write_packed_checkpoint(
         "identity": (serialized_deployment or {}).get("experiment_identity"),
         "fallback_cache_serialized": False,
     }
+    if code_streams is not None:
+        code_streams["saved_bytes"] = (
+            code_streams["fixed_rate_bytes"] - code_streams["stored_bytes"])
+        result["code_streams"] = code_streams
+    return result
 
 
 def _resolve_model_class(
@@ -690,7 +925,7 @@ def load_packed_model(
         if vocabulary is not None:
             from .vocabulary import PackedVocabulary, VocabularyConfig, install_packed_vocabulary
             owner = PackedVocabulary(
-                [_read_quantized_weight(packed_handle, chunk, codebooks)
+                [_read_quantized_weight(packed_handle, chunk, codebooks, entropy_coded=False)
                  for chunk in vocabulary["chunks"]],
                 VocabularyConfig(**vocabulary["config"]), vocabulary["shape"],
                 _resolve_dtype(vocabulary["execution_dtype"]), vocabulary["source_digest"],

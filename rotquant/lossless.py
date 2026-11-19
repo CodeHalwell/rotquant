@@ -33,6 +33,7 @@ from dataclasses import dataclass
 import numpy as np
 import torch
 
+from .format import packed_word_count, validate_storage_bits
 from .pack import PackedTensor, pack_indices, unpack_indices
 
 # --------------------------------------------------------------------------- #
@@ -264,9 +265,16 @@ def code_entropy(packed: PackedTensor) -> dict[str, float | int]:
 # --------------------------------------------------------------------------- #
 # rANS coder with independent row streams
 # --------------------------------------------------------------------------- #
-_PROB_BITS = 14
+# The coder's parameters are part of the ``rans-rows-v1`` checkpoint encoding
+# (``rotquant.format.RANS_ROWS_V1``); changing any of them needs a new name.
+RANS_PROBABILITY_BITS = 14
+RANS_STATE_BITS = 32
+RANS_STATE_LOWER_BOUND = 1 << 16
+RANS_RENORMALIZATION_BITS = 16
+
+_PROB_BITS = RANS_PROBABILITY_BITS
 _PROB_TOTAL = 1 << _PROB_BITS
-_STATE_LOW = 1 << 16
+_STATE_LOW = RANS_STATE_LOWER_BOUND
 
 
 def _normalised_frequencies(symbols: np.ndarray, alphabet: int) -> np.ndarray:
@@ -384,16 +392,25 @@ def rans_decode_rows(coded: RansRows) -> np.ndarray:
     output = np.zeros((rows, columns), dtype=np.int64)
     if rows == 0 or columns == 0:
         return output
-    frequencies = coded.frequencies.astype(np.uint64)
+    table = np.asarray(coded.frequencies)
+    if table.ndim != 1 or table.size == 0 or (table < 0).any():
+        raise ValueError("rANS frequency table must be a non-negative vector")
+    frequencies = table.astype(np.uint64)
     if int(frequencies.sum()) != _PROB_TOTAL:
         raise ValueError("rANS frequency table does not sum to the probability total")
-    cumulative = np.concatenate(([0], np.cumsum(coded.frequencies)[:-1])).astype(np.uint64)
-    slot_symbol = np.repeat(np.arange(frequencies.size), coded.frequencies).astype(np.int64)
+    cumulative = np.concatenate(([0], np.cumsum(table)[:-1])).astype(np.uint64)
+    slot_symbol = np.repeat(np.arange(frequencies.size), table.astype(np.int64))
+    if coded.row_words.shape != (rows,):
+        raise ValueError("rANS stream needs exactly one word count per row")
     offsets = np.concatenate(([0], np.cumsum(coded.row_words.astype(np.int64))))
     if int(offsets[-1]) != coded.words.size or (coded.row_words < 2).any():
         raise ValueError("rANS row lengths do not match the word stream")
     words = coded.words.astype(np.uint64)
     state = (words[offsets[:-1]] << np.uint64(16)) | words[offsets[:-1] + 1]
+    # The encoder's state never leaves [L, 2**32); a smaller flushed state can
+    # only come from a damaged stream.
+    if (state < np.uint64(_STATE_LOW)).any():
+        raise ValueError("rANS stream is corrupt: initial state below the lower bound")
     cursor = offsets[:-1] + 2
     limit = offsets[1:]
     mask = np.uint64(_PROB_TOTAL - 1)
@@ -427,7 +444,75 @@ def compress_codes(packed: PackedTensor, rows: int | None = None) -> RansRows:
     return rans_encode_rows(indices.reshape(rows, -1), 1 << packed.bits)
 
 
-def decompress_codes(coded: RansRows, bits: int, shape: tuple[int, ...]) -> PackedTensor:
-    """Rebuild the exact :class:`PackedTensor` that :func:`compress_codes` read."""
-    indices = torch.from_numpy(rans_decode_rows(coded)).reshape(shape)
-    return pack_indices(indices, bits)
+def _pack_codes(symbols: np.ndarray, bits: int) -> torch.Tensor:
+    """The words :func:`~rotquant.pack.pack_indices` writes, computed faster.
+
+    Thirty-two ``bits``-wide codes fill exactly ``bits`` LSB-first words, and
+    each code's word and offset within such a group are the same for every
+    group, so the packing is 32 vectorised shift-and-or passes.
+    """
+    count = symbols.size
+    groups = -(-count // 32)
+    padded = np.zeros(groups * 32, dtype=np.uint64)
+    padded[:count] = symbols.reshape(-1)
+    padded = padded.reshape(groups, 32)
+    words = np.zeros((groups, bits), dtype=np.uint64)
+    low_mask = np.uint64(0xFFFFFFFF)
+    for index in range(32):
+        word, offset = divmod(index * bits, 32)
+        words[:, word] |= (padded[:, index] << np.uint64(offset)) & low_mask
+        if offset + bits > 32:
+            words[:, word + 1] |= padded[:, index] >> np.uint64(32 - offset)
+    flat = words.reshape(-1)[:packed_word_count(count, bits)]
+    return torch.from_numpy(flat.astype(np.uint32).view(np.int32))
+
+
+def decompress_codes(
+    coded: RansRows,
+    bits: int,
+    shape: tuple[int, ...],
+    *,
+    max_chunk_symbols: int = 1 << 23,
+) -> PackedTensor:
+    """Rebuild the exact :class:`PackedTensor` that :func:`compress_codes` read.
+
+    Rows are decoded and packed in chunks of at most ``max_chunk_symbols``
+    codes (rounded to whole rows that end on a 32-bit word boundary), so the
+    transient int64 working set stays bounded for large matrices. Every code
+    is checked to lie below ``2**bits`` and the stream must be consumed
+    exactly; any damage raises :class:`ValueError`.
+    """
+    validate_storage_bits(bits)
+    rows, columns = coded.shape
+    shape = tuple(int(dim) for dim in shape)
+    numel = rows * columns
+    if math.prod(shape) != numel:
+        raise ValueError("coded rows do not match the logical code shape")
+    if numel == 0:
+        return pack_indices(torch.zeros(shape, dtype=torch.int64), bits)
+    if np.asarray(coded.frequencies).shape != (1 << bits,):
+        raise ValueError("rANS frequency table does not match the code width")
+    row_words = np.asarray(coded.row_words).astype(np.int64)
+    if row_words.shape != (rows,):
+        raise ValueError("rANS stream needs exactly one word count per row")
+    offsets = np.concatenate(([0], np.cumsum(row_words)))
+    if int(offsets[-1]) != coded.words.size or (row_words < 2).any():
+        raise ValueError("rANS row lengths do not match the word stream")
+    # Chunks must start on a word boundary for their packed words to concatenate.
+    unit = 32 // math.gcd(max(columns, 1) * bits, 32)
+    chunk_rows = max(unit, max_chunk_symbols // max(columns, 1) // unit * unit)
+    pieces: list[torch.Tensor] = []
+    for begin in range(0, rows, chunk_rows):
+        end = min(rows, begin + chunk_rows)
+        part = RansRows(
+            coded.frequencies, coded.row_words[begin:end],
+            coded.words[offsets[begin]:offsets[end]], (end - begin, columns),
+        )
+        symbols = rans_decode_rows(part)
+        if symbols.size and (symbols.min() < 0 or symbols.max() >= 1 << bits):
+            raise ValueError("decoded code out of range for the code width")
+        pieces.append(_pack_codes(symbols, bits))
+    data = torch.cat(pieces) if pieces else torch.zeros(0, dtype=torch.int32)
+    if data.numel() != packed_word_count(numel, bits):
+        raise ValueError("decoded codes do not fill the expected packed word count")
+    return PackedTensor(data=data, shape=shape, bits=bits, numel=numel)
