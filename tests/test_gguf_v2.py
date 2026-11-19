@@ -78,3 +78,35 @@ def test_checkpoint_matrix_reads_original_storage_without_quantizer():
         checkpoint_matrix(Handle(), {**spec, "scale_bits_main": 32})
     with pytest.raises(ValueError, match="permutation"):
         NativeProjection(original, np.ones(256, dtype=np.int8), rows=np.zeros(7, dtype=np.int32))
+
+
+def test_checkpoint_matrix_reads_entropy_coded_streams():
+    """A rans-rows-v1 checkpoint exports the same native matrix as a fixed-rate one."""
+    from rotquant.checkpoint import _rans_packed_spec
+    from rotquant.native_v3 import encode_native_v3
+    from rotquant.quantize import QuantConfig, Quantizer
+    from rotquant.rotate import RandomizedHadamard
+
+    torch.manual_seed(0)
+    # Wide enough rows that coding shrinks them; the writer declines otherwise.
+    weight = RandomizedHadamard(2048, block=128, seed=1).rotate_weight(torch.randn(48, 2048))
+    qweight = Quantizer(QuantConfig(bits=5, group_size=128, scale="mse_search", scale_bits=8.0,
+                                    scale_quant_group_size=4)).quantize_weight(weight)
+    original = encode_native_v3(qweight)
+    tensors = {}
+    encoded = _rans_packed_spec(tensors, "w", qweight)
+    assert encoded is not None
+    packed_spec = encoded[0]
+    values = {**{k: v.numpy() for k, v in tensors.items()}, "s": original.scales,
+              "o": original.offsets, "t": original.steps, "c": original.codebook}
+
+    class Handle:
+        def get_tensor(self, key):
+            return torch.from_numpy(values[key].copy())
+
+    spec = {"packed": packed_spec, "scales": "s", "scale_offsets": "o", "scale_steps": "t",
+            "scale_bits_main": 8, "scale_quant_group_size": 4,
+            "codebook": {"kind": "scalar", "centroids": "c"},
+            "out_features": 48, "in_features": 2048, "group_size": 128}
+    assert "tensor" not in packed_spec
+    assert checkpoint_matrix(Handle(), spec).to_bytes() == original.to_bytes()

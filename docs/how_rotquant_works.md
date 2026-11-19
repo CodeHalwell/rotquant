@@ -232,7 +232,11 @@ $$
 
 RotQuant implements these alternatives:
 
-- `gaussian`: Lloyd-Max centroids for a standard Gaussian;
+- `gaussian`: Lloyd-Max centroids for a standard Gaussian from a 200-step grid
+  solver. It is converged up to four bits and is frozen, because the GGUF v1
+  and KV-cache kernels embed its tables;
+- `gaussian_exact`: the same conditions solved to machine precision by
+  Newton's method on the closed-form cell moments (better above six bits);
 - `spherical`: Lloyd-Max centroids for the finite-dimensional sphere marginal;
 - `calibrated`: deterministic Lloyd fitting on normalized rotated weights;
 - `uniform`: a symmetric uniformly spaced control;
@@ -437,9 +441,11 @@ inside a block happen immediately; the update to later blocks is batched into a
 matrix multiplication. This is the same second-order PTQ family introduced by
 [GPTQ](https://arxiv.org/abs/2210.17323).
 
-If no calibration Hessian is supplied, RotQuant deliberately uses `H = I` and
-reduces exactly to plain rounding. A configuration that says GPTQ but collected
-no activations is therefore not evidence for GPTQ.
+With `H = I` the procedure reduces exactly to plain rounding, which is what
+`tests/test_gptq_identity.py` checks. A missing Hessian is not treated as
+`H = I`: `quantize_weight` and `patch_model` reject a GPTQ configuration that
+has no calibrated Hessian before any module is replaced, so a run that says
+GPTQ cannot silently be plain rounding.
 
 ## 7. Learned rotations and calibration-time recovery
 
@@ -872,6 +878,8 @@ comparison live in the [competitive evaluation contract](competitive_eval.md).
 | fp16 sink/recent KV tiers improve long-context quality | Storage semantics implemented; 8k–32k result pending |
 | Packed KV retrieval reduces end-to-end latency | Hypothesis; no production kernel claim yet |
 | A smaller packed artifact makes inference faster | False in general; requires a specialized runtime and workload measurement |
+| A rotation makes weight compression lossless | False. The rotation is an exact reparameterisation; the quantiser after it is lossy at any rate below the source entropy, and rotating before a *lossless* coder makes the output larger. See the [mathematical review](mathematical_review_2026-11-17.md) |
+| Entropy-coding the packed codes changes the model | False; it is a bijection on the code stream and removes 2.5–5.4% of the code bytes at W6–W3 (`rotquant.lossless`) |
 
 This separation is intentional. The mathematics constrains what a correct
 implementation may do; experiments determine whether a valid mechanism is

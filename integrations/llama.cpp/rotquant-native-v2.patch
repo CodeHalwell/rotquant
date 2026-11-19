@@ -36,7 +36,7 @@ index d3953eee9..cc852c1b3 100644
      list(APPEND GGML_SOURCES_CUDA ${SRCS})
      file(GLOB   SRCS "template-instances/fattn-mma*.cu")
 diff --git a/ggml/src/ggml-cuda/ggml-cuda.cu b/ggml/src/ggml-cuda/ggml-cuda.cu
-index 2456f7dcc..b5a08f953 100644
+index 2456f7dcc..d8025811b 100644
 --- a/ggml/src/ggml-cuda/ggml-cuda.cu
 +++ b/ggml/src/ggml-cuda/ggml-cuda.cu
 @@ -4,6 +4,8 @@
@@ -53,7 +53,7 @@ index 2456f7dcc..b5a08f953 100644
  
  static bool ggml_cuda_compute_forward(ggml_backend_cuda_context & ctx, struct ggml_tensor * dst) {
 +    if (rq3_kind(dst)) {
-+        if (!rq3_supported(dst)) { return false; }
++        if (!rq3_supported(dst) && !rq3_fused_supported(dst)) { return false; }
 +        ggml_cuda_rq3(ctx, dst);
 +        return true;
 +    }
@@ -64,15 +64,591 @@ index 2456f7dcc..b5a08f953 100644
  
  // TODO: move these functions here
  static bool ggml_backend_cuda_device_supports_op(ggml_backend_dev_t dev, const ggml_tensor * op) {
-+    if (rq3_kind(op)) { return rq3_supported(op); }
++    if (rq3_kind(op)) { return rq3_supported(op) || rq3_fused_supported(op); }
      ggml_backend_cuda_device_context * dev_ctx = (ggml_backend_cuda_device_context *) dev->context;
  
      // check if all the sources are allocated on this device
+diff --git a/ggml/src/ggml-cuda/rq3-experiment.cuh b/ggml/src/ggml-cuda/rq3-experiment.cuh
+new file mode 100644
+index 000000000..0667730eb
+--- /dev/null
++++ b/ggml/src/ggml-cuda/rq3-experiment.cuh
+@@ -0,0 +1,143 @@
++// Opt-in experiment v1. Included after rq3 helpers; never changes default dispatch.
++// Operands have the SAME half-rounding boundary as kernel_rq3. GEMM changes
++// reduction order, so it belongs to the separately gated reordered lane.
++static constexpr size_t rq3_scratch_limit = 256ULL * 1024 * 1024;
++// Version-2 fields (see rq3-v2.cuh): matmul_v2 replaces the matmul kernel for
++// every token count without a v2 GEMM; gemm_v2 (1 = FP32, 2 = FP16) handles two
++// or more tokens; head_v2 and head_rotated replace the vocabulary head.
++struct rq3_experiment {
++    int id = 0, rows = 0; bool half = false, head = false;
++    bool matmul_v2 = false; int gemm_v2 = 0; bool head_v2 = false, head_rotated = false;
++};
++static rq3_experiment rq3_experiment_for(const char * name) {
++    if (!name) { return {}; }
++    if (!strcmp(name, "head-warp")) { return {1, 0, false, true}; }
++    if (!strcmp(name, "sgemm-128")) { return {2, 128, false, false}; }
++    if (!strcmp(name, "sgemm-512")) { return {3, 512, false, false}; }
++    if (!strcmp(name, "hgemm-128")) { return {4, 128, true, false}; }
++    if (!strcmp(name, "hgemm-512")) { return {5, 512, true, false}; }
++    if (!strcmp(name, "hgemm-2048")) { return {6, 2048, true, false}; }
++    if (!strcmp(name, "hgemm-512-head")) { return {7, 512, true, true}; }
++    if (!strcmp(name, "v2-matmul")) { return {8, 0, false, false, true, 0, false, false}; }
++    if (!strcmp(name, "v2-head")) { return {9, 0, false, false, false, 0, true, false}; }
++    if (!strcmp(name, "v2-sgemm")) { return {10, 0, false, false, true, 1, false, false}; }
++    if (!strcmp(name, "v2-hgemm")) { return {11, 0, false, false, true, 2, false, false}; }
++    if (!strcmp(name, "v2-head-rotated")) { return {12, 0, false, false, false, 0, false, true}; }
++    if (!strcmp(name, "v2-exact")) { return {13, 0, false, false, true, 0, true, false}; }
++    if (!strcmp(name, "v2-fast")) { return {14, 0, false, false, true, 2, false, true}; }
++    if (!strcmp(name, "v2-fast-sgemm")) { return {15, 0, false, false, true, 1, false, true}; }
++    return {};
++}
++
++// Four rows, one warp each. Four virtual lanes preserve the original 128-lane
++// FWHT and dot reduction order. No block barriers or dense head copy.
++static __global__ void kernel_rq3_head_warp(rq3_args a, const uchar * src0,
++        const uchar * src1, const uchar * src2, float * out) {
++    const int lane = threadIdx.x % 32;
++    const int64_t row = int64_t(blockIdx.x) * 4 + threadIdx.x / 32;
++    if (row >= a.outputs) { return; } // entire warp exits together
++    const rq3_view v = rq3_parse(src1);
++    const auto * input = (const float *) src0;
++    const auto * signs = (const signed char *) src2;
++    float sums[4] = {};
++    for (int64_t start = 0; start < a.inputs; start += 128) {
++        float w[4];
++        #pragma unroll
++        for (int p = 0; p < 4; ++p) { w[p] = rq3_weight(v, row, start + p * 32 + lane); }
++        #pragma unroll
++        for (int stride = 1; stride < 32; stride *= 2) {
++            #pragma unroll
++            for (int p = 0; p < 4; ++p) {
++                const float other = __shfl_xor_sync(0xffffffffu, w[p], stride);
++                w[p] = (lane & stride) ? other - w[p] : w[p] + other;
++            }
++        }
++        // Stages 32 and 64, using old values on both sides.
++        const float a0 = w[0] + w[1], a1 = w[0] - w[1];
++        const float a2 = w[2] + w[3], a3 = w[2] - w[3];
++        w[0] = a0 + a2; w[1] = a1 + a3;
++        w[2] = a0 - a2; w[3] = a1 - a3;
++        #pragma unroll
++        for (int p = 0; p < 4; ++p) {
++            const int64_t col = start + p * 32 + lane;
++            sums[p] += rq3_round(w[p] * 0.08838834764831845f * signs[col]) *
++                rq3_round(input[int64_t(blockIdx.y) * a.inputs + col]);
++        }
++    }
++    float sum = (sums[0] + sums[2]) + (sums[1] + sums[3]);
++    #pragma unroll
++    for (int stride = 16; stride > 0; stride /= 2) {
++        const float other = __shfl_down_sync(0xffffffffu, sum, stride);
++        if (lane < stride) { sum += other; }
++    }
++    if (!lane) { out[int64_t(blockIdx.y) * a.outputs + row] = rq3_round(sum); }
++}
++
++template<typename T> static __global__ void rq3_stage_input(const float * x, T * y, int64_t n) {
++    const int64_t i = int64_t(blockIdx.x) * blockDim.x + threadIdx.x;
++    if (i < n) { y[i] = T(rq3_round(x[i])); }
++}
++template<typename T> static __global__ void rq3_unpack_chunk(const uchar * packed,
++        const int * permutation, T * out, int64_t first, int64_t count, int64_t cols) {
++    const int64_t i = int64_t(blockIdx.x) * blockDim.x + threadIdx.x;
++    if (i >= count * cols) { return; }
++    const int64_t r = first + i / cols;
++    const int64_t source = permutation ? permutation[r] : r;
++    out[i] = T(rq3_round(rq3_weight(rq3_parse(packed), source, i % cols)));
++}
++static __global__ void rq3_gemm_epilogue(const float * x, float * y,
++        int64_t first, int64_t count, int64_t rows, int64_t tokens) {
++    const int64_t i = int64_t(blockIdx.x) * blockDim.x + threadIdx.x;
++    if (i < count * tokens) { y[(i / count) * rows + first + i % count] = rq3_round(x[i]); }
++}
++
++// Scratch allocations have operator lifetime; pool capacity may stay reserved.
++// Account all three requested buffers. cuBLAS/context workspace and allocator
++// rounding are EXTRA and must be reported via process VRAM, not hidden here.
++template<typename T> static size_t rq3_chunk_gemm(ggml_backend_cuda_context & ctx,
++        rq3_args a, ggml_tensor * op, int chunk) {
++    const int k = int(a.inputs), n = int(a.outputs), t = int(a.tokens);
++    GGML_ASSERT(a.inputs <= INT32_MAX && a.outputs <= INT32_MAX);
++    const size_t input_bytes = size_t(k) * t * sizeof(T);
++    const size_t per_row = size_t(k) * sizeof(T) + size_t(t) * sizeof(float);
++    // A shape outside the declared workspace contract fails, never silently
++    // falls back and gets credited as an experimental dispatch.
++    GGML_ASSERT(input_bytes + per_row <= rq3_scratch_limit);
++    chunk = int(std::min(size_t(std::min(chunk, n)), (rq3_scratch_limit - input_bytes) / per_row));
++    ggml_cuda_pool_alloc<T> input(ctx.pool(), size_t(k) * t);
++    ggml_cuda_pool_alloc<T> weights(ctx.pool(), size_t(k) * chunk);
++    ggml_cuda_pool_alloc<float> output(ctx.pool(), size_t(chunk) * t);
++    rq3_stage_input<<<(size_t(k) * t + 255) / 256, 256, 0, ctx.stream()>>>(
++        (const float *) op->src[0]->data, input.get(), int64_t(k) * t);
++    cublasHandle_t handle = ctx.cublas_handle();
++    cublasMath_t previous_math;
++    cublasPointerMode_t previous_pointer;
++    CUBLAS_CHECK(cublasGetMathMode(handle, &previous_math));
++    CUBLAS_CHECK(cublasGetPointerMode(handle, &previous_pointer));
++    // Never inherit llama.cpp's TF32 mode for the FP32 control. Disallow
++    // reduced-precision intermediate reductions for both experiment lanes.
++    CUBLAS_CHECK(cublasSetMathMode(handle, CUBLAS_MATH_DISALLOW_REDUCED_PRECISION_REDUCTION));
++    CUBLAS_CHECK(cublasSetPointerMode(handle, CUBLAS_POINTER_MODE_HOST));
++    const float alpha = 1, beta = 0;
++    for (int first = 0; first < n; first += chunk) {
++        const int count = std::min(chunk, n - first);
++        rq3_unpack_chunk<<<(size_t(count) * k + 255) / 256, 256, 0, ctx.stream()>>>(
++            (const uchar *) op->src[1]->data,
++            a.permutation ? (const int *) op->src[2]->data : nullptr,
++            weights.get(), first, count, k);
++        if constexpr (std::is_same<T, float>::value) {
++            CUBLAS_CHECK(cublasSgemm(handle, CUBLAS_OP_T, CUBLAS_OP_N, count, t, k,
++                &alpha, weights.get(), k, input.get(), k, &beta, output.get(), count));
++        } else {
++            CUBLAS_CHECK(cublasGemmEx(handle, CUBLAS_OP_T, CUBLAS_OP_N, count, t, k,
++                &alpha, weights.get(), CUDA_R_16F, k, input.get(), CUDA_R_16F, k,
++                &beta, output.get(), CUDA_R_32F, count, CUBLAS_COMPUTE_32F,
++                CUBLAS_GEMM_DEFAULT));
++        }
++        rq3_gemm_epilogue<<<(size_t(count) * t + 255) / 256, 256, 0, ctx.stream()>>>(
++            output.get(), (float *) op->data, first, count, n, t);
++    }
++    CUBLAS_CHECK(cublasSetPointerMode(handle, previous_pointer));
++    CUBLAS_CHECK(cublasSetMathMode(handle, previous_math));
++    return input_bytes + size_t(chunk) * per_row;
++}
+diff --git a/ggml/src/ggml-cuda/rq3-v2.cuh b/ggml/src/ggml-cuda/rq3-v2.cuh
+new file mode 100644
+index 000000000..8fa4f4826
+--- /dev/null
++++ b/ggml/src/ggml-cuda/rq3-v2.cuh
+@@ -0,0 +1,420 @@
++// RotQuant native-v3 CUDA kernels, version 2. Opt-in through
++// ROTQUANT_RQ3_KERNEL; the default dispatch is unchanged. Included after the
++// rq3.cu helpers and rq3-experiment.cuh.
++//
++// Exactness contract, per lane of the experiment registry:
++//   exact     kernel_rq3_matmul_v2 and kernel_rq3_head_v2 use the operands,
++//             FP16 boundaries and products of kernel_rq3, and reduce every
++//             output in its order: each of 128 virtual lanes accumulates its
++//             column over the 128-column chunks in order, then the 64/32/16/
++//             8/4/2/1 tree. Outputs are bitwise equal to kernel_rq3.
++//   reordered rq3_v2_gemm decodes the same FP16-exact weights once and calls
++//             cuBLAS. FP16 x FP16 products are exact in FP32, so only the
++//             summation order differs (and, for the FP16 tensor-core lane,
++//             the accumulator's internal alignment).
++//   rounding  rq3_v2_head_rotated applies the head's FWHT to the activation
++//             instead of to every vocabulary row. In exact arithmetic this is
++//             the same linear map; with FP16 operands the rounding happens on
++//             the other side of the transform, so it is a different FP16
++//             model and is gated against an unrounded reference.
++//
++// Codes of one 128-column chunk occupy exactly 4 * bits 32-bit words and start
++// on a word boundary whenever the column count is a multiple of 128 and the
++// matrix blob is 4-byte aligned; the host checks both before dispatch.
++
++#define RQ3_V2_WARPS 8
++#define RQ3_V2_THREADS (RQ3_V2_WARPS * 32)
++static constexpr uint rq3_v2_mask = 0xffffffffu;
++
++struct rq3_v2_meta {
++    rq3_view v;
++    uint block_shift;   // log2(scale-metadata block), or 64 if not a power of two
++};
++
++__device__ __forceinline__ rq3_v2_meta rq3_v2_parse(const uchar * p) {
++    rq3_v2_meta m;
++    m.v = rq3_parse(p);
++    const uint block = m.v.block;
++    m.block_shift = (m.v.sbits == 8 && block != 0 && (block & (block - 1)) == 0) ? uint(__ffs(int(block)) - 1) : 64u;
++    return m;
++}
++
++// The same scale arithmetic as rq3_weight: separate FP32 multiply and add.
++__device__ __forceinline__ float rq3_v2_scale(const rq3_v2_meta & m, rq3_ulong index) {
++    const rq3_view & v = m.v;
++    if (v.sbits == 8) {
++        const rq3_ulong meta = m.block_shift < 64 ? index >> m.block_shift : index / v.block;
++        const float product = float(v.scales[index]) * rq3_half(v.steps + meta * 2);
++        return rq3_half(v.offsets + meta * 2) + product;
++    }
++    return rq3_half(v.scales + index * 2);
++}
++
++// Lane w < 4 * bits holds code word w of the current chunk. Column c of the
++// chunk starts at bit c * bits; a code never spans more than two words.
++__device__ __forceinline__ uint rq3_v2_code(uint mine, uint bits, uint c) {
++    const uint bit = c * bits, word = bit >> 5, shift = bit & 31;
++    const uint lo = __shfl_sync(rq3_v2_mask, mine, int(word));
++    const uint hi = __shfl_sync(rq3_v2_mask, mine, int((word + 1) & 31));
++    return __funnelshift_r(lo, hi, shift) & ((1u << bits) - 1);
++}
++
++__device__ __forceinline__ void rq3_v2_load_book(const rq3_view & v, float * book) {
++    for (uint i = threadIdx.x; i < (1u << v.bits); i += blockDim.x) {
++        book[i] = __uint_as_float(rq3_u32(v.book + 4 * i));
++    }
++}
++
++// Per-chunk inputs for one warp: the code word this lane holds and the scale of
++// the scale group this lane stands for (128 / group of them per chunk).
++struct rq3_v2_chunk { uint word; float scale; };
++
++__device__ __forceinline__ rq3_v2_chunk rq3_v2_fetch(const rq3_v2_meta & m, const uint * codes,
++        rq3_ulong row, rq3_ulong chunk, rq3_ulong chunks, uint lane) {
++    const rq3_view & v = m.v;
++    const uint words = 4 * v.bits, sub_shift = 7 - v.group_shift;
++    rq3_v2_chunk out = {0u, 0.0f};
++    if (chunk < chunks) {
++        if (lane < words) { out.word = __ldg(codes + (row * chunks + chunk) * words + lane); }
++        if (lane < (1u << sub_shift)) { out.scale = rq3_v2_scale(m, row * v.groups + (chunk << sub_shift) + lane); }
++    }
++    return out;
++}
++
++// One warp's dot products of packed row `row` with T input rows. Lane l
++// carries the reference's virtual lanes l, l + 32, l + 64 and l + 96. Loads
++// run two chunks ahead of use to keep enough bytes in flight at batch 1.
++template <int T>
++__device__ __forceinline__ void rq3_v2_row(const rq3_v2_meta & m, const float * book, rq3_ulong row,
++        const float * input, rq3_ulong first, rq3_ulong tokens, uint lane, float (&sums)[T][4]) {
++    const rq3_view & v = m.v;
++    const rq3_ulong chunks = v.cols >> 7;
++    const auto * codes = (const uint *) v.codes;
++    rq3_v2_chunk now = rq3_v2_fetch(m, codes, row, 0, chunks, lane);
++    rq3_v2_chunk next = rq3_v2_fetch(m, codes, row, 1, chunks, lane);
++    for (rq3_ulong chunk = 0; chunk < chunks; ++chunk) {
++        const rq3_v2_chunk later = rq3_v2_fetch(m, codes, row, chunk + 2, chunks, lane);
++        #pragma unroll
++        for (uint part = 0; part < 4; ++part) {
++            const uint c = lane + part * 32;
++            const uint code = rq3_v2_code(now.word, v.bits, c);
++            const float scale = __shfl_sync(rq3_v2_mask, now.scale, int(c >> v.group_shift));
++            const float w = rq3_round(book[code] * scale);
++            const rq3_ulong col = (chunk << 7) + c;
++            #pragma unroll
++            for (int t = 0; t < T; ++t) {
++                if (first + t < tokens) {
++                    sums[t][part] += w * rq3_round(input[(first + t) * v.cols + col]);
++                }
++            }
++        }
++        now = next;
++        next = later;
++    }
++}
++
++// Reference tree: stride 64 pairs l with l + 64, stride 32 pairs l with
++// l + 32, then the warp tree. Returns the FP32 sum in lane 0.
++__device__ __forceinline__ float rq3_v2_reduce(const float (&parts)[4], uint lane) {
++    float sum = (parts[0] + parts[2]) + (parts[1] + parts[3]);
++    #pragma unroll
++    for (uint stride = 16; stride > 0; stride /= 2) {
++        const float other = __shfl_down_sync(rq3_v2_mask, sum, stride);
++        if (lane < stride) { sum += other; }
++    }
++    return sum;
++}
++
++// Backbone matmul for T tokens per block row. One warp owns one output row.
++template <int T>
++static __global__ void __launch_bounds__(RQ3_V2_THREADS) kernel_rq3_matmul_v2(rq3_args a,
++        const uchar * src0, const uchar * src1, const uchar * src2, float * out) {
++    const uint lane = threadIdx.x & 31, warp = threadIdx.x >> 5;
++    const rq3_v2_meta m = rq3_v2_parse(src1);
++    const rq3_view & v = m.v;
++    __shared__ float book[256];
++    rq3_v2_load_book(v, book);
++    __syncthreads();
++    const rq3_ulong target = rq3_ulong(blockIdx.x) * RQ3_V2_WARPS + warp;
++    if (target >= v.rows) { return; }  // warp-uniform, after the only barrier
++    const rq3_ulong row = a.permutation ? rq3_ulong(((const int *) src2)[target]) : target;
++    const rq3_ulong first = rq3_ulong(blockIdx.y) * T;
++    float sums[T][4] = {};
++    rq3_v2_row<T>(m, book, row, (const float *) src0, first, rq3_ulong(a.tokens), lane, sums);
++    #pragma unroll
++    for (int t = 0; t < T; ++t) {
++        const float sum = rq3_v2_reduce(sums[t], lane);
++        if (lane == 0 && first + t < rq3_ulong(a.tokens)) {
++            out[(first + t) * v.rows + target] = rq3_round(sum);
++        }
++    }
++}
++
++// The 128-point FWHT of rq3_fwht on four registers per lane: stages 1-16 by
++// shuffle, 32 and 64 within the lane. Same operands, same order.
++__device__ __forceinline__ void rq3_v2_fwht(float (&w)[4], uint lane) {
++    #pragma unroll
++    for (int stride = 1; stride < 32; stride *= 2) {
++        #pragma unroll
++        for (int part = 0; part < 4; ++part) {
++            const float other = __shfl_xor_sync(rq3_v2_mask, w[part], stride);
++            w[part] = (lane & stride) ? other - w[part] : w[part] + other;
++        }
++    }
++    const float a0 = w[0] + w[1], a1 = w[0] - w[1];
++    const float a2 = w[2] + w[3], a3 = w[2] - w[3];
++    w[0] = a0 + a2; w[1] = a1 + a3;
++    w[2] = a0 - a2; w[3] = a1 - a3;
++}
++
++// Rotation fused into the single-token matmul. Every block rotates the whole
++// input row into shared memory, exactly as the RQ3_ROTATE op would write it,
++// then runs the matmul_v2 row loop on it. Removes one launch and the rotated
++// activation's round trip through global memory per projection.
++static constexpr int64_t rq3_v2_fused_max_inputs = (48 * 1024 - 256 * 4) / 4;
++
++static __global__ void __launch_bounds__(RQ3_V2_THREADS) kernel_rq3_fused_v2(rq3_args a,
++        const float * input, const uchar * weights, const signed char * signs,
++        const int * columns, const int * rows, float * out) {
++    extern __shared__ float rq3_v2_shared[];
++    float * book = rq3_v2_shared;
++    float * rotated = rq3_v2_shared + 256;
++    const uint lane = threadIdx.x & 31, warp = threadIdx.x >> 5;
++    const rq3_v2_meta m = rq3_v2_parse(weights);
++    rq3_v2_load_book(m.v, book);
++    for (rq3_ulong tile = warp; tile < rq3_ulong(a.inputs) / 128; tile += RQ3_V2_WARPS) {
++        float w[4];
++        #pragma unroll
++        for (uint part = 0; part < 4; ++part) {
++            const rq3_ulong col = tile * 128 + lane + part * 32;
++            const rq3_ulong source = columns ? rq3_ulong(columns[col]) : col;
++            w[part] = rq3_round(input[source]) * float(signs[col]);
++        }
++        rq3_v2_fwht(w, lane);
++        #pragma unroll
++        for (uint part = 0; part < 4; ++part) {
++            rotated[tile * 128 + lane + part * 32] = rq3_round(w[part] * 0.08838834764831845f);
++        }
++    }
++    __syncthreads();
++    const rq3_ulong target = rq3_ulong(blockIdx.x) * RQ3_V2_WARPS + warp;
++    if (target >= m.v.rows) { return; }
++    const rq3_ulong row = rows ? rq3_ulong(rows[target]) : target;
++    float sums[1][4] = {};
++    rq3_v2_row<1>(m, book, row, rotated, 0, 1, lane, sums);
++    const float sum = rq3_v2_reduce(sums[0], lane);
++    if (lane == 0) { out[target] = rq3_round(sum); }
++}
++
++// Vocabulary head in the reference's dense-equivalent contract: decode a chunk,
++// inverse-rotate it with the warp FWHT (the order of rq3_fwht, see
++// kernel_rq3_head_warp), apply the scale and signs, round, then dot.
++template <int T>
++static __global__ void __launch_bounds__(RQ3_V2_THREADS) kernel_rq3_head_v2(rq3_args a,
++        const uchar * src0, const uchar * src1, const uchar * src2, float * out) {
++    const uint lane = threadIdx.x & 31, warp = threadIdx.x >> 5;
++    const rq3_v2_meta m = rq3_v2_parse(src1);
++    const rq3_view & v = m.v;
++    __shared__ float book[256];
++    rq3_v2_load_book(v, book);
++    __syncthreads();
++    const rq3_ulong row = rq3_ulong(blockIdx.x) * RQ3_V2_WARPS + warp;
++    if (row >= v.rows) { return; }
++    const rq3_ulong first = rq3_ulong(blockIdx.y) * T;
++    const rq3_ulong chunks = v.cols >> 7;
++    const auto * codes = (const uint *) v.codes;
++    const auto * input = (const float *) src0;
++    const auto * signs = (const signed char *) src2;
++    float sums[T][4] = {};
++    rq3_v2_chunk now = rq3_v2_fetch(m, codes, row, 0, chunks, lane);
++    rq3_v2_chunk next = rq3_v2_fetch(m, codes, row, 1, chunks, lane);
++    for (rq3_ulong chunk = 0; chunk < chunks; ++chunk) {
++        const rq3_v2_chunk later = rq3_v2_fetch(m, codes, row, chunk + 2, chunks, lane);
++        float w[4];
++        #pragma unroll
++        for (uint part = 0; part < 4; ++part) {
++            const uint c = lane + part * 32;
++            const float scale = __shfl_sync(rq3_v2_mask, now.scale, int(c >> v.group_shift));
++            w[part] = book[rq3_v2_code(now.word, v.bits, c)] * scale;
++        }
++        rq3_v2_fwht(w, lane);
++        #pragma unroll
++        for (uint part = 0; part < 4; ++part) {
++            const rq3_ulong col = (chunk << 7) + lane + part * 32;
++            const float r = rq3_round(w[part] * 0.08838834764831845f * float(signs[col]));
++            #pragma unroll
++            for (int t = 0; t < T; ++t) {
++                if (first + t < rq3_ulong(a.tokens)) {
++                    sums[t][part] += r * rq3_round(input[(first + t) * v.cols + col]);
++                }
++            }
++        }
++        now = next;
++        next = later;
++    }
++    #pragma unroll
++    for (int t = 0; t < T; ++t) {
++        const float sum = rq3_v2_reduce(sums[t], lane);
++        if (lane == 0 && first + t < rq3_ulong(a.tokens)) {
++            out[(first + t) * v.rows + row] = rq3_round(sum);
++        }
++    }
++}
++
++// One warp per (row, 128-column chunk). Writes round16(book[code] * scale),
++// exactly the value rq3_unpack_chunk writes, with no per-element header parse
++// or 64-bit division.
++template <typename D>
++static __global__ void __launch_bounds__(RQ3_V2_THREADS) rq3_v2_unpack(const uchar * packed,
++        const int * permutation, D * out, int64_t first, int64_t count) {
++    const uint lane = threadIdx.x & 31, warp = threadIdx.x >> 5;
++    const rq3_v2_meta m = rq3_v2_parse(packed);
++    const rq3_view & v = m.v;
++    __shared__ float book[256];
++    rq3_v2_load_book(v, book);
++    __syncthreads();
++    const rq3_ulong chunks = v.cols >> 7;
++    const rq3_ulong item = rq3_ulong(blockIdx.x) * RQ3_V2_WARPS + warp;
++    if (item >= rq3_ulong(count) * chunks) { return; }
++    const rq3_ulong local = item / chunks, chunk = item - local * chunks;
++    const rq3_ulong target = rq3_ulong(first) + local;
++    const rq3_ulong source = permutation ? rq3_ulong(permutation[target]) : target;
++    const rq3_v2_chunk now = rq3_v2_fetch(m, (const uint *) v.codes, source, chunk, chunks, lane);
++    D * dst = out + local * v.cols + (chunk << 7);
++    #pragma unroll
++    for (uint part = 0; part < 4; ++part) {
++        const uint c = lane + part * 32;
++        const float scale = __shfl_sync(rq3_v2_mask, now.scale, int(c >> v.group_shift));
++        dst[c] = D(rq3_round(book[rq3_v2_code(now.word, v.bits, c)] * scale));
++    }
++}
++
++static __global__ void rq3_v2_round_inplace(float * y, int64_t n) {
++    const int64_t i = int64_t(blockIdx.x) * blockDim.x + threadIdx.x;
++    if (i < n) { y[i] = rq3_round(y[i]); }
++}
++
++// Decode the matrix once (whole, when it fits the scratch contract) and run one
++// GEMM. With the whole matrix cuBLAS writes the operator's output layout
++// directly and only an in-place FP16 rounding pass follows.
++template <typename D> static size_t rq3_v2_gemm(ggml_backend_cuda_context & ctx, rq3_args a, ggml_tensor * op) {
++    const int64_t k = a.inputs, n = a.outputs, t = a.tokens;
++    GGML_ASSERT(k <= INT32_MAX && n <= INT32_MAX && t <= INT32_MAX && k % 128 == 0);
++    const size_t input_bytes = size_t(k) * size_t(t) * sizeof(D);
++    const size_t weight_row = size_t(k) * sizeof(D);
++    GGML_ASSERT(input_bytes + weight_row + size_t(t) * sizeof(float) <= rq3_scratch_limit);
++    const size_t whole_bytes = input_bytes + size_t(n) * weight_row;
++    const bool direct = whole_bytes <= rq3_scratch_limit;
++    const int64_t chunk = direct ? n : int64_t((rq3_scratch_limit - input_bytes) / (weight_row + size_t(t) * sizeof(float)));
++    ggml_cuda_pool_alloc<D> input(ctx.pool(), size_t(k) * size_t(t));
++    ggml_cuda_pool_alloc<D> weights(ctx.pool(), size_t(k) * size_t(chunk));
++    ggml_cuda_pool_alloc<float> staged(ctx.pool(), direct ? 1 : size_t(chunk) * size_t(t));
++    rq3_stage_input<<<(size_t(k) * t + 255) / 256, 256, 0, ctx.stream()>>>(
++        (const float *) op->src[0]->data, input.get(), k * t);
++    cublasHandle_t handle = ctx.cublas_handle();
++    cublasMath_t previous_math;
++    cublasPointerMode_t previous_pointer;
++    CUBLAS_CHECK(cublasGetMathMode(handle, &previous_math));
++    CUBLAS_CHECK(cublasGetPointerMode(handle, &previous_pointer));
++    CUBLAS_CHECK(cublasSetMathMode(handle, CUBLAS_MATH_DISALLOW_REDUCED_PRECISION_REDUCTION));
++    CUBLAS_CHECK(cublasSetPointerMode(handle, CUBLAS_POINTER_MODE_HOST));
++    const float alpha = 1, beta = 0;
++    const int64_t chunks = k / 128;
++    for (int64_t first = 0; first < n; first += chunk) {
++        const int64_t count = std::min(chunk, n - first);
++        const int64_t blocks = (count * chunks + RQ3_V2_WARPS - 1) / RQ3_V2_WARPS;
++        GGML_ASSERT(blocks <= INT32_MAX);
++        rq3_v2_unpack<D><<<unsigned(blocks), RQ3_V2_THREADS, 0, ctx.stream()>>>(
++            (const uchar *) op->src[1]->data, a.permutation ? (const int *) op->src[2]->data : nullptr,
++            weights.get(), first, count);
++        float * result = direct ? (float *) op->data : staged.get();
++        if constexpr (std::is_same<D, float>::value) {
++            CUBLAS_CHECK(cublasSgemm(handle, CUBLAS_OP_T, CUBLAS_OP_N, int(count), int(t), int(k),
++                &alpha, weights.get(), int(k), input.get(), int(k), &beta, result, int(count)));
++        } else {
++            CUBLAS_CHECK(cublasGemmEx(handle, CUBLAS_OP_T, CUBLAS_OP_N, int(count), int(t), int(k),
++                &alpha, weights.get(), CUDA_R_16F, int(k), input.get(), CUDA_R_16F, int(k),
++                &beta, result, CUDA_R_32F, int(count), CUBLAS_COMPUTE_32F, CUBLAS_GEMM_DEFAULT));
++        }
++        if (!direct) {
++            rq3_gemm_epilogue<<<(size_t(count) * t + 255) / 256, 256, 0, ctx.stream()>>>(
++                staged.get(), (float *) op->data, first, count, n, t);
++        }
++    }
++    if (direct) {
++        rq3_v2_round_inplace<<<(size_t(n) * t + 255) / 256, 256, 0, ctx.stream()>>>((float *) op->data, n * t);
++    }
++    CUBLAS_CHECK(cublasSetPointerMode(handle, previous_pointer));
++    CUBLAS_CHECK(cublasSetMathMode(handle, previous_math));
++    return input_bytes + size_t(chunk) * weight_row + (direct ? 0 : size_t(chunk) * size_t(t) * sizeof(float));
++}
++
++// Rotated-basis head: x' = round16(FWHT(round16(x) * signs) / sqrt(128)) once
++// per token with the reference rotation kernel, then a plain packed matmul.
++static size_t rq3_v2_head_rotated(ggml_backend_cuda_context & ctx, rq3_args a, ggml_tensor * op) {
++    const int64_t k = a.inputs, n = a.outputs, t = a.tokens;
++    GGML_ASSERT(k % 128 == 0 && k / 128 <= INT32_MAX);
++    ggml_cuda_pool_alloc<float> rotated(ctx.pool(), size_t(k) * size_t(t));
++    const auto * signs = (const uchar *) op->src[2]->data;
++    const rq3_args rotate = {k, k, t, 0, int64_t(RQ3_ROTATE)};
++    kernel_rq3<<<dim3(unsigned(k / 128), unsigned(t)), 128, 0, ctx.stream()>>>(rotate,
++        (const uchar *) op->src[0]->data, signs, signs, rotated.get());
++    const rq3_args matmul = {k, n, t, 0, int64_t(RQ3_MATMUL)};
++    const unsigned rows = unsigned((n + RQ3_V2_WARPS - 1) / RQ3_V2_WARPS);
++    if (t == 1) {
++        kernel_rq3_matmul_v2<1><<<dim3(rows, 1), RQ3_V2_THREADS, 0, ctx.stream()>>>(matmul,
++            (const uchar *) rotated.get(), (const uchar *) op->src[1]->data, signs, (float *) op->data);
++    } else {
++        kernel_rq3_matmul_v2<4><<<dim3(rows, unsigned((t + 3) / 4)), RQ3_V2_THREADS, 0, ctx.stream()>>>(matmul,
++            (const uchar *) rotated.get(), (const uchar *) op->src[1]->data, signs, (float *) op->data);
++    }
++    return size_t(k) * size_t(t) * sizeof(float);
++}
++
++static void rq3_v2_matmul(ggml_backend_cuda_context & ctx, rq3_args a, ggml_tensor * op) {
++    const unsigned rows = unsigned((a.outputs + RQ3_V2_WARPS - 1) / RQ3_V2_WARPS);
++    const auto * x = (const uchar *) op->src[0]->data;
++    const auto * w = (const uchar *) op->src[1]->data;
++    const auto * p = (const uchar *) op->src[2]->data;
++    if (a.tokens == 1) {
++        kernel_rq3_matmul_v2<1><<<dim3(rows, 1), RQ3_V2_THREADS, 0, ctx.stream()>>>(a, x, w, p, (float *) op->data);
++    } else {
++        kernel_rq3_matmul_v2<8><<<dim3(rows, unsigned((a.tokens + 7) / 8)), RQ3_V2_THREADS, 0, ctx.stream()>>>(
++            a, x, w, p, (float *) op->data);
++    }
++}
++
++static void rq3_v2_head(ggml_backend_cuda_context & ctx, rq3_args a, ggml_tensor * op) {
++    const unsigned rows = unsigned((a.outputs + RQ3_V2_WARPS - 1) / RQ3_V2_WARPS);
++    const auto * x = (const uchar *) op->src[0]->data;
++    const auto * w = (const uchar *) op->src[1]->data;
++    const auto * s = (const uchar *) op->src[2]->data;
++    if (a.tokens == 1) {
++        kernel_rq3_head_v2<1><<<dim3(rows, 1), RQ3_V2_THREADS, 0, ctx.stream()>>>(a, x, w, s, (float *) op->data);
++    } else {
++        kernel_rq3_head_v2<4><<<dim3(rows, unsigned((a.tokens + 3) / 4)), RQ3_V2_THREADS, 0, ctx.stream()>>>(
++            a, x, w, s, (float *) op->data);
++    }
++}
++
++// Single-token fused path; anything else runs the two component ops.
++static bool rq3_v2_fused_single(ggml_backend_cuda_context & ctx, ggml_tensor * op) {
++    const ggml_tensor * x = op->src[0];
++    if (ggml_nrows(x) != 1 || x->ne[0] > rq3_v2_fused_max_inputs || (uintptr_t(op->src[1]->data) & 3) != 0) {
++        return false;
++    }
++    const rq3_args a = {x->ne[0], op->ne[0], 1, op->src[4]->type == GGML_TYPE_I32, int64_t(RQ3_MATMUL)};
++    const unsigned blocks = unsigned((op->ne[0] + RQ3_V2_WARPS - 1) / RQ3_V2_WARPS);
++    const size_t shared = size_t(256 + x->ne[0]) * sizeof(float);
++    kernel_rq3_fused_v2<<<blocks, RQ3_V2_THREADS, shared, ctx.stream()>>>(a, (const float *) x->data,
++        (const uchar *) op->src[1]->data, (const signed char *) op->src[2]->data,
++        op->src[3]->type == GGML_TYPE_I32 ? (const int *) op->src[3]->data : nullptr,
++        op->src[4]->type == GGML_TYPE_I32 ? (const int *) op->src[4]->data : nullptr, (float *) op->data);
++    return true;
++}
++
++// The word-aligned code layout every v2 kernel relies on. Anything else keeps
++// the control dispatch rather than reading misaligned words.
++static bool rq3_v2_layout_ok(const ggml_tensor * op) {
++    return (uintptr_t(op->src[1]->data) & 3) == 0 && op->src[0]->ne[0] % 128 == 0;
++}
 diff --git a/ggml/src/ggml-cuda/rq3.cu b/ggml/src/ggml-cuda/rq3.cu
 new file mode 100644
+index 000000000..4c94e81d6
 --- /dev/null
 +++ b/ggml/src/ggml-cuda/rq3.cu
-@@ -0,0 +1,393 @@
+@@ -0,0 +1,445 @@
 +#include "common.cuh"
 +#include "rotquant-v3.h"
 +#include "ggml-cuda.h"
@@ -143,13 +719,13 @@ new file mode 100644
 +    if (a.tag == 0x52513301) {
 +        const rq3_ulong col = rq3_ulong(grid.x) * 128 + lane;
 +        const rq3_ulong source = a.permutation ? ((const int *) src2)[col] : col;
-+        tile[lane] = rq3_round(input[token * a.inputs + source]) * ((const char *) src1)[col];
++        tile[lane] = rq3_round(input[token * a.inputs + source]) * ((const signed char *) src1)[col];
 +        rq3_fwht(tile, next, lane);
 +        out[token * a.inputs + col] = rq3_round(tile[lane] * 0.08838834764831845f);
 +        return;
 +    }
 +    const rq3_view v = rq3_parse(src1);
-+    const auto * signs = (const char *) src2;
++    const auto * signs = (const signed char *) src2;
 +    if (a.tag == 0x52513304) {
 +        const int id = ((const int *) src0)[token];
 +        const rq3_ulong col = rq3_ulong(grid.x) * 128 + lane;
@@ -352,6 +928,7 @@ new file mode 100644
 +}
 +
 +#include "rq3-experiment.cuh"
++#include "rq3-v2.cuh"
 +
 +// Process-local diagnostics. Counts describe host dispatches, not CUDA graph
 +// replays. Timings require graphs disabled and intentionally synchronize each
@@ -362,10 +939,10 @@ new file mode 100644
 +static uint64_t rq3_tiled_dispatches = 0;
 +static uint64_t rq3_decode_dispatches = 0;
 +static uint64_t rq3_w5_dispatches[3] = {};
-+static uint64_t rq3_experiment_dispatches[8] = {}, rq3_scratch_peak = 0;
++static uint64_t rq3_experiment_dispatches[16] = {}, rq3_scratch_peak = 0;
 +extern "C" GGML_BACKEND_API uint64_t ggml_cuda_rq3_experiment_stat(int id) {
 +    std::lock_guard<std::mutex> guard(rq3_profile_mutex);
-+    return id == 0 ? rq3_scratch_peak : id > 0 && id < 8 ? rq3_experiment_dispatches[id] : 0;
++    return id == 0 ? rq3_scratch_peak : id > 0 && id < 16 ? rq3_experiment_dispatches[id] : 0;
 +}
 +extern "C" GGML_BACKEND_API uint64_t ggml_cuda_rq3_w5_dispatches(int tile) {
 +    std::lock_guard<std::mutex> guard(rq3_profile_mutex);
@@ -384,7 +961,10 @@ new file mode 100644
 +    return 1;
 +}
 +
++static void rq3_fused(ggml_backend_cuda_context & ctx, ggml_tensor * op);
++
 +void ggml_cuda_rq3(ggml_backend_cuda_context & ctx, ggml_tensor * op) {
++    if (rq3_kind(op) == RQ3_FUSED) { rq3_fused(ctx, op); return; }
 +    GGML_ASSERT(rq3_supported(op));
 +    const auto tag = rq3_kind(op);
 +    const int64_t inputs = tag == RQ3_ROWS ? op->ne[0] : op->src[0]->ne[0];
@@ -401,6 +981,12 @@ new file mode 100644
 +    const bool tiled = variant && (w5_tile || strcmp(variant, "tiled4") == 0 || strcmp(variant, "decode4") == 0) && tag == RQ3_MATMUL && tokens >= 4;
 +    const bool gemm = experiment.rows && tag == RQ3_MATMUL && tokens >= 4;
 +    const bool head = experiment.head && tag == RQ3_HEAD;
++    const bool v2_layout = (tag == RQ3_MATMUL || tag == RQ3_HEAD) && rq3_v2_layout_ok(op);
++    const bool v2_gemm = v2_layout && experiment.gemm_v2 && tag == RQ3_MATMUL && tokens >= 2;
++    const bool v2_matmul = v2_layout && experiment.matmul_v2 && tag == RQ3_MATMUL && !v2_gemm;
++    const bool v2_head = v2_layout && experiment.head_v2 && tag == RQ3_HEAD;
++    const bool v2_rotated = v2_layout && experiment.head_rotated && tag == RQ3_HEAD;
++    const bool v2 = v2_gemm || v2_matmul || v2_head || v2_rotated;
 +    size_t scratch = 0;
 +    const char * enabled = getenv("ROTQUANT_RQ3_PROFILE");
 +    const bool profile = enabled && strcmp(enabled, "1") == 0;
@@ -414,7 +1000,15 @@ new file mode 100644
 +        CUDA_CHECK(cudaEventCreate(&end));
 +        CUDA_CHECK(cudaEventRecord(begin, ctx.stream()));
 +    }
-+    if (gemm) {
++    if (v2_gemm) {
++        scratch = experiment.gemm_v2 == 2 ? rq3_v2_gemm<half>(ctx, a, op) : rq3_v2_gemm<float>(ctx, a, op);
++    } else if (v2_matmul) {
++        rq3_v2_matmul(ctx, a, op);
++    } else if (v2_head) {
++        rq3_v2_head(ctx, a, op);
++    } else if (v2_rotated) {
++        scratch = rq3_v2_head_rotated(ctx, a, op);
++    } else if (gemm) {
 +        scratch = experiment.half ? rq3_chunk_gemm<half>(ctx, a, op, experiment.rows) :
 +            rq3_chunk_gemm<float>(ctx, a, op, experiment.rows);
 +    } else if (head) {
@@ -460,11 +1054,45 @@ new file mode 100644
 +    GGML_ASSERT(index >= 0 && index < 4);
 +    rq3_profile_ms[index] += elapsed;
 +    rq3_profile_calls[index]++;
-+    if (gemm || head) { rq3_experiment_dispatches[experiment.id]++; }
++    if (gemm || head || v2) { rq3_experiment_dispatches[experiment.id]++; }
 +    rq3_scratch_peak = std::max(rq3_scratch_peak, uint64_t(scratch));
++    if (v2) { return; }
 +    if (tiled && !gemm) { rq3_tiled_dispatches++; }
 +    if (decode) { rq3_decode_dispatches++; }
 +    if (w5_tile && (decode || (tiled && !gemm))) { rq3_w5_dispatches[w5_tile == 4 ? 0 : w5_tile == 8 ? 1 : 2]++; }
++}
++
++// A stand-in for one component of a fused op, so the component runs through
++// the ordinary dispatch (same kernels, counters and profiling).
++static ggml_tensor rq3_component(const ggml_tensor & shape, void * data, uintptr_t tag,
++        ggml_tensor * a, ggml_tensor * b, ggml_tensor * c) {
++    ggml_tensor t = shape;
++    t.op = GGML_OP_CUSTOM;
++    t.data = data;
++    t.view_src = nullptr;
++    const ggml_custom_op_params params = {nullptr, 1, (void *) tag};
++    memcpy(t.op_params, &params, sizeof(params));
++    for (auto & source : t.src) { source = nullptr; }
++    t.src[0] = a; t.src[1] = b; t.src[2] = c;
++    return t;
++}
++
++static void rq3_fused(ggml_backend_cuda_context & ctx, ggml_tensor * op) {
++    GGML_ASSERT(rq3_fused_supported(op));
++    const auto experiment = rq3_experiment_for(getenv("ROTQUANT_RQ3_KERNEL"));
++    if (experiment.matmul_v2 && rq3_v2_fused_single(ctx, op)) {
++        CUDA_CHECK(cudaGetLastError());
++        std::lock_guard<std::mutex> guard(rq3_profile_mutex);
++        rq3_profile_calls[int(RQ3_MATMUL) - int(RQ3_ROTATE)]++;
++        rq3_experiment_dispatches[experiment.id]++;
++        return;
++    }
++    ggml_tensor * x = op->src[0];
++    ggml_cuda_pool_alloc<float> rotated(ctx.pool(), size_t(ggml_nelements(x)));
++    ggml_tensor rotate = rq3_component(*x, rotated.get(), RQ3_ROTATE, x, op->src[2], op->src[3]);
++    ggml_cuda_rq3(ctx, &rotate);
++    ggml_tensor matmul = rq3_component(*op, op->data, RQ3_MATMUL, &rotate, op->src[1], op->src[4]);
++    ggml_cuda_rq3(ctx, &matmul);
 +}
 diff --git a/ggml/src/ggml-metal/CMakeLists.txt b/ggml/src/ggml-metal/CMakeLists.txt
 index 140c5d809..a17adbe6a 100644
@@ -1404,6 +2032,7 @@ index 000000000..cb89d0b90
 +#endif
 diff --git a/ggml/src/ggml-metal/kernels/rq3.metal b/ggml/src/ggml-metal/kernels/rq3.metal
 new file mode 100644
+index 000000000..2b4d0c37f
 --- /dev/null
 +++ b/ggml/src/ggml-metal/kernels/rq3.metal
 @@ -0,0 +1,101 @@
@@ -1510,10 +2139,10 @@ new file mode 100644
 +}
 diff --git a/ggml/src/rotquant-v3.h b/ggml/src/rotquant-v3.h
 new file mode 100644
-index 000000000..9bb5f2abb
+index 000000000..1e7dd4b8b
 --- /dev/null
 +++ b/ggml/src/rotquant-v3.h
-@@ -0,0 +1,33 @@
+@@ -0,0 +1,55 @@
 +#pragma once
 +#include "ggml.h"
 +#include "ggml-impl.h"
@@ -1522,17 +2151,22 @@ index 000000000..9bb5f2abb
 +#define RQ3_MATMUL 0x52513302u
 +#define RQ3_HEAD   0x52513303u
 +#define RQ3_ROWS   0x52513304u
++// Opt-in (ROTQUANT_RQ3_FUSE=1 at graph build): RQ3_ROTATE followed by
++// RQ3_MATMUL as one op. Bitwise equal to the two ops. Only CUDA and the CPU
++// reference implement it; rq3_supported() deliberately rejects it so other
++// backends never receive a tag they cannot execute.
++#define RQ3_FUSED  0x52513305u
 +
 +static inline uintptr_t rq3_kind(const struct ggml_tensor * op) {
 +    if (op->op != GGML_OP_CUSTOM) { return 0; }
 +    const struct ggml_custom_op_params * p = (const struct ggml_custom_op_params *) op->op_params;
 +    const uintptr_t tag = (uintptr_t) p->userdata;
-+    return tag >= RQ3_ROTATE && tag <= RQ3_ROWS ? tag : 0;
++    return tag >= RQ3_ROTATE && tag <= RQ3_FUSED ? tag : 0;
 +}
 +
 +static inline bool rq3_supported(const struct ggml_tensor * op) {
 +    const uintptr_t tag = rq3_kind(op);
-+    if (!tag || op->type != GGML_TYPE_F32 || !ggml_is_contiguous(op)) { return false; }
++    if (!tag || tag == RQ3_FUSED || op->type != GGML_TYPE_F32 || !ggml_is_contiguous(op)) { return false; }
 +    for (int i = 0; i < 3; ++i) {
 +        if (!op->src[i] || !ggml_is_contiguous(op->src[i])) { return false; }
 +    }
@@ -1546,6 +2180,23 @@ index 000000000..9bb5f2abb
 +        op->src[1]->ne[0] >= 64 &&
 +        op->src[0]->type == (tag == RQ3_ROWS ? GGML_TYPE_I32 : GGML_TYPE_F32) &&
 +        (op->src[2]->type == GGML_TYPE_I8 || (tag == RQ3_MATMUL && op->src[2]->type == GGML_TYPE_I32));
++}
++
++// src: input F32 [inputs, tokens], packed weight, signs I8 [inputs], column map
++// I32 [inputs] (or the signs again), row map I32 [outputs] (or the signs).
++static inline bool rq3_fused_supported(const struct ggml_tensor * op) {
++    if (rq3_kind(op) != RQ3_FUSED || op->type != GGML_TYPE_F32 || !ggml_is_contiguous(op)) { return false; }
++    for (int i = 0; i < 5; ++i) {
++        if (!op->src[i] || !ggml_is_contiguous(op->src[i])) { return false; }
++    }
++    const struct ggml_tensor * x = op->src[0];
++    const struct ggml_tensor * columns = op->src[3];
++    const struct ggml_tensor * rows = op->src[4];
++    return x->type == GGML_TYPE_F32 && x->ne[0] % 128 == 0 && ggml_nrows(x) == ggml_nrows(op) &&
++        op->src[1]->type == GGML_TYPE_I8 && ggml_is_vector(op->src[1]) && op->src[1]->ne[0] >= 64 &&
++        op->src[2]->type == GGML_TYPE_I8 && ggml_nelements(op->src[2]) == x->ne[0] &&
++        (columns->type == GGML_TYPE_I8 || columns->type == GGML_TYPE_I32) && ggml_nelements(columns) == x->ne[0] &&
++        (rows->type == GGML_TYPE_I8 || (rows->type == GGML_TYPE_I32 && ggml_nelements(rows) == op->ne[0]));
 +}
 diff --git a/src/CMakeLists.txt b/src/CMakeLists.txt
 index 8922dc12a..da0611eca 100644
@@ -1985,7 +2636,7 @@ index 1b1f852a0..28c5ba755 100644
              op = info.op == GGML_OP_MUL_MAT_ID ? GGML_OP_ADD_ID : GGML_OP_ADD;
          } else if (hparams.router_layer >= 0 && tn.suffix != nullptr &&
                  (strcmp(tn.suffix, "lora_a") == 0 || strcmp(tn.suffix, "lora_b") == 0)) {
-@@ -1161,7 +1176,7 @@ struct ggml_tensor * llama_model_loader::create_tensor(
+@@ -1161,7 +1177,7 @@ struct ggml_tensor * llama_model_loader::create_tensor(
          }
  
          // select the buffer type for this tensor
@@ -2639,12 +3290,14 @@ index 000000000..e17da26ac
 +                 bool value);
 diff --git a/src/llama-rq3.cpp b/src/llama-rq3.cpp
 new file mode 100644
+index 000000000..62163c1e3
 --- /dev/null
 +++ b/src/llama-rq3.cpp
-@@ -0,0 +1,141 @@
+@@ -0,0 +1,193 @@
 +#include "llama-rq3.h"
 +#include "rotquant-v3.h"
 +#include <cmath>
++#include <cstdlib>
 +#include <cstring>
 +#include <vector>
 +
@@ -2709,6 +3362,27 @@ new file mode 100644
 +    for (int j = 0; j < 128; ++j) { x[j] *= 0.08838834764831845f; }
 +}
 +
++// One 128-column block of RQ3_ROTATE for one token row.
++static void rotate_block(const float * row, const int8_t * signs, const int32_t * perm, int64_t col, float * out) {
++    float x[128];
++    for (int j = 0; j < 128; ++j) {
++        x[j] = half_round(row[perm ? perm[col + j] : col + j]) * signs[col + j];
++    }
++    fwht(x);
++    for (int j = 0; j < 128; ++j) { out[j] = half_round(x[j]); }
++}
++
++// One RQ3_MATMUL output: packed row `source` against one token row.
++static float matmul_row(const matrix_view & m, uint64_t source, const float * row) {
++    float sum = 0;
++    for (uint64_t c = 0; c < m.cols; c += 128) {
++        for (int j = 0; j < 128; ++j) {
++            sum += half_round(m.weight(source, c + j)) * half_round(row[c + j]);
++        }
++    }
++    return half_round(sum);
++}
++
 +static void compute(ggml_tensor * dst, int ith, int nth, void * userdata) {
 +    const uintptr_t tag = (uintptr_t) userdata;
 +    const auto * input = (const float *) dst->src[0]->data;
@@ -2719,12 +3393,27 @@ new file mode 100644
 +        const auto * perm = dst->src[2]->type == GGML_TYPE_I32 ? (const int32_t *) dst->src[2]->data : nullptr;
 +        for (int64_t b = ith; b < blocks; b += nth) {
 +            const int64_t start = b * 128, col = start % width, token = start / width;
-+            float x[128];
-+            for (int j = 0; j < 128; ++j) {
-+                x[j] = half_round(input[token * width + (perm ? perm[col + j] : col + j)]) * signs[col + j];
++            rotate_block(input + token * width, signs, perm, col, output + start);
++        }
++        return;
++    }
++    if (tag == RQ3_FUSED) {
++        // RQ3_ROTATE then RQ3_MATMUL with the same arithmetic. Each thread
++        // rotates the token rows itself, so no barrier is needed between the
++        // two halves; the outputs it then writes are a fixed function of them.
++        const matrix_view m(dst->src[1]->data);
++        const auto * signs = (const int8_t *) dst->src[2]->data;
++        const auto * columns = dst->src[3]->type == GGML_TYPE_I32 ? (const int32_t *) dst->src[3]->data : nullptr;
++        const auto * rows = dst->src[4]->type == GGML_TYPE_I32 ? (const int32_t *) dst->src[4]->data : nullptr;
++        const int64_t width = dst->src[0]->ne[0], tokens = ggml_nrows(dst->src[0]);
++        std::vector<float> rotated(width);
++        for (int64_t token = 0; token < tokens; ++token) {
++            for (int64_t col = 0; col < width; col += 128) {
++                rotate_block(input + token * width, signs, columns, col, rotated.data() + col);
 +            }
-+            fwht(x);
-+            for (int j = 0; j < 128; ++j) { output[start + j] = half_round(x[j]); }
++            for (uint64_t row = ith; row < m.rows; row += nth) {
++                output[token * m.rows + row] = matmul_row(m, rows ? rows[row] : row, rotated.data());
++            }
 +        }
 +        return;
 +    }
@@ -2760,9 +3449,24 @@ new file mode 100644
 +    }
 +}
 +
++static bool fused_graph() {
++    const char * value = getenv("ROTQUANT_RQ3_FUSE");
++    return value && strcmp(value, "1") == 0;
++}
++
 +ggml_tensor * llama_rq3_mul_mat(ggml_context * ctx, ggml_tensor * weight, ggml_tensor * input, const llama_rq3_state & s) {
 +    GGML_ASSERT(input->ne[0] == s.inputs && s.inputs % 128 == 0);
-+    input = ggml_cont(ctx, ggml_cast(ctx, input, GGML_TYPE_F32));
++    // Both are copies when the input is already contiguous F32: two extra
++    // graph nodes and kernel launches per projection with identical bytes.
++    if (input->type != GGML_TYPE_F32) { input = ggml_cast(ctx, input, GGML_TYPE_F32); }
++    if (!ggml_is_contiguous(input)) { input = ggml_cont(ctx, input); }
++    if (!s.vocabulary && fused_graph()) {
++        ggml_tensor * src[] = {input, weight, s.signs, s.columns ? s.columns : s.signs, s.rows ? s.rows : s.signs};
++        ggml_tensor * result = ggml_custom_4d(ctx, GGML_TYPE_F32, s.outputs, input->ne[1], input->ne[2], input->ne[3],
++                                            src, 5, compute, GGML_N_TASKS_MAX, (void *) uintptr_t(RQ3_FUSED));
++        ggml_set_name(result, "rq3.fused");
++        return result;
++    }
 +    if (!s.vocabulary) {
 +        ggml_tensor * src[] = {input, s.signs, s.columns ? s.columns : s.signs};
 +        input = ggml_custom_4d(ctx, GGML_TYPE_F32, input->ne[0], input->ne[1], input->ne[2], input->ne[3],
@@ -2845,6 +3549,7 @@ index 9b87a40d5..fe703a26b 100644
  
      struct graph_mtp : public llm_graph_context {
 diff --git a/src/models/qwen35.cpp b/src/models/qwen35.cpp
+index 309dd4324..bde2c3cc7 100644
 --- a/src/models/qwen35.cpp
 +++ b/src/models/qwen35.cpp
 @@ -1,5 +1,10 @@
@@ -2858,7 +3563,7 @@ diff --git a/src/models/qwen35.cpp b/src/models/qwen35.cpp
  
  void llama_model_qwen35::load_arch_hparams(llama_model_loader & ml) {
      ml.get_key(LLM_KV_ATTENTION_LAYERNORM_RMS_EPS,       hparams.f_norm_rms_eps);
-@@ -26,6 +31,44 @@
+@@ -26,6 +31,44 @@ void llama_model_qwen35::load_arch_hparams(llama_model_loader & ml) {
          }
      }
  
@@ -2903,7 +3608,7 @@ diff --git a/src/models/qwen35.cpp b/src/models/qwen35.cpp
      switch (hparams.n_layer()) {
          case 24: type = hparams.n_embd == 1024 ? LLM_TYPE_0_8B : LLM_TYPE_2B; break;
          case 32: type = hparams.n_embd == 2560 ? LLM_TYPE_4B : LLM_TYPE_9B; break;
-@@ -41,7 +84,100 @@
+@@ -41,7 +84,100 @@ void llama_model_qwen35::load_arch_tensors(llama_model_loader & ml) {
      const int trunk_flags = mtp_only ? TENSOR_NOT_REQUIRED : 0;
      int mtp_flags = !ml.load_mtp ? TENSOR_SKIP : 0;
  
@@ -3005,19 +3710,18 @@ diff --git a/src/models/qwen35.cpp b/src/models/qwen35.cpp
  
      // output
      output_norm = create_tensor(tn(LLM_TENSOR_OUTPUT_NORM, "weight"), { n_embd }, 0);
-@@ -49,8 +185,28 @@
+@@ -49,9 +185,29 @@ void llama_model_qwen35::load_arch_tensors(llama_model_loader & ml) {
  
      // if output is NULL, init from the input tok embed
      if (output == NULL) {
 -        output = create_tensor(tn(LLM_TENSOR_TOKEN_EMBD, "weight"), { n_embd, n_vocab }, TENSOR_DUPLICATED);
--    }
 +        if (rotquant_rotations.count(tok_embd) || rotquant_v3.count(tok_embd)) {
 +            output = tok_embd;
 +        } else {
 +            output = create_tensor(tn(LLM_TENSOR_TOKEN_EMBD, "weight"), { n_embd, n_vocab }, TENSOR_DUPLICATED);
 +        }
-+    }
-+
+     }
+ 
 +    auto load_linear = [&](llm_tensor tensor, int il, int64_t in_features, int64_t out_features, int flags) {
 +        ggml_tensor * v3 = load_v3(tensor, il, in_features, out_features, flags, false);
 +        if (v3) { return v3; }
@@ -3033,10 +3737,11 @@ diff --git a/src/models/qwen35.cpp b/src/models/qwen35.cpp
 +        }
 +        return create_tensor(tn(tensor, "weight", il), { in_features, out_features }, flags);
 +    };
- 
++
      auto load_block_trunk = [&](int il, int flags) {
          auto & layer = layers[il];
-@@ -69,8 +225,10 @@
+ 
+@@ -69,8 +225,10 @@ void llama_model_qwen35::load_arch_tensors(llama_model_loader & ml) {
  
          if (!hparams.is_recr(il)) {
              // Attention layers
@@ -3049,7 +3754,7 @@ diff --git a/src/models/qwen35.cpp b/src/models/qwen35.cpp
  
              // Q/K normalization for attention layers
              layer.attn_q_norm = create_tensor(tn(LLM_TENSOR_ATTN_Q_NORM, "weight", il), { n_embd_head_k }, flags);
-@@ -78,20 +236,20 @@
+@@ -78,20 +236,20 @@ void llama_model_qwen35::load_arch_tensors(llama_model_loader & ml) {
          } else {
              // Linear attention (gated delta net) specific tensors
              // Create tensors with calculated dimensions
@@ -3064,21 +3769,19 @@ diff --git a/src/models/qwen35.cpp b/src/models/qwen35.cpp
              layer.ssm_alpha      = create_tensor(tn(LLM_TENSOR_SSM_ALPHA,      "weight", il), { n_embd, n_v_heads }, flags);
              layer.ssm_norm       = create_tensor(tn(LLM_TENSOR_SSM_NORM,       "weight", il), { head_v_dim }, flags);
 -            layer.ssm_out        = create_tensor(tn(LLM_TENSOR_SSM_OUT,        "weight", il), { value_dim, n_embd }, flags);
--        }
--
++            layer.ssm_out        = load_linear(LLM_TENSOR_SSM_OUT, il, value_dim, n_embd, flags);
+         }
+ 
 -        layer.ffn_gate = create_tensor(tn(LLM_TENSOR_FFN_GATE, "weight", il), {n_embd,   n_ff}, flags);
 -        layer.ffn_down = create_tensor(tn(LLM_TENSOR_FFN_DOWN, "weight", il), {  n_ff, n_embd}, flags);
 -        layer.ffn_up   = create_tensor(tn(LLM_TENSOR_FFN_UP,   "weight", il), {n_embd,   n_ff}, flags);
-+            layer.ssm_out        = load_linear(LLM_TENSOR_SSM_OUT, il, value_dim, n_embd, flags);
-+        }
-+
 +        layer.ffn_gate = load_linear(LLM_TENSOR_FFN_GATE, il, n_embd, n_ff, flags);
 +        layer.ffn_down = load_linear(LLM_TENSOR_FFN_DOWN, il, n_ff, n_embd, flags);
 +        layer.ffn_up   = load_linear(LLM_TENSOR_FFN_UP,   il, n_embd, n_ff, flags);
      };
  
      auto load_block_mtp = [&](int il) {
-@@ -134,7 +292,7 @@
+@@ -134,7 +292,7 @@ std::unique_ptr<llm_graph_context> llama_model_qwen35::build_arch_graph(const ll
      return std::make_unique<graph>(*this, params);
  }
  
@@ -3087,7 +3790,7 @@ diff --git a/src/models/qwen35.cpp b/src/models/qwen35.cpp
      llm_build_delta_net_base(params), model(model) {
      const int64_t n_embd_head = hparams.n_embd_head_v();
  
-@@ -146,7 +304,12 @@
+@@ -146,7 +304,12 @@ llama_model_qwen35::graph::graph(const llama_model & model, const llm_graph_para
      ggml_tensor * cur;
      ggml_tensor * inpL;
  
@@ -3101,7 +3804,7 @@ diff --git a/src/models/qwen35.cpp b/src/models/qwen35.cpp
  
      cb(inpL, "model.input_embed", -1);
  
-@@ -220,12 +383,29 @@
+@@ -220,7 +383,7 @@ llama_model_qwen35::graph::graph(const llama_model & model, const llm_graph_para
      res->t_embd = cur;
  
      // LM head
@@ -3110,10 +3813,10 @@ diff --git a/src/models/qwen35.cpp b/src/models/qwen35.cpp
  
      cb(cur, "result_output", -1);
      res->t_logits = cur;
- 
+@@ -228,17 +391,34 @@ llama_model_qwen35::graph::graph(const llama_model & model, const llm_graph_para
      ggml_build_forward_expand(gf, cur);
-+}
-+
+ }
+ 
 +ggml_tensor * llama_model_qwen35::graph::build_mm(
 +        ggml_tensor * weight,
 +        ggml_tensor * input,
@@ -3129,10 +3832,11 @@ diff --git a/src/models/qwen35.cpp b/src/models/qwen35.cpp
 +        return llama_rotquant_mul_mat(ctx0, weight, input, it->second);
 +    }
 +    return build_lora_mm(weight, input, scale);
- }
- 
++}
++
  std::pair<ggml_tensor *, ggml_tensor *> llama_model_qwen35::graph::build_qkvz(
-@@ -234,11 +414,11 @@
+                 ggml_tensor * input,
+                         int   il) {
      const int64_t n_seqs       = ubatch.n_seqs;
      const int64_t n_seq_tokens = ubatch.n_seq_tokens;
  
@@ -3146,7 +3850,7 @@ diff --git a/src/models/qwen35.cpp b/src/models/qwen35.cpp
      cb(z, "z", il);
  
      return { qkv_mixed, z };
-@@ -267,7 +447,7 @@
+@@ -267,7 +447,7 @@ ggml_tensor * llama_model_qwen35::graph::build_layer_attn(
      // Order: joint QG projection, QG split, Q norm, KV projection, K norm, RoPE, attention
  
      // Qwen3Next uses a single Q projection that outputs query + gate
@@ -3155,7 +3859,7 @@ diff --git a/src/models/qwen35.cpp b/src/models/qwen35.cpp
      cb(Qcur_full, "Qcur_full", il);
  
      ggml_tensor * Qcur = ggml_view_3d(ctx0, Qcur_full, n_embd_head, n_head, n_tokens,
-@@ -279,10 +459,10 @@
+@@ -279,10 +459,10 @@ ggml_tensor * llama_model_qwen35::graph::build_layer_attn(
      Qcur = build_norm(Qcur, model.layers[il].attn_q_norm, nullptr, LLM_NORM_RMS, il);
      cb(Qcur, "Qcur_normed", il);
  
@@ -3168,7 +3872,7 @@ diff --git a/src/models/qwen35.cpp b/src/models/qwen35.cpp
      cb(Vcur, "Vcur", il);
  
      // Apply K normalization
-@@ -330,7 +510,7 @@
+@@ -330,7 +510,7 @@ ggml_tensor * llama_model_qwen35::graph::build_layer_attn(
      cur = ggml_mul(ctx0, cur, gate_sigmoid);
      cb(cur, "attn_gated", il);
  
@@ -3177,7 +3881,7 @@ diff --git a/src/models/qwen35.cpp b/src/models/qwen35.cpp
      cb(cur, "attn_output", il);
  
      return cur;
-@@ -461,7 +641,7 @@
+@@ -461,7 +641,7 @@ ggml_tensor * llama_model_qwen35::graph::build_layer_attn_linear(
      cb(final_output, "final_output", il);
  
      // Output projection
@@ -3186,7 +3890,7 @@ diff --git a/src/models/qwen35.cpp b/src/models/qwen35.cpp
      cb(cur, "linear_attn_out", il);
  
      // Reshape back to original dimensions
-@@ -474,12 +654,13 @@
+@@ -474,12 +654,13 @@ ggml_tensor * llama_model_qwen35::graph::build_layer_ffn(ggml_tensor * cur, cons
      // Qwen3.5 does not use MoE FFN
      GGML_ASSERT(model.layers[il].ffn_gate_inp == nullptr);
  
@@ -3206,137 +3910,3 @@ diff --git a/src/models/qwen35.cpp b/src/models/qwen35.cpp
      cb(cur, "ffn_out", il);
  
      return cur;
-diff --git a/ggml/src/ggml-cuda/rq3-experiment.cuh b/ggml/src/ggml-cuda/rq3-experiment.cuh
-new file mode 100644
---- /dev/null
-+++ b/ggml/src/ggml-cuda/rq3-experiment.cuh
-@@ -0,0 +1,129 @@
-+// Opt-in experiment v1. Included after rq3 helpers; never changes default dispatch.
-+// Operands have the SAME half-rounding boundary as kernel_rq3. GEMM changes
-+// reduction order, so it belongs to the separately gated reordered lane.
-+static constexpr size_t rq3_scratch_limit = 256ULL * 1024 * 1024;
-+struct rq3_experiment { int id = 0, rows = 0; bool half = false, head = false; };
-+static rq3_experiment rq3_experiment_for(const char * name) {
-+    if (!name) { return {}; }
-+    if (!strcmp(name, "head-warp")) { return {1, 0, false, true}; }
-+    if (!strcmp(name, "sgemm-128")) { return {2, 128, false, false}; }
-+    if (!strcmp(name, "sgemm-512")) { return {3, 512, false, false}; }
-+    if (!strcmp(name, "hgemm-128")) { return {4, 128, true, false}; }
-+    if (!strcmp(name, "hgemm-512")) { return {5, 512, true, false}; }
-+    if (!strcmp(name, "hgemm-2048")) { return {6, 2048, true, false}; }
-+    if (!strcmp(name, "hgemm-512-head")) { return {7, 512, true, true}; }
-+    return {};
-+}
-+
-+// Four rows, one warp each. Four virtual lanes preserve the original 128-lane
-+// FWHT and dot reduction order. No block barriers or dense head copy.
-+static __global__ void kernel_rq3_head_warp(rq3_args a, const uchar * src0,
-+        const uchar * src1, const uchar * src2, float * out) {
-+    const int lane = threadIdx.x % 32;
-+    const int64_t row = int64_t(blockIdx.x) * 4 + threadIdx.x / 32;
-+    if (row >= a.outputs) { return; } // entire warp exits together
-+    const rq3_view v = rq3_parse(src1);
-+    const auto * input = (const float *) src0;
-+    const auto * signs = (const char *) src2;
-+    float sums[4] = {};
-+    for (int64_t start = 0; start < a.inputs; start += 128) {
-+        float w[4];
-+        #pragma unroll
-+        for (int p = 0; p < 4; ++p) { w[p] = rq3_weight(v, row, start + p * 32 + lane); }
-+        #pragma unroll
-+        for (int stride = 1; stride < 32; stride *= 2) {
-+            #pragma unroll
-+            for (int p = 0; p < 4; ++p) {
-+                const float other = __shfl_xor_sync(0xffffffffu, w[p], stride);
-+                w[p] = (lane & stride) ? other - w[p] : w[p] + other;
-+            }
-+        }
-+        // Stages 32 and 64, using old values on both sides.
-+        const float a0 = w[0] + w[1], a1 = w[0] - w[1];
-+        const float a2 = w[2] + w[3], a3 = w[2] - w[3];
-+        w[0] = a0 + a2; w[1] = a1 + a3;
-+        w[2] = a0 - a2; w[3] = a1 - a3;
-+        #pragma unroll
-+        for (int p = 0; p < 4; ++p) {
-+            const int64_t col = start + p * 32 + lane;
-+            sums[p] += rq3_round(w[p] * 0.08838834764831845f * signs[col]) *
-+                rq3_round(input[int64_t(blockIdx.y) * a.inputs + col]);
-+        }
-+    }
-+    float sum = (sums[0] + sums[2]) + (sums[1] + sums[3]);
-+    #pragma unroll
-+    for (int stride = 16; stride > 0; stride /= 2) {
-+        const float other = __shfl_down_sync(0xffffffffu, sum, stride);
-+        if (lane < stride) { sum += other; }
-+    }
-+    if (!lane) { out[int64_t(blockIdx.y) * a.outputs + row] = rq3_round(sum); }
-+}
-+
-+template<typename T> static __global__ void rq3_stage_input(const float * x, T * y, int64_t n) {
-+    const int64_t i = int64_t(blockIdx.x) * blockDim.x + threadIdx.x;
-+    if (i < n) { y[i] = T(rq3_round(x[i])); }
-+}
-+template<typename T> static __global__ void rq3_unpack_chunk(const uchar * packed,
-+        const int * permutation, T * out, int64_t first, int64_t count, int64_t cols) {
-+    const int64_t i = int64_t(blockIdx.x) * blockDim.x + threadIdx.x;
-+    if (i >= count * cols) { return; }
-+    const int64_t r = first + i / cols;
-+    const int64_t source = permutation ? permutation[r] : r;
-+    out[i] = T(rq3_round(rq3_weight(rq3_parse(packed), source, i % cols)));
-+}
-+static __global__ void rq3_gemm_epilogue(const float * x, float * y,
-+        int64_t first, int64_t count, int64_t rows, int64_t tokens) {
-+    const int64_t i = int64_t(blockIdx.x) * blockDim.x + threadIdx.x;
-+    if (i < count * tokens) { y[(i / count) * rows + first + i % count] = rq3_round(x[i]); }
-+}
-+
-+// Scratch allocations have operator lifetime; pool capacity may stay reserved.
-+// Account all three requested buffers. cuBLAS/context workspace and allocator
-+// rounding are EXTRA and must be reported via process VRAM, not hidden here.
-+template<typename T> static size_t rq3_chunk_gemm(ggml_backend_cuda_context & ctx,
-+        rq3_args a, ggml_tensor * op, int chunk) {
-+    const int k = int(a.inputs), n = int(a.outputs), t = int(a.tokens);
-+    GGML_ASSERT(a.inputs <= INT32_MAX && a.outputs <= INT32_MAX);
-+    const size_t input_bytes = size_t(k) * t * sizeof(T);
-+    const size_t per_row = size_t(k) * sizeof(T) + size_t(t) * sizeof(float);
-+    // A shape outside the declared workspace contract fails, never silently
-+    // falls back and gets credited as an experimental dispatch.
-+    GGML_ASSERT(input_bytes + per_row <= rq3_scratch_limit);
-+    chunk = int(std::min(size_t(std::min(chunk, n)), (rq3_scratch_limit - input_bytes) / per_row));
-+    ggml_cuda_pool_alloc<T> input(ctx.pool(), size_t(k) * t);
-+    ggml_cuda_pool_alloc<T> weights(ctx.pool(), size_t(k) * chunk);
-+    ggml_cuda_pool_alloc<float> output(ctx.pool(), size_t(chunk) * t);
-+    rq3_stage_input<<<(size_t(k) * t + 255) / 256, 256, 0, ctx.stream()>>>(
-+        (const float *) op->src[0]->data, input.get(), int64_t(k) * t);
-+    cublasHandle_t handle = ctx.cublas_handle();
-+    cublasMath_t previous_math;
-+    cublasPointerMode_t previous_pointer;
-+    CUBLAS_CHECK(cublasGetMathMode(handle, &previous_math));
-+    CUBLAS_CHECK(cublasGetPointerMode(handle, &previous_pointer));
-+    // Never inherit llama.cpp's TF32 mode for the FP32 control. Disallow
-+    // reduced-precision intermediate reductions for both experiment lanes.
-+    CUBLAS_CHECK(cublasSetMathMode(handle, CUBLAS_MATH_DISALLOW_REDUCED_PRECISION_REDUCTION));
-+    CUBLAS_CHECK(cublasSetPointerMode(handle, CUBLAS_POINTER_MODE_HOST));
-+    const float alpha = 1, beta = 0;
-+    for (int first = 0; first < n; first += chunk) {
-+        const int count = std::min(chunk, n - first);
-+        rq3_unpack_chunk<<<(size_t(count) * k + 255) / 256, 256, 0, ctx.stream()>>>(
-+            (const uchar *) op->src[1]->data,
-+            a.permutation ? (const int *) op->src[2]->data : nullptr,
-+            weights.get(), first, count, k);
-+        if constexpr (std::is_same<T, float>::value) {
-+            CUBLAS_CHECK(cublasSgemm(handle, CUBLAS_OP_T, CUBLAS_OP_N, count, t, k,
-+                &alpha, weights.get(), k, input.get(), k, &beta, output.get(), count));
-+        } else {
-+            CUBLAS_CHECK(cublasGemmEx(handle, CUBLAS_OP_T, CUBLAS_OP_N, count, t, k,
-+                &alpha, weights.get(), CUDA_R_16F, k, input.get(), CUDA_R_16F, k,
-+                &beta, output.get(), CUDA_R_32F, count, CUBLAS_COMPUTE_32F,
-+                CUBLAS_GEMM_DEFAULT));
-+        }
-+        rq3_gemm_epilogue<<<(size_t(count) * t + 255) / 256, 256, 0, ctx.stream()>>>(
-+            output.get(), (float *) op->data, first, count, n, t);
-+    }
-+    CUBLAS_CHECK(cublasSetPointerMode(handle, previous_pointer));
-+    CUBLAS_CHECK(cublasSetMathMode(handle, previous_math));
-+    return input_bytes + size_t(chunk) * per_row;
-+}

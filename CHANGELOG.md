@@ -9,6 +9,98 @@ software.
 
 ## [Unreleased]
 
+### Improvement plan: defects, GPU kernels v2, entropy-coded checkpoints (2026-11-19)
+
+Follows the [mathematical review](docs/mathematical_review_2026-11-17.md),
+whose section 8 records the outcome. No GPU was available: the CUDA work is
+compiled and emulated, not run.
+
+- **GPU kernels v2 (opt-in, not yet run on a GPU).** New `rq3-v2.cuh` in the
+  llama.cpp patch: bit-exact warp kernels for the backbone matmul (all token
+  counts) and the vocabulary head; a decode-once cuBLAS GEMM for prefill
+  (FP32 or FP16 Tensor Cores); a rotated-basis head; and an opt-in fused
+  rotation+matmul op (`RQ3_FUSED`) that removes one launch per projection.
+  The graph no longer adds a cast and a copy before every packed matmul.
+  Reference kernels read signs as `signed char`.
+- **Evidence without a GPU.** A lane-level NumPy emulation shows the exact
+  kernels' weight reads and pre-rounding FP32 sums are bitwise equal to the
+  reference kernel across bits 1–8, both scale formats, scale groups and
+  maps (`tests/test_rq3_v2_emulation.py`, pinned to the kernel's hash). The
+  file compiles for sm_80 with no spills or FMAs. On CPU the fused op equals
+  the two ops bitwise, in operators and whole-model logits.
+- **Screen registry v2.** Five screened components, frozen exact and fast
+  combinations, lane-specific parity rules (exact / reordered / rounding),
+  per-candidate speed shapes; fusion is part of a candidate's identity. The
+  overnight notebook and runbook describe the run.
+- **Recovery fixes.** Code refresh keeps deployed scales and restores the
+  exact packed state on restore-best and reject; FP32 masters for FP16/BF16
+  parameters; `residual_svd` LoRA initialised at the start of distillation;
+  proxy/deploy mismatches fixed or rejected before mutation.
+- **Allocator and evaluation fixes.** `random_pareto` spends the bpw budget;
+  local scores use the deployed forward (QJL sketch included) and a
+  bias-free denominator; greedy/random ladders pass equal-size formats; the
+  exact MILP also runs for byte windows narrower than four buckets; random
+  controls draw protected layers at random; logit fidelity masks padding and
+  `teacher_logit_kl` is token-weighted; BitBudget charges vector codes per
+  weight; Hessians are collected undamped by default (GPTQ damps itself);
+  float64 butterflies compute trigonometry in float64. Score-cache schema 4.
+- **Entropy-coded checkpoints (opt-in).**
+  `save_packed_checkpoint(..., code_encoding="rans-rows-v1")` stores each
+  primary scalar code stream as row-wise rANS streams: 3–5% smaller code
+  bytes on real weights, bit-identical after load. Marked format version 4;
+  the default output is unchanged. GGUF v2 export reads coded streams.
+- **Tests.** An FP16 projection test now allows one ulp (tiled GEMM order),
+  as its own comment described.
+- **Corrected (PR review):** `codebook="gaussian"` is again the frozen grid.
+  The GGUF v1 kernels and the 2/3/4-bit KV-cache kernels embed it and read no
+  codebook from the file, so the earlier switch to the exact grid would have
+  made those runtimes reconstruct different weights from the ones Python
+  quantised. The exact grid is opt-in as `codebook="gaussian_exact"`;
+  `gaussian_codebook_4bit()` is pinned to the frozen grid; a test checks the
+  default against the tables in both patches.
+- **Fixed (PR review):** `v2-fast-sgemm` was in the Python registry but not in
+  the CUDA dispatcher. A test now cross-checks every registry entry against
+  the CUDA registration.
+
+
+### Mathematical review, lossless stages and CPU kernel (2026-11-17)
+
+Full record: [`docs/mathematical_review_2026-11-17.md`](docs/mathematical_review_2026-11-17.md).
+
+- **Added:** `lloyd_max_gaussian` solves the Gaussian Lloyd-Max conditions
+  exactly (Newton on closed-form cell moments), available as
+  `codebook="gaussian_exact"`. The 200-step grid behind `codebook="gaussian"`
+  is converged only up to four bits (0.07 / 0.62 / 5.3 / 27% excess MSE at
+  5–8 bits) but stays the default: native runtimes embed it (see the
+  2026-11-19 correction). On Qwen2.5-0.5B, eight rotation seeds at W5 and
+  three at W8 show no model-level KL difference between the two grids.
+- **Fixed:** `lloyd_max_samples` (the `calibrated` codebook) converges; it was
+  12% and 64% above the optimum at five and six bits.
+  `QuantConfig.calibrated_iters` now caps refinement at 2000.
+- **Fixed:** the finite E8 codebook is a negation-closed set of complete
+  lowest-energy shells with an MSE-fitted scale. The old box enumeration
+  missed lattice points, had a non-zero mean and 2.9–5.3% more Gaussian MSE.
+- **Fixed:** `quantizer_mse` is closed-form; weighted Lloyd uses prefix sums.
+- **Fixed:** block recovery rotates in FP32 when deriving learned scales, so
+  the deployed block is the one the gate scored for FP16/BF16 sources;
+  bounded scale multipliers are projected after each optimiser step; reported
+  final recovery losses are measured after commit.
+- **Fixed:** `protect_top_fraction` no longer protects one layer too many for
+  fractions such as 0.07 × 100.
+- **Added:** `rotquant.lossless` — an exactly invertible integer butterfly
+  rotation, an exact fixed-point view of float tensors, code-entropy
+  accounting and a row-wise rANS coder with a bit-exact round trip. The coder
+  is not yet part of the checkpoint or GGUF formats.
+- **Added:** `evaluate_logit_fidelity` reports `paired_prompt_bootstrap`,
+  which resamples prompts rather than tokens.
+- **Performance:** the AVX2 native-v2 kernel decodes each packed row once per
+  call and uses register lookups for small codebooks: 1.9–2.9× faster for one
+  input row and 7–9× for 32–128 rows, identical up to reassociation. Scalar
+  and NEON kernels are unchanged.
+- Not changed: GPU kernels, retained checkpoints, archived results. Open
+  defects are listed in the review.
+
+
 ### W5 backbone kernel screen and confirmation (2026-09-13)
 
 - Archive/audit the completed followup4 profile. Keep custom CUDA-event shares

@@ -15,6 +15,13 @@ compares held-out quality, complete bytes and native speed; and accepts an
 uploaded source ZIP. See the [research runbook](docs/w4_research_plan.md).
 The new W4 paths pass focused and tiny CPU-model checks; GPU results are pending.
 
+**Native kernels v2 (prepared, not yet run on a GPU):** the same
+[overnight notebook](notebooks/qwen35_4b_native_overnight_colab.ipynb) now
+screens bit-exact warp kernels for decode, prefill and the vocabulary head, a
+decode-once cuBLAS GEMM for prefill, a rotated-basis head and a fused
+rotation+matmul op. See the [runbook](docs/native_overnight_experiment_plan.md)
+and the [mathematical review](docs/mathematical_review_2026-11-17.md).
+
 **Previous native-kernel study:** [overnight native runtime experiment](notebooks/qwen35_4b_native_overnight_colab.ipynb)
 on A100 40GB, with an explicit **480-minute active AND wall ceiling**.
 [Backbone1 passed all 29 stages](research/results/native_backbone_2026_09_13/README.md):
@@ -66,6 +73,10 @@ The chronological [experiment log](docs/experiment_log.md) records successful
 and negative results, methodological caveats, and the decision taken after each
 trial. Update it alongside raw JSON results so development history remains
 paper-ready and reproducible.
+
+The [mathematical review of 17 November](docs/mathematical_review_2026-11-17.md)
+records what is and is not lossless in this pipeline, the defects it found and
+fixed, the measured CPU kernel speed-up and the ordered GPU kernel changes.
 
 The [science and mathematics guide](docs/how_rotquant_works.md) derives the
 rotation invariant, scalar and vector codebooks, exact rate accounting, GPTQ,

@@ -49,7 +49,10 @@ def checkpoint_matrix(handle, spec: dict) -> NativeV3Matrix:
         if spec.get("scale_offsets") or spec.get("scale_steps"):
             raise ValueError("FP16 scales must not carry affine metadata")
         offsets, steps = np.empty(0, dtype="<f2"), np.empty(0, dtype="<f2")
-    words = tensor(packed["tensor"])
+    # Entropy-coded (rans-rows-v1) streams decode to the exact fixed-rate words.
+    from .checkpoint import _read_packed
+
+    words = _read_packed(handle, packed, primary=True).data.detach().cpu().contiguous().numpy()
     book = native_codebook(tensor(spec["codebook"]["centroids"]), words, layout.bits,
                            spec["codebook"].get("name", ""))
     return NativeV3Matrix(layout, words, tensor(spec.get("scales")), offsets, steps, book)

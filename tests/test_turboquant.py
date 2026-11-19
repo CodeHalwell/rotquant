@@ -385,8 +385,9 @@ class TestDequantizePerRowScales:
         assert qw.scale_group_size == 128  # in_features
         w_deq = qw.dequantize()
         mse = (w_rot - w_deq).pow(2).mean().item()
-        # Theoretical bound from turboquant_mse_bound(3) ≈ 0.0136; practical
-        # MSE should be well below 0.1 for a unit-Gaussian source.
+        # turboquant_mse_bound(3) = sqrt(3)*pi/2 * 4**-3 ≈ 0.0425, and the
+        # exact 3-bit Lloyd-Max distortion is 0.0345; this smoke check only
+        # requires the per-row-scale path to be well below 0.1.
         assert mse < 0.1, f"MSE too high: {mse:.4f}"
 
     def test_scales_not_none_for_real_weights(self):

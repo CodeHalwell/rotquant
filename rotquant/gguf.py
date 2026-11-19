@@ -20,7 +20,7 @@ from dataclasses import dataclass
 import numpy as np
 import torch
 
-from .codebooks import build_scalar_codebook
+from .codebooks import lloyd_max_gaussian_grid
 from .pack import PackedTensor, unpack_indices
 from .quantize import QuantConfig, QuantizedWeight, Quantizer
 from .rotate import ButterflyRotation, RandomizedHadamard, Rotation
@@ -73,15 +73,13 @@ def native_tied_tensor(weight: torch.Tensor, *, seed: int, scale: str,
 
 
 def gaussian_codebook_4bit() -> np.ndarray:
-    """The exact v1 codebook embedded by the C++ reference kernel."""
+    """The v1 codebook embedded by the C++ and Metal kernels.
 
-    return (
-        build_scalar_codebook("gaussian", 1 << BITS)
-        .centroids.detach()
-        .cpu()
-        .numpy()
-        .astype(np.float32, copy=True)
-    )
+    GGUF v1 serialises no codebook, so this is pinned to the frozen grid the
+    kernels embed rather than to whatever ``codebook="gaussian"`` resolves to.
+    """
+
+    return lloyd_max_gaussian_grid(1 << BITS).astype(np.float32, copy=True)
 
 
 def _validate_qweight(qweight: QuantizedWeight) -> None:
