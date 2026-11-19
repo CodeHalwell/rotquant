@@ -369,7 +369,13 @@ class ButterflyRotation(Rotation):
         self._invalidate_cache()
         return super()._load_from_state_dict(*args, **kwargs)
 
-    def _trig(self):
+    def _trig(self, dtype: torch.dtype = torch.float32):
+        if dtype == torch.float64:
+            # FP32 trigonometry leaves cos² + sin² off by ~6e-8, so a float64
+            # reference path would be orthogonal only to ~2e-7. Recompute from
+            # theta in float64; the cache below stays FP32 for every other dtype.
+            angles = self.theta.double()
+            return angles.cos(), angles.sin()
         if (not self.training
                 and self._cached_cos is not None
                 and self._cached_cos.device == self.theta.device
@@ -388,7 +394,7 @@ class ButterflyRotation(Rotation):
         original_shape = x.shape
         work = x if x.dtype == torch.float64 else x.float()
         h = work.reshape(-1, self.n_blocks, self.block)
-        cos, sin = self._trig()
+        cos, sin = self._trig(work.dtype)
         stages = range(self.n_stages - 1, -1, -1) if inverse \
             else range(self.n_stages)
         for stage in stages:

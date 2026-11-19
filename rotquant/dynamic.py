@@ -372,7 +372,9 @@ class CandidateScore:
 # reconstruction scores are source-model facts, so random and greedy allocation
 # may share them when the runner supplies the same content-addressed context.
 _CANDIDATE_SCORE_CACHE: dict[str, dict[str, list[CandidateScore]]] = {}
-_CANDIDATE_CACHE_SCHEMA = 3
+# Schema 4: local scores use the deployed forward (sketch term included) and a
+# bias-free relative-error denominator; schema-3 tables are recomputed.
+_CANDIDATE_CACHE_SCHEMA = 4
 
 
 def _candidate_cache_path(key: str) -> Path | None:
@@ -548,9 +550,16 @@ def _tree_to(value, device, dtype):
 def teacher_logit_kl(model: nn.Module, calls: Sequence[Any], device,
                      dtype: torch.dtype, temperature: float = 1.0,
                      max_batches: int | None = None) -> float:
-    """Mean token KL from stored source logits to ``model`` logits."""
+    """Mean token KL from stored source logits to ``model`` logits.
 
-    losses = []
+    The mean is over every unmasked token of every call, so a call with many
+    tokens weighs more than a call with few (a mean of per-call means would
+    not).
+    """
+
+    kl_sum = 0.0
+    token_count = 0.0
+    calls_seen = 0
     selected = calls if max_batches is None else calls[:max_batches]
     for call in selected:
         inputs = _tree_to(call.inputs, device, dtype)
@@ -573,12 +582,33 @@ def teacher_logit_kl(model: nn.Module, calls: Sequence[Any], device,
         student_log_prob = F.log_softmax(student / scale, dim=-1)
         token_kl = F.kl_div(
             student_log_prob, teacher_prob, reduction="none").sum(dim=-1)
-        losses.append(float(
-            ((token_kl * token_mask).sum()
-             / token_mask.sum().clamp_min(1.0) * scale**2).item()))
-    if not losses:
+        kl_sum += float((token_kl * token_mask).sum().item())
+        token_count += float(token_mask.sum().item())
+        calls_seen += 1
+    if not calls_seen:
         raise ValueError("teacher_logit_kl requires at least one teacher call")
-    return sum(losses) / len(losses)
+    return kl_sum / max(token_count, 1.0) * float(temperature) ** 2
+
+
+def _deployed_output(candidate: QuantLinear,
+                     inputs: torch.Tensor) -> torch.Tensor:
+    """FP32 output of the deployed (packed-mode) forward, without the bias.
+
+    This runs ``QuantLinear.forward`` itself, so it includes every term the
+    deployed module adds, such as the QJL residual-sketch correction of
+    ``error_comp="turboquant"``.  The scoring candidate is built in fallback
+    mode with a source-dtype weight cache and bias buffer; both are bypassed
+    for the call so the FP32 result does not depend on the source dtype.  The
+    caller adds the bias in FP32.
+    """
+    fallback, bias = candidate.fallback, candidate.bias
+    candidate.fallback = False
+    candidate.bias = None
+    try:
+        return candidate(inputs).float()
+    finally:
+        candidate.fallback = fallback
+        candidate.bias = bias
 
 
 def _local_error(source: nn.Linear, candidate: QuantLinear,
@@ -590,35 +620,51 @@ def _local_error(source: nn.Linear, candidate: QuantLinear,
     different output widths.  Summing output dimensions gives the sampled
     counterpart of ``tr(ΔW H ΔWᵀ)``; with no activations, an identity input
     covariance reduces that expression to the squared Frobenius norm.
+
+    The candidate side is the deployed forward (:func:`_deployed_output`),
+    so a sketch correction is scored, not just the dequantized weight.  The
+    relative error divides by the bias-free output energy ``tr(W H Wᵀ)``; the
+    error itself still includes any difference between the two biases.
     """
     device = candidate.qweight.packed.data.device
     with torch.no_grad():
-        rotated_weight = candidate.act_rotation.rotate_weight(
-            source.weight.detach().to(device=device, dtype=torch.float32))
-        quantized_weight = candidate.qweight.dequantize().float()
+        source_weight = source.weight.detach().to(
+            device=device, dtype=torch.float32)
+        rotated_weight = candidate.act_rotation.rotate_weight(source_weight)
         if activations is None:
-            error = float(
-                (quantized_weight - rotated_weight).pow(2).sum().item()
-            )
+            if candidate.qweight.sketch is None:
+                difference = (
+                    candidate.qweight.dequantize().float() - rotated_weight
+                )
+            else:
+                # The deployed map is linear in its input, so the identity
+                # input (in the source basis) returns its effective weight,
+                # sketch term included, as the transpose of the output.
+                identity = torch.eye(
+                    candidate.in_features, device=device, dtype=torch.float32)
+                difference = (
+                    _deployed_output(candidate, identity).T - source_weight
+                )
+            error = float(difference.pow(2).sum().item())
             energy = float(rotated_weight.pow(2).sum().item())
             return error, energy, error / max(energy, 1e-30)
         inputs = activations[:max_tokens].to(device=device, dtype=torch.float32)
         rotated_inputs = candidate.act_rotation.rotate_activation(inputs)
-        source_bias = (
-            source.bias.detach().to(device=device, dtype=torch.float32)
-            if source.bias is not None else None
-        )
-        candidate_bias = (
-            candidate.bias.detach().to(device=device, dtype=torch.float32)
-            if candidate.bias is not None else None
-        )
-        reference = F.linear(rotated_inputs, rotated_weight, source_bias)
-        quantized = F.linear(rotated_inputs, quantized_weight, candidate_bias)
-        token_errors = (quantized - reference).pow(2).reshape(
-            -1, reference.shape[-1]
+        reference_linear = F.linear(rotated_inputs, rotated_weight)
+        reference = reference_linear
+        if source.bias is not None:
+            reference = reference + source.bias.detach().to(
+                device=device, dtype=torch.float32)
+        deployed = _deployed_output(candidate, inputs)
+        if candidate.bias is not None:
+            deployed = deployed + candidate.bias.detach().to(
+                device=device, dtype=torch.float32)
+        width = reference.shape[-1]
+        token_errors = (deployed - reference).pow(2).reshape(
+            -1, width
         ).sum(dim=-1)
-        token_energy = reference.pow(2).reshape(
-            -1, reference.shape[-1]
+        token_energy = reference_linear.pow(2).reshape(
+            -1, width
         ).sum(dim=-1)
         error = float(token_errors.mean().item())
         energy = float(token_energy.mean().item())
@@ -1000,6 +1046,22 @@ def _score_diagnostics(
     }
 
 
+def _size_ladder(items: Sequence[CandidateScore], size_attr: str,
+                 rank) -> list[CandidateScore]:
+    """One candidate per distinct size, in increasing size order.
+
+    Among candidates of equal size the one with the smallest ``rank(item)``
+    is kept.
+    """
+
+    best: dict[int, CandidateScore] = {}
+    for item in items:
+        size = int(getattr(item, size_attr))
+        if size not in best or rank(item) < rank(best[size]):
+            best[size] = item
+    return [best[size] for size in sorted(best)]
+
+
 def _metric_value(item: CandidateScore, metric: str) -> float:
     if metric == "score":
         return float(item.score)
@@ -1009,8 +1071,16 @@ def _metric_value(item: CandidateScore, metric: str) -> float:
 def _allocation_candidates(
     scores: Mapping[str, Sequence[CandidateScore]],
     config: DynamicQuantConfig,
+    *,
+    random_protection_seed: int | None = None,
 ) -> tuple[dict[str, list[CandidateScore]], list[dict[str, Any]]]:
-    """Apply allocation-only bounds and measured automatic protection."""
+    """Apply allocation-only bounds and automatic protection.
+
+    By default the protected projections are the most sensitive ones under
+    ``protect_metric``.  With ``random_protection_seed`` the same number of
+    projections is drawn at random instead, so a random negative control does
+    not inherit the sensitivity-guided arm's choice of protected layers.
+    """
 
     candidates: dict[str, list[CandidateScore]] = {}
     for name, items in scores.items():
@@ -1048,7 +1118,18 @@ def _allocation_candidates(
                 - _metric_value(high, config.protect_metric),
             )
             sensitivities.append((-sensitivity, order, name, sensitivity))
-        for _negative, _order, name, sensitivity in sorted(sensitivities)[:count]:
+        if random_protection_seed is None:
+            policy = "measured_sensitivity"
+            chosen = sorted(sensitivities)[:count]
+        else:
+            policy = "seeded_random"
+            # A string seed is hashed with SHA-512, so it is reproducible
+            # across processes and independent of the allocation stream.
+            chooser = random.Random(
+                f"rotquant.dynamic.protection:{random_protection_seed}")
+            chosen = sorted(
+                chooser.sample(sensitivities, count), key=lambda row: row[1])
+        for _negative, _order, name, sensitivity in chosen:
             original = candidates[name]
             kept = [
                 item for item in original
@@ -1061,6 +1142,7 @@ def _allocation_candidates(
             candidates[name] = kept
             protected.append({
                 "name": name,
+                "policy": policy,
                 "metric": config.protect_metric,
                 "sensitivity": sensitivity,
                 "min_bits": config.protect_min_bits,
@@ -1077,14 +1159,29 @@ def _pareto_selection(
     tolerance_bytes: int,
     granularity_bytes: int,
     minimum_bytes: int | None = None,
+    objective: str = "score",
 ) -> tuple[dict[str, CandidateScore], dict[str, Any]]:
     """Solve a bucketed multiple-choice rate-distortion problem.
 
     States are indexed by quantized savings relative to the all-highest-precision
     recipe. Exact bytes are retained in every state and are used for the final
-    tolerance check; bucketing only bounds search memory.
+    tolerance check, but bucketing is an approximation, not only a memory
+    bound: each bucket keeps a small frontier of states, so paths with other
+    exact savings in the same bucket are discarded.  The program is exact when
+    the bucket width divides every byte step (small models, where the width is
+    the steps' gcd) and can be suboptimal otherwise, most of all when the byte
+    window is narrower than a bucket.  The exact MILP therefore also runs when
+    the window is narrower than four buckets, and the better verified recipe
+    is kept; it still runs as a repair when no feasible state is found.
+
+    ``objective="score"`` minimizes the additive score inside the window.
+    ``objective="closest"`` picks the feasible state whose bytes are closest
+    to ``target_bytes`` and breaks ties by score; the random control uses it
+    under a one-sided bits-per-weight target so that it spends the budget.
     """
 
+    if objective not in {"score", "closest"}:
+        raise ValueError("pareto objective must be 'score' or 'closest'")
     names = list(candidates)
     highest = {
         name: max(
@@ -1104,14 +1201,18 @@ def _pareto_selection(
         for item in candidates[name]
         if int(getattr(highest[name], size_attr)) > int(getattr(item, size_attr))
     ]
+    exact_granularity = math.gcd(*positive_steps) if positive_steps else 1
     # Unit tests and genuinely small models need exact arithmetic. Large LLMs
     # retain the configured bounded-memory buckets even when their tensor byte
     # sizes share a much smaller storage-alignment gcd.
     if high_total <= 64 * granularity_bytes and positive_steps:
-        exact_granularity = positive_steps[0]
-        for step in positive_steps[1:]:
-            exact_granularity = math.gcd(exact_granularity, step)
         granularity_bytes = max(1, exact_granularity)
+    # Every reachable saving is a sum of positive steps, so when the bucket
+    # width divides each step a bucket holds a single exact saving and the
+    # per-bucket frontier (best score per exact saving) loses nothing.
+    dp_exact = (
+        not positive_steps or exact_granularity % granularity_bytes == 0
+    )
     upper = target_bytes + tolerance_bytes
     lower = max(0, target_bytes - tolerance_bytes) if minimum_bytes is None else minimum_bytes
     required_max = max(0, high_total - lower)
@@ -1179,34 +1280,63 @@ def _pareto_selection(
         state for bucket in states.values() for state in bucket
         if lower <= high_total - state[1] <= upper
     ]
-    repair = {"attempted": False}
-    if not feasible:
+    if objective == "closest":
+        def preference(state):
+            return abs((high_total - state[1]) - target_bytes), state[0]
+    else:
+        def preference(state):
+            return state[0], abs((high_total - state[1]) - target_bytes)
+    # The MILP minimizes the score, so it can only improve that objective.
+    narrow_window = (
+        objective == "score"
+        and not dp_exact
+        and upper - lower < 4 * granularity_bytes
+    )
+    repair: dict[str, Any] = {"attempted": False}
+    if not feasible or narrow_window:
         repaired, repair = _repair_exact_byte_selection(
             candidates, size_attr=size_attr, fixed_bytes=fixed_bytes,
             lower=lower, upper=upper,
         )
-        if repaired is not None:
-            repaired_total = fixed_bytes + sum(
-                int(getattr(item, size_attr)) for item in repaired.values()
-            )
-            return repaired, {
-                "solver": "bucketed_multiple_choice_with_exact_byte_repair",
-                "granularity_bytes": granularity_bytes,
-                "states_per_bucket": states_per_bucket,
-                "peak_states": peak_states,
-                "additive_score": sum(item.score for item in repaired.values()),
-                "search_high_bytes": high_total,
-                "search_achieved_bytes": repaired_total,
-                "search_within_tolerance": True,
-                "repair": repair,
-            }
-    if feasible:
-        chosen = min(
-            feasible,
-            key=lambda state: (
-                state[0], abs((high_total - state[1]) - target_bytes)
-            ),
+        repair["trigger"] = (
+            "no_feasible_bucketed_state" if not feasible
+            else "window_narrower_than_four_buckets"
         )
+        repair["used"] = False
+        if repaired is not None:
+            repaired_score = sum(float(item.score) for item in repaired.values())
+            bucketed_score = (
+                min(feasible, key=preference)[0] if feasible else None
+            )
+            # Keep the bucketed recipe on ties; the MILP is verified in exact
+            # integer bytes by ``_repair_exact_byte_selection``.
+            if bucketed_score is None or repaired_score < (
+                bucketed_score - 1e-12 * max(1.0, abs(bucketed_score))
+            ):
+                repair["used"] = True
+                repair["bucketed_score"] = bucketed_score
+                repaired_total = fixed_bytes + sum(
+                    int(getattr(item, size_attr))
+                    for item in repaired.values()
+                )
+                return repaired, {
+                    "solver": (
+                        "bucketed_multiple_choice_with_exact_byte_repair"
+                        if not feasible
+                        else "bucketed_multiple_choice_with_exact_milp"
+                    ),
+                    "granularity_bytes": granularity_bytes,
+                    "states_per_bucket": states_per_bucket,
+                    "peak_states": peak_states,
+                    "bucketed_exact": dp_exact,
+                    "additive_score": repaired_score,
+                    "search_high_bytes": high_total,
+                    "search_achieved_bytes": repaired_total,
+                    "search_within_tolerance": True,
+                    "repair": repair,
+                }
+    if feasible:
+        chosen = min(feasible, key=preference)
     else:
         under_budget = [
             state for bucket in states.values() for state in bucket
@@ -1231,6 +1361,7 @@ def _pareto_selection(
         "granularity_bytes": granularity_bytes,
         "states_per_bucket": states_per_bucket,
         "peak_states": peak_states,
+        "bucketed_exact": dp_exact,
         "additive_score": chosen[0],
         "search_high_bytes": high_total,
         "search_achieved_bytes": achieved,
@@ -1569,7 +1700,14 @@ def select_dynamic_quantization(
             f"observed={correlation}, "
             f"required={config.min_proxy_rank_correlation}"
         )
-    candidates, protected = _allocation_candidates(scores, config)
+    # A random control must be blind to sensitivity everywhere, including
+    # in the choice of protected projections (same count, seeded draw).
+    random_control = config.allocation in {"random", "random_pareto"}
+    candidates, protected = _allocation_candidates(
+        scores, config,
+        random_protection_seed=patch_cfg.seed if random_control else None,
+    )
+    protection_policy = protected[0]["policy"] if protected else None
     randomizer = random.Random(patch_cfg.seed)
     total_weights = sum(
         target_by_name[name].weight.numel() for name in candidates
@@ -1622,6 +1760,18 @@ def select_dynamic_quantization(
                 ]
                 for name, items in candidates.items()
             }
+        # A bits-per-weight target is one-sided: the guided arm may land
+        # anywhere at or below it and naturally spends the budget, because
+        # more bytes buy a lower score. Random scores carry no such pressure,
+        # so the random control instead takes the feasible recipe closest to
+        # the target, with the random score breaking ties. Byte-window targets
+        # are two-sided and already match both arms' budgets.
+        one_sided = size_attr == "packed_bytes"
+        objective = (
+            "closest"
+            if config.allocation == "random_pareto" and one_sided
+            else "score"
+        )
         selected, solver_stats = _pareto_selection(
             allocation_candidates,
             size_attr=size_attr,
@@ -1629,12 +1779,22 @@ def select_dynamic_quantization(
             target_bytes=target_bytes,
             tolerance_bytes=tolerance_bytes,
             granularity_bytes=config.allocation_granularity_bytes,
-            minimum_bytes=0 if size_attr == "packed_bytes" else None,
+            minimum_bytes=0 if one_sided else None,
+            objective=objective,
         )
         if config.allocation == "random_pareto":
             solver_stats["solver"] = "seeded_random_multiple_choice_pareto"
             solver_stats["random_seed"] = patch_cfg.seed
+            solver_stats["budget_matching"] = (
+                "closest_to_target" if objective == "closest"
+                else "byte_window"
+            )
         if config.refinement_passes:
+            refinement_minimum = 0 if one_sided else None
+            if objective == "closest":
+                # Exchanges that lower the random score must not give back
+                # budget the control was matched to.
+                refinement_minimum = int(solver_stats["search_achieved_bytes"])
             selected, refinement_stats = _refine_selection(
                 allocation_candidates,
                 selected,
@@ -1643,7 +1803,7 @@ def select_dynamic_quantization(
                 target_bytes=target_bytes,
                 tolerance_bytes=tolerance_bytes,
                 max_passes=config.refinement_passes,
-                minimum_bytes=0 if size_attr == "packed_bytes" else None,
+                minimum_bytes=refinement_minimum,
             )
             solver_stats["refinement"] = refinement_stats
         if config.allocation == "random_pareto":
@@ -1655,13 +1815,35 @@ def select_dynamic_quantization(
                 for name, random_item in selected.items()
             }
     else:
+        # Adjacent downgrades need a strictly size-decreasing ladder: two
+        # formats of equal size would give a zero-saving step that blocks
+        # every smaller format behind it. Keep one candidate per size, the
+        # best measured one for greedy and a seeded random one for the random
+        # control (drawn from its own stream, so the downgrade order of a
+        # palette without equal sizes is unchanged).
+        ladder_randomizer = random.Random(
+            f"rotquant.dynamic.random-ladder:{patch_cfg.seed}")
+        ladder_rank = {
+            id(item): (
+                ladder_randomizer.random()
+                if config.allocation == "random" else float(item.score),
+                item.bits, item.format_id,
+            )
+            for items in candidates.values()
+            for item in items
+        }
+        ladders = {
+            name: _size_ladder(
+                items, size_attr, lambda item: ladder_rank[id(item)])
+            for name, items in candidates.items()
+        }
         selected_indices = {
-            name: len(items) - 1 for name, items in candidates.items()
+            name: len(items) - 1 for name, items in ladders.items()
         }
 
         def search_bytes() -> int:
             return fixed_search_bytes + sum(
-                int(getattr(candidates[name][index], size_attr))
+                int(getattr(ladders[name][index], size_attr))
                 for name, index in selected_indices.items()
             )
 
@@ -1671,8 +1853,8 @@ def select_dynamic_quantization(
                 index = selected_indices[name]
                 if index == 0:
                     continue
-                current = candidates[name][index]
-                lower = candidates[name][index - 1]
+                current = ladders[name][index]
+                lower = ladders[name][index - 1]
                 savings = int(getattr(current, size_attr)) - int(
                     getattr(lower, size_attr)
                 )
@@ -1688,7 +1870,7 @@ def select_dynamic_quantization(
                 _, selected_name = min(moves)
             selected_indices[selected_name] -= 1
         selected = {
-            name: candidates[name][index]
+            name: ladders[name][index]
             for name, index in selected_indices.items()
         }
         solver_stats = {
@@ -1772,6 +1954,9 @@ def select_dynamic_quantization(
         "score_composition": score_composition,
         "score_diagnostics": score_diagnostics,
         "protected_layers": protected,
+        # "measured_sensitivity" for guided arms, "seeded_random" for the
+        # random controls, None when nothing is protected.
+        "protection_policy": protection_policy,
         "solver": solver_stats,
         "target_bpw": config.target_bpw,
         "achieved_bpw": achieved_bits / total_weights,

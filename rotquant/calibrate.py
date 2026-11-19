@@ -3,8 +3,11 @@
 For each target ``nn.Linear`` we accumulate the (input) Hessian estimate
 ``H = mean_t x_t^T x_t``
 incrementally over a calibration set -- we never store the activations themselves.
-A damping term (default 1% of the mean diagonal) is added, auto-increasing on
-Cholesky failure, which is the instability the spec warns about.
+Hessians are returned undamped by default (``damp_frac=0``): the GPTQ solver
+adds its own ``percdamp`` ridge and increases it automatically on Cholesky
+failure, which is the instability the spec warns about. A nonzero
+``damp_frac`` adds ``damp_frac * mean(diag(H))`` on top of that, so pass one
+only for a consumer that needs a ridge and does not add its own.
 """
 from __future__ import annotations
 
@@ -47,7 +50,7 @@ class HessianAccumulator:
         self.mean += x.sum(dim=0) / total
         self.n_samples += n
 
-    def finalize(self, damp_frac: float = 0.01) -> torch.Tensor:
+    def finalize(self, damp_frac: float = 0.0) -> torch.Tensor:
         H = self.H.clone()
         mean_diag = torch.diag(H).mean().clamp_min(1e-8)
         H[range(self.in_features), range(self.in_features)] += damp_frac * mean_diag
@@ -134,12 +137,15 @@ def collect_hessians(model: nn.Module, dataloader: Iterable, device,
                      include: Sequence[str] | None = None,
                      exclude: Sequence[str] | None = None,
                      max_batches: int | None = None,
-                     damp_frac: float = 0.01,
+                     damp_frac: float = 0.0,
                      offload_device: str | None = "cpu") -> CalibrationResult:
     """Run the model over calibration batches, capturing per-linear input Hessians.
 
     ``dataloader`` yields tensors / dicts suitable for ``model(**batch)`` or
     ``model(batch)``. Use 128-512 sequences of the model's context length.
+
+    ``damp_frac`` defaults to 0: GPTQ damps the Hessian itself, so a ridge
+    here would be applied twice.
 
     ``include``/``exclude`` are substring filters over layer names; pass the same
     values as :class:`~rotquant.patch.PatchConfig` so Hessians are only collected
@@ -199,7 +205,7 @@ def collect_hessians_streamed(
     include: Sequence[str] | None = None,
     exclude: Sequence[str] | None = None,
     max_batches: int | None = None,
-    damp_frac: float = 0.01,
+    damp_frac: float = 0.0,
     layers_per_pass: int = 1,
     offload_device: str | None = "cpu",
     offload_dir: str | Path | None = None,

@@ -104,7 +104,14 @@ def evaluate_logit_fidelity(
     device,
     config: LogitFidelityConfig,
 ) -> dict[str, Any]:
-    """Compare teacher distributions and next-token losses on fixed prompts."""
+    """Compare teacher distributions and next-token losses on fixed prompts.
+
+    When a reference carries an ``attention_mask``, a position is scored only
+    if both its input token and its next-token target are unmasked, so
+    padding contributes nothing to any metric or token count.  A prompt left
+    with no scored position is listed in ``unscored_input_hashes`` and kept
+    out of the per-prompt metrics and their bootstrap.
+    """
 
     model.eval()
     kl_sums = cosine_sums = top1_matches = 0.0
@@ -115,6 +122,7 @@ def evaluate_logit_fidelity(
     token_match_values: list[torch.Tensor] = []
     token_nll_delta_values: list[torch.Tensor] = []
     prompt_metrics: list[dict[str, Any]] = []
+    unscored_input_hashes: list[str] = []
     scale = float(config.temperature)
     for reference in references:
         inputs = _device_inputs(reference.inputs, device)
@@ -127,6 +135,24 @@ def evaluate_logit_fidelity(
         candidate = candidate[..., :width, :]
         teacher = teacher[..., :width, :]
         targets = inputs["input_ids"][..., 1:1 + width]
+        attention_mask = inputs.get("attention_mask")
+        if attention_mask is None:
+            valid = torch.ones_like(targets, dtype=torch.bool)
+        else:
+            # Position t predicts token t + 1: both must be real tokens.
+            attention_mask = attention_mask.to(device=targets.device).bool()
+            valid = (
+                attention_mask[..., :width]
+                & attention_mask[..., 1:1 + width]
+            )
+        # Score the unmasked positions only, as flat [tokens, vocab] rows.
+        candidate = candidate[valid]
+        teacher = teacher[valid]
+        targets = targets[valid]
+        prompt_tokens = targets.numel()
+        if prompt_tokens == 0:
+            unscored_input_hashes.append(reference.input_hash)
+            continue
 
         teacher_prob = F.softmax(teacher / scale, dim=-1)
         candidate_log_prob = F.log_softmax(candidate / scale, dim=-1)
@@ -135,17 +161,12 @@ def evaluate_logit_fidelity(
         ).sum(dim=-1) * scale**2
         token_cosine = F.cosine_similarity(teacher, candidate, dim=-1)
         token_matches = teacher.argmax(dim=-1).eq(candidate.argmax(dim=-1))
-        source_token_nll = F.cross_entropy(
-            teacher.reshape(-1, teacher.shape[-1]), targets.reshape(-1),
-            reduction="none",
-        ).reshape_as(targets)
+        source_token_nll = F.cross_entropy(teacher, targets, reduction="none")
         candidate_token_nll = F.cross_entropy(
-            candidate.reshape(-1, candidate.shape[-1]), targets.reshape(-1),
-            reduction="none",
-        ).reshape_as(targets)
+            candidate, targets, reduction="none"
+        )
         source_nll = source_token_nll.sum()
         candidate_nll = candidate_token_nll.sum()
-        prompt_tokens = targets.numel()
         prompt_kl_sum = float(token_kl.sum().item())
         prompt_cosine_sum = float(token_cosine.sum().item())
         prompt_top1 = float(token_matches.sum().item())
@@ -203,6 +224,7 @@ def evaluate_logit_fidelity(
         "candidate_nll": candidate_nll_sum / tokens,
         "nll_delta": (candidate_nll_sum - source_nll_sum) / tokens,
         "input_hashes": [reference.input_hash for reference in references],
+        "unscored_input_hashes": unscored_input_hashes,
         "prompt_metrics": prompt_metrics,
         # Token resampling treats every token as independent. Tokens of one
         # prompt are not, so use the prompt-resampled interval for any claim
