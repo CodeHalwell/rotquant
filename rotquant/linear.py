@@ -17,6 +17,7 @@ the patcher can build the deliberately-broken "mismatched" mode for E7.
 from __future__ import annotations
 
 import math
+from dataclasses import replace
 
 import torch
 import torch.nn.functional as F
@@ -26,16 +27,34 @@ from ._internal import (
     encoded_storage_scales,
     expand_scales,
     generate_sketch_matrix,
+    quantize_groups,
     rotate_hessian,
 )
 from .codebooks import VectorCodebook
-from .pack import packed_bytes, unpack_indices
+from .pack import pack_indices, packed_bytes, unpack_indices
 from .quantize import QuantConfig, QuantizedWeight, Quantizer
 from .rotate import Identity, Rotation
 from .utils import get_logger
 
 logger = get_logger(__name__)
 _fallback_warning_emitted = False
+
+
+def code_refresh_config_issue(config: QuantConfig) -> str | None:
+    """Why recovery code refresh cannot keep ``config``'s format exact, or None.
+
+    Refresh re-assigns codes against the deployed scales and codebook. Error
+    compensation, bias corrections and activation refits are all computed for
+    one particular set of codes, so refreshing the codes would leave them stale.
+    """
+    if config.error_comp != "none":
+        return f"error_comp={config.error_comp!r} is computed for the original codes"
+    if config.bias_correction != "none":
+        return (f"bias_correction={config.bias_correction!r} is computed for "
+                "the original codes")
+    if config.activation_refit:
+        return "activation refitting needs a calibrated Hessian"
+    return None
 
 
 class QuantLinear(nn.Module):
@@ -392,39 +411,166 @@ class QuantLinear(nn.Module):
                 + self.lora_B.numel() * self.lora_B.element_size())
 
     def retain_recovery_source(self, weight: torch.Tensor) -> None:
-        """Keep an fp16 CPU source solely for alternating code refresh."""
-        self._recovery_source_weight = weight.detach().to(
-            device="cpu", dtype=torch.float16).clone()
+        """Keep a CPU copy of the source weight for recovery.
 
-    @torch.no_grad()
-    def refresh_quantization(self, hessian: torch.Tensor | None = None) -> None:
-        """Refresh codes; GPTQ requires a Hessian in the source input basis."""
-        if self._recovery_source_weight is None or self._quant_config is None:
-            raise ValueError("quantization refresh requires retained source weights")
-        device = self.qweight.packed.data.device
-        source = self._recovery_source_weight.to(device=device, dtype=torch.float32)
-        rotated = self.act_rotation.rotate_weight(source)
-        scales_override = None
+        The copy keeps the source dtype. Rounding an fp32 source to fp16, as an
+        earlier version did, made a refresh with unchanged parameters assign
+        different codes from the ones it started with.
+        """
+        self._recovery_source_weight = weight.detach().to(
+            device="cpu", copy=True)
+
+    def code_refresh_unsupported_reason(self) -> str | None:
+        """Why :meth:`refresh_quantization` cannot run exactly, or None."""
+        if self._quant_config is None:
+            return "the module was not built by QuantLinear.from_linear"
+        issue = code_refresh_config_issue(self._quant_config)
+        if issue is not None:
+            return issue
+        qw = self.qweight
+        if isinstance(qw.codebook, VectorCodebook):
+            return "vector codebooks are not supported"
+        if qw.scales is None:
+            return "the weight has no stored scales"
+        if qw.residual_packed is not None or qw.sketch is not None:
+            return "residual and sketch payloads are computed for the original codes"
+        return None
+
+    def _deployed_scale_encoding(self):
+        """``(decoded, stored, offsets, steps)`` of the scales the forward uses."""
         if self._log_scale_multiplier is not None:
-            scales_override = (
-                self._scale_training_base
-                * self.scale_finetuning_multiplier()).detach()
-        self.qweight = Quantizer(self._quant_config).quantize_weight(
-            rotated, H=(rotate_hessian(self.act_rotation, hessian.to(device))
-                        if hessian is not None else None), scales_override=scales_override)
+            return self.encode_finetuning_scales(
+                self._scale_training_base * self.scale_finetuning_multiplier())
+        qw = self.qweight
+        return qw.main_scales(), qw.scales, qw.scale_offsets, qw.scale_steps
+
+    def _reset_scale_training_state(self) -> None:
+        """Re-derive fixed-code training state after the packed weight changed."""
         if self._log_scale_multiplier is not None:
             indices = unpack_indices(self.qweight.packed).reshape(
                 self.out_features, self.in_features)
             centroids = self.qweight.codebook.centroids.to(indices.device)
             self._scale_training_codes = centroids[indices].float()
-            self._scale_training_base = (
-                self.qweight.main_scales().detach().float().clone())
-            self._log_scale_multiplier.zero_()
         self._fp_cache = None
-        if self.fallback:
+        # While scale fine-tuning is active the forward rebuilds the weight
+        # from codes and scales; the dense cache returns at commit.
+        if self.fallback and self._log_scale_multiplier is None:
             self._fp_cache = self.qweight.dequantize()
             if self._fallback_dtype is not None:
                 self._fp_cache = self._fp_cache.to(self._fallback_dtype)
+
+    @torch.no_grad()
+    def refresh_quantization(self, hessian: torch.Tensor | None = None) -> None:
+        """Re-assign codes for the current rotation against the deployed scales.
+
+        The scale values the forward pass currently uses (the stored scales, or
+        base times multiplier while scale fine-tuning is active, encoded on the
+        same grid as :meth:`commit_scale_finetuning`) are kept, as is the
+        codebook: only the codes change, and a refresh with unchanged
+        parameters reproduces the packed weight bit for bit. Learned scales
+        are never replaced by a fresh scale search. A trained multiplier is
+        folded into the base scales and reset to one.
+
+        GPTQ requires a Hessian in the source input basis; it and the other
+        formats :meth:`code_refresh_unsupported_reason` names are re-quantized
+        through :class:`Quantizer` from the same deployed scales, except that a
+        length bias correction without a trained multiplier is selected and
+        corrected afresh (its stored scales carry a correction for the old
+        codes). Recovery distillation refuses those formats before it starts.
+        """
+        if self._recovery_source_weight is None or self._quant_config is None:
+            raise ValueError("quantization refresh requires retained source weights")
+        qw = self.qweight
+        device = qw.packed.data.device
+        source = self._recovery_source_weight.to(device=device, dtype=torch.float32)
+        rotated = self.act_rotation.rotate_weight(source)
+        decoded, stored, offsets, steps = self._deployed_scale_encoding()
+        if hessian is None and self.code_refresh_unsupported_reason() is None:
+            group_size = (qw.scale_group_size if qw.scale_group_size is not None
+                          else qw.group_size)
+            _, indices = quantize_groups(rotated, decoded, qw.codebook, group_size)
+            refreshed = replace(
+                qw, packed=pack_indices(indices.reshape(-1), qw.packed.bits),
+                scales=stored, scale_offsets=offsets, scale_steps=steps)
+        else:
+            config = self._quant_config
+            override = None if decoded is None else decoded.float()
+            if config.bias_correction in {"length", "length_mean"}:
+                if self._log_scale_multiplier is None:
+                    # Stored scales carry a length correction computed for
+                    # the old codes: select again so it is recomputed once.
+                    override = None
+                else:
+                    # Trained scales already carry it; do not apply it twice.
+                    config = replace(config, bias_correction=(
+                        "mean" if config.bias_correction == "length_mean"
+                        else "none"))
+            refreshed = Quantizer(config).quantize_weight(
+                rotated, H=(rotate_hessian(self.act_rotation, hessian.to(device))
+                            if hessian is not None else None),
+                scales_override=override)
+        self.qweight = refreshed
+        if self._log_scale_multiplier is not None:
+            self._scale_training_base = (
+                self.qweight.main_scales().detach().float().clone())
+            self._log_scale_multiplier.zero_()
+        self._reset_scale_training_state()
+
+    def packed_state(self) -> dict[str, torch.Tensor | None]:
+        """CPU copy of everything a code refresh changes.
+
+        Codes, stored scales with their 8-bit offsets and steps, and the scale
+        fine-tuning base. Together with the trainable parameters this is the
+        complete deployed state of a refreshed layer. Only plain tensors, so it
+        can go into a ``weights_only`` checkpoint.
+        """
+        qw = self.qweight
+
+        def copy(tensor):
+            return None if tensor is None else tensor.detach().to(
+                device="cpu", copy=True)
+
+        return {
+            "packed": copy(qw.packed.data),
+            "scales": copy(qw.scales),
+            "scale_offsets": copy(qw.scale_offsets),
+            "scale_steps": copy(qw.scale_steps),
+            "scale_training_base": copy(self._scale_training_base),
+        }
+
+    @torch.no_grad()
+    def load_packed_state(self, state: dict[str, torch.Tensor | None]) -> None:
+        """Restore a :meth:`packed_state` snapshot exactly."""
+        qw = self.qweight
+        device = qw.packed.data.device
+        packed = state["packed"]
+        if packed is None or packed.shape != qw.packed.data.shape:
+            raise ValueError("packed-state snapshot does not match this layer")
+
+        def restored(tensor):
+            return None if tensor is None else tensor.to(device=device, copy=True)
+
+        self.qweight = replace(
+            qw, packed=replace(qw.packed, data=restored(packed)),
+            scales=restored(state["scales"]),
+            scale_offsets=restored(state["scale_offsets"]),
+            scale_steps=restored(state["scale_steps"]))
+        if self._log_scale_multiplier is not None:
+            base = state["scale_training_base"]
+            if base is None:
+                raise ValueError("packed-state snapshot lacks the scale base")
+            self._scale_training_base = restored(base)
+        self._reset_scale_training_state()
+
+    @torch.no_grad()
+    def recovery_residual(self) -> torch.Tensor:
+        """Rotated retained source weight minus the dequantized packed weight."""
+        if self._recovery_source_weight is None:
+            raise ValueError("the recovery residual requires retained source weights")
+        device = self.qweight.packed.data.device
+        source = self._recovery_source_weight.to(device=device, dtype=torch.float32)
+        return (self.act_rotation.rotate_weight(source)
+                - self.qweight.dequantize().float())
 
     def drop_recovery_source(self) -> None:
         self._recovery_source_weight = None

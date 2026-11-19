@@ -4,7 +4,7 @@ from types import SimpleNamespace
 import torch
 from torch import nn
 
-from rotquant._internal import group_scales_rms, storage_scales
+from rotquant._internal import group_scales_rms, quantize_groups, storage_scales
 from rotquant.block_train import (
     BlockRotationTrainConfig,
     FakeQuantButterflyLinear,
@@ -18,7 +18,7 @@ from rotquant.block_train import (
 )
 from rotquant.linear import QuantLinear
 from rotquant.patch import PatchConfig
-from rotquant.quantize import QuantConfig, Quantizer
+from rotquant.quantize import QuantConfig
 from rotquant.rotate import ButterflyRotation, Identity
 
 
@@ -334,12 +334,19 @@ def test_code_refresh_reassigns_for_current_rotation():
         source, _qcfg(), weight_rotation=rotation,
         act_rotation=rotation, fallback=True)
     qlinear.retain_recovery_source(source.weight)
+    scales = qlinear.qweight.scales.clone()
+    codes = qlinear.qweight.packed.data.clone()
     with torch.no_grad():
         rotation.theta.add_(0.05)
     qlinear.refresh_quantization()
-    expected = Quantizer(_qcfg()).quantize_weight(
-        rotation.rotate_weight(source.weight.half().float())).dequantize()
-    assert torch.allclose(qlinear.qweight.dequantize(), expected)
+    # Codes follow the current rotation; the deployed scales are kept rather
+    # than re-selected, and the source is used at its own precision.
+    expected, _ = quantize_groups(
+        rotation.rotate_weight(source.weight.float()), scales,
+        qlinear.qweight.codebook, _qcfg().group_size)
+    assert torch.equal(qlinear.qweight.scales, scales)
+    assert not torch.equal(qlinear.qweight.packed.data, codes)
+    assert torch.equal(qlinear.qweight.dequantize(), expected)
     qlinear.drop_recovery_source()
     assert qlinear._recovery_source_weight is None
 

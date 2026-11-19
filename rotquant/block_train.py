@@ -29,7 +29,7 @@ from ._internal import (
     quantize_groups,
     storage_scales,
 )
-from .linear import QuantLinear
+from .linear import QuantLinear, code_refresh_config_issue
 from .patch import PatchConfig, commit_rotation_storage, quant_config_for
 from .quantize import QuantConfig, Quantizer
 from .rotate import ButterflyRotation, RandomizedHadamard
@@ -73,8 +73,12 @@ class BlockRotationTrainConfig:
     selection_min_improvement: float = 0.0
     learn_scales: bool = False
     scale_lr: float | None = None
-    scale_multiplier_min: float = 0.5
-    scale_multiplier_max: float = 1.5
+    # Bounds on learned scale / group RMS. ``None`` derives them from the
+    # quantizer: its own mse_search interval (0.5-1.5 for the Gaussian grids,
+    # 1.5-4 for the uniform grid), widened to contain every initially selected
+    # scale so that no group starts clamped. See ``_learned_scale_bounds``.
+    scale_multiplier_min: float | None = None
+    scale_multiplier_max: float | None = None
     propagate_quantized_inputs: bool = False
     stream_blocks: bool = False
     train_batches_per_step: int = 0
@@ -138,8 +142,13 @@ class BlockRotationTrainConfig:
             raise ValueError("validation_min_improvement must be in [0, 1)")
         if not 0 <= self.selection_min_improvement < 1:
             raise ValueError("selection_min_improvement must be in [0, 1)")
-        if (self.scale_multiplier_min <= 0
-                or self.scale_multiplier_max < self.scale_multiplier_min):
+        if ((self.scale_multiplier_min is not None
+                and self.scale_multiplier_min <= 0)
+                or (self.scale_multiplier_max is not None
+                    and self.scale_multiplier_max <= 0)
+                or (self.scale_multiplier_min is not None
+                    and self.scale_multiplier_max is not None
+                    and self.scale_multiplier_max < self.scale_multiplier_min)):
             raise ValueError(
                 "scale multiplier bounds require 0 < min <= max")
         if self.scale_lr is not None and self.scale_lr <= 0:
@@ -459,13 +468,78 @@ def collect_teacher_calls(model: nn.Module, dataloader: Iterable, device,
     return calls
 
 
+_STORAGE_DTYPES = {
+    "float16": torch.float16,
+    "bfloat16": torch.bfloat16,
+    "float32": torch.float32,
+}
+# Recovery adapters are trained against, and committed at, this precision.
+_LORA_STORAGE_DTYPE = torch.float16
+
+
+def _learned_scale_issue(quant_cfg: QuantConfig) -> str | None:
+    if quant_cfg.scale == "turboquant":
+        return "learned block scales currently require rms or mse_search"
+    if quant_cfg.bias_correction in {"length", "length_mean"}:
+        return (
+            "learned block scales cannot be combined with "
+            f"bias_correction={quant_cfg.bias_correction!r}: packing multiplies "
+            "the learned scales by a per-row length correction that the "
+            "training proxy does not see; use bias_correction='none' or 'mean'")
+    return None
+
+
+def _learned_scale_bounds(quant_cfg: QuantConfig, ratio: torch.Tensor,
+                          minimum: float | None, maximum: float | None
+                          ) -> tuple[float, float]:
+    """Resolve learned-scale bounds, relative to the group RMS.
+
+    An unset bound comes from the quantizer's own mse_search interval, which
+    is where the scale search looks for this codebook (0.5-1.5 for Gaussian
+    grids, 1.5-4 for the uniform grid; a fixed 0.5-1.5 started every uniform
+    group clamped). For ``rms`` and ``absmax`` the interval is widened to
+    contain each initial ratio, so no group starts on a bound. ``mse_search``
+    ratios lie on the searched grid already.
+    """
+    low, high = quant_cfg.mse_search_bounds
+    if quant_cfg.scale != "mse_search" and ratio.numel():
+        low = min(low, float(ratio.min()))
+        high = max(high, float(ratio.max()))
+    low = low if minimum is None else minimum
+    high = high if maximum is None else maximum
+    if not 0 < low <= high:
+        raise ValueError("scale multiplier bounds require 0 < min <= max")
+    return low, high
+
+
+class _StoragePrecisionButterfly(ButterflyRotation):
+    """Butterfly whose forward uses theta rounded to its deployed dtype.
+
+    ``theta`` stays the FP32 optimiser master. Each forward evaluates the
+    rotation at ``theta`` rounded to ``storage_dtype``, exactly the angles that
+    :func:`rotquant.patch.commit_rotation_storage` deploys, with an identity
+    straight-through gradient to the master.
+    """
+
+    def __init__(self, *args, storage_dtype: torch.dtype, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.storage_dtype = storage_dtype
+
+    def _trig(self):
+        angles = self.theta.float()
+        stored = angles.to(self.storage_dtype).float()
+        angles = angles + (stored - angles).detach()
+        return angles.cos(), angles.sin()
+
+
 class FakeQuantButterflyLinear(nn.Module):
     """Frozen dense linear with trainable butterfly and per-forward fake quant."""
 
     def __init__(self, linear: nn.Linear, quant_cfg: QuantConfig, *, block: int,
                  seed: int, learn_scales: bool = False,
-                 scale_multiplier_min: float = 0.5,
-                 scale_multiplier_max: float = 1.5):
+                 scale_multiplier_min: float | None = None,
+                 scale_multiplier_max: float | None = None,
+                 rotation_storage_dtype: str = "float32"):
         super().__init__()
         self.in_features = linear.in_features
         self.out_features = linear.out_features
@@ -474,23 +548,45 @@ class FakeQuantButterflyLinear(nn.Module):
             self.register_buffer("bias", linear.bias.detach().float().clone())
         else:
             self.bias = None
-        self.rotation = ButterflyRotation(
-            self.in_features, block=block, seed=seed,
-            device=self.weight.device, dtype=torch.float32)
+        if rotation_storage_dtype not in _STORAGE_DTYPES:
+            raise ValueError(
+                "rotation_storage_dtype must be float16, bfloat16, or float32")
+        storage_dtype = _STORAGE_DTYPES[rotation_storage_dtype]
+        if storage_dtype == torch.float32:
+            self.rotation = ButterflyRotation(
+                self.in_features, block=block, seed=seed,
+                device=self.weight.device, dtype=torch.float32)
+        else:
+            self.rotation = _StoragePrecisionButterfly(
+                self.in_features, block=block, seed=seed,
+                device=self.weight.device, dtype=torch.float32,
+                storage_dtype=storage_dtype)
         self.quantizer = Quantizer(quant_cfg)
         self.scale_multiplier_min = scale_multiplier_min
         self.scale_multiplier_max = scale_multiplier_max
         self.register_parameter("log_scale_multiplier", None)
         if learn_scales:
-            if quant_cfg.scale == "turboquant":
-                raise ValueError(
-                    "learned block scales currently require rms or mse_search")
+            issue = _learned_scale_issue(quant_cfg)
+            if issue is not None:
+                raise ValueError(issue)
             with torch.no_grad():
                 rotated = self.rotation.rotate_weight(self.weight)
                 rms = group_scales_rms(rotated, quant_cfg.group_size)
                 initial = self.quantizer.select_scales(rotated)
-                multiplier = (initial / rms.clamp_min(1e-12)).clamp(
-                    scale_multiplier_min, scale_multiplier_max)
+                ratio = initial / rms.clamp_min(1e-12)
+                (self.scale_multiplier_min,
+                 self.scale_multiplier_max) = _learned_scale_bounds(
+                    quant_cfg, ratio, scale_multiplier_min, scale_multiplier_max)
+                multiplier = ratio.clamp(
+                    self.scale_multiplier_min, self.scale_multiplier_max)
+                if (scale_multiplier_min is not None
+                        or scale_multiplier_max is not None) and not torch.equal(
+                            multiplier, ratio):
+                    logger.warning(
+                        "learned scale bounds [%g, %g] clamp %d of %d initially "
+                        "selected group scales",
+                        self.scale_multiplier_min, self.scale_multiplier_max,
+                        int((multiplier != ratio).sum()), ratio.numel())
             self.log_scale_multiplier = nn.Parameter(multiplier.log())
 
     def scale_multiplier(self) -> torch.Tensor | None:
@@ -529,11 +625,35 @@ class FakeQuantButterflyLinear(nn.Module):
             return normalized * expand_scales(
                 scales, self.quantizer.cfg.group_size, self.in_features)
         with torch.no_grad():
-            scales = self.quantizer.select_scales(rotated)
-            q, _ = quantize_groups(
-                rotated, scales, self.quantizer.codebook,
-                self.quantizer.cfg.group_size)
-        return q
+            return self._packed_weight(rotated)
+
+    def _packed_weight(self, rotated: torch.Tensor) -> torch.Tensor:
+        """Dequantized weight exactly as ``Quantizer.quantize_weight`` packs it.
+
+        Codes are assigned against the storage-rounded scales, and a length
+        bias correction is folded into the stored scales the same way.
+        """
+        cfg = self.quantizer.cfg
+        scales = storage_scales(
+            self.quantizer.select_scales(rotated),
+            cfg.scale_bits, cfg.scale_quant_group_size)
+        q, indices = quantize_groups(
+            rotated, scales, self.quantizer.codebook, cfg.group_size)
+        if cfg.bias_correction not in {"length", "length_mean"}:
+            return q
+        energy = rotated.square().sum(dim=1)
+        alignment = (rotated * q).sum(dim=1)
+        usable = (energy > 0) & (
+            alignment > torch.finfo(rotated.dtype).eps * energy)
+        correction = torch.ones_like(energy)
+        correction[usable] = energy[usable] / alignment[usable]
+        corrected = storage_scales(
+            scales.float() * correction.unsqueeze(1),
+            cfg.scale_bits, cfg.scale_quant_group_size)
+        group = self.in_features if cfg.scale == "turboquant" else cfg.group_size
+        centroids = self.quantizer.codebook.centroids.to(rotated.device)
+        return centroids[indices] * expand_scales(
+            corrected, group, self.in_features)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         xr = self.rotation.rotate_activation(x)
@@ -582,7 +702,8 @@ def _fake_quant_block(source: nn.Module, global_name: str,
             linear, proxy_cfg, block=patch_cfg.block,
             seed=seed_by_name[full_name], learn_scales=config.learn_scales,
             scale_multiplier_min=config.scale_multiplier_min,
-            scale_multiplier_max=config.scale_multiplier_max).to(device)
+            scale_multiplier_max=config.scale_multiplier_max,
+            rotation_storage_dtype=patch_cfg.rotation_storage_dtype).to(device)
         parent, attr = get_parent(block, relative)
         setattr(parent, attr, replacement)
         fake[relative] = replacement
@@ -825,6 +946,14 @@ def _packed_cpu_block(source: nn.Module, global_name: str,
     return block
 
 
+def _recovery_needs_source(recovery: dict[str, Any]) -> bool:
+    """Whether distillation will read each layer's retained source weight."""
+    return bool(
+        int(recovery.get("distill_code_refresh_interval", 0))
+        or (int(recovery.get("distill_lora_rank", 0))
+            and str(recovery.get("distill_lora_init", "zero")) == "residual_svd"))
+
+
 def _patch_source_block(source: nn.Module, global_name: str,
                         quant_cfg: QuantConfig, patch_cfg: PatchConfig,
                         seed_by_name: dict[str, int],
@@ -870,26 +999,11 @@ def _patch_source_block(source: nn.Module, global_name: str,
                     f"mean bias correction requires activation mean for {full_name}"
                 )
             qlinear.apply_mean_bias_correction(work.weight, mean)
-        recovery = patch_cfg.train_rotation or {}
-        lora_rank = int(recovery.get("distill_lora_rank", 0))
-        lora_init = str(recovery.get("distill_lora_init", "zero"))
-        if lora_rank and lora_init == "residual_svd":
-            with torch.no_grad():
-                rotated_source = rotation.rotate_weight(
-                    work.weight.detach().float())
-                residual = rotated_source - qlinear.qweight.dequantize().float()
-            qlinear.enable_lora(
-                lora_rank,
-                float(recovery.get("distill_lora_alpha", 8.0)),
-                init="residual_svd",
-                residual=residual,
-                oversample=int(recovery.get(
-                    "distill_lora_svd_oversample", 4)),
-                niter=int(recovery.get("distill_lora_svd_niter", 1)),
-            )
-            del residual, rotated_source
-        if int(recovery.get("distill_code_refresh_interval", 0)):
-            qlinear.retain_recovery_source(work.weight)
+        if _recovery_needs_source(patch_cfg.train_rotation or {}):
+            # Adapters are not attached here: residual-SVD LoRA is initialised
+            # from this source when distillation starts, so block training and
+            # the activations it propagates never see an untrained adapter.
+            qlinear.retain_recovery_source(linear.weight)
         if stage:
             qlinear.to(device=source_device, dtype=source_dtype)
         parent, attr = get_parent(source, relative)
@@ -1015,6 +1129,71 @@ def _restore_parameter_snapshot(parameters: Sequence[torch.Tensor],
             parameter.copy_(value.to(parameter.device, parameter.dtype))
 
 
+class _MasterParameters:
+    """FP32 optimiser masters for parameters deployed at another precision.
+
+    The optimiser steps ``masters``. After every step and every restore the
+    model's own parameters are set to the masters rounded to their deployed
+    storage dtype, so each forward pass, validation and selection uses exactly
+    the values that are committed, and the final values are storage-dtype
+    values. Gradients still flow to the model's parameters; :meth:`load_grads`
+    copies them to the masters in FP32 before clipping and stepping. Adam on an
+    FP16 parameter made angles non-finite after one step, and BF16 updates
+    below half an ulp rounded to zero. An FP32 parameter deployed in FP32 is
+    its own master, which leaves that path unchanged.
+    """
+
+    def __init__(self, parameters: Sequence[nn.Parameter],
+                 storage_dtypes: Sequence[torch.dtype]):
+        self.parameters = list(parameters)
+        self.storage_dtypes = list(storage_dtypes)
+        self.masters = [
+            parameter if (parameter.dtype == torch.float32
+                          and dtype == torch.float32)
+            else nn.Parameter(parameter.detach().float().clone())
+            for parameter, dtype in zip(self.parameters, self.storage_dtypes)]
+        self.store()
+
+    def _separate(self):
+        return [(parameter, master, dtype) for parameter, master, dtype in zip(
+            self.parameters, self.masters, self.storage_dtypes)
+            if master is not parameter]
+
+    def zero_grad(self) -> None:
+        for parameter in self.parameters + self.masters:
+            parameter.grad = None
+
+    def load_grads(self) -> None:
+        for parameter, master, _ in self._separate():
+            master.grad = (None if parameter.grad is None
+                           else parameter.grad.detach().float().clone())
+            parameter.grad = None
+
+    @torch.no_grad()
+    def store(self) -> None:
+        for parameter, master, dtype in self._separate():
+            parameter.copy_(master.detach().to(dtype))
+
+    def snapshot(self) -> list[torch.Tensor]:
+        return _parameter_snapshot(self.masters)
+
+    def restore(self, snapshot: Sequence[torch.Tensor]) -> None:
+        _restore_parameter_snapshot(self.masters, snapshot)
+        self.store()
+
+
+def _packed_snapshot(modules: Sequence[QuantLinear]) -> list[dict[str, Any]]:
+    return [module.packed_state() for module in modules]
+
+
+def _restore_packed_snapshot(modules: Sequence[QuantLinear],
+                             snapshot: Sequence[dict[str, Any]]) -> None:
+    if len(snapshot) != len(modules):
+        raise ValueError("packed-state snapshot does not match the model")
+    for module, state in zip(modules, snapshot):
+        module.load_packed_state(state)
+
+
 def _parameter_name_matches(name: str, patterns: Sequence[str]) -> bool:
     return any(
         fnmatch.fnmatchcase(name, pattern)
@@ -1083,14 +1262,34 @@ def validate_recovery_inputs(model: nn.Module, calls: Sequence[TeacherCall],
     if config.distill_kl_weight:
         for call in calls:
             validate_teacher_target(call, config.distill_temperature)
-    if not config.distill_code_refresh_interval:
-        return
-    for module in model.modules():
-        if (isinstance(module, QuantLinear) and module._quant_config is not None
-                and module._quant_config.error_comp == "gptq"):
+    residual_lora = (config.distill_lora_rank
+                     and config.distill_lora_init == "residual_svd")
+    for name, module in model.named_modules():
+        if not isinstance(module, QuantLinear):
+            continue
+        if config.distill_code_refresh_interval:
+            if (module._quant_config is not None
+                    and module._quant_config.error_comp == "gptq"):
+                raise ValueError(
+                    "GPTQ recovery code refresh requires calibrated Hessians and "
+                    "packed-state rollback; use fixed codes with "
+                    "distill_code_refresh_interval=0")
+            issue = module.code_refresh_unsupported_reason()
+            if issue is not None:
+                raise ValueError(
+                    f"recovery code refresh cannot keep {name} exact: {issue}; "
+                    "use fixed codes with distill_code_refresh_interval=0")
+            if module._recovery_source_weight is None:
+                raise ValueError(
+                    f"recovery code refresh needs the retained source weight of "
+                    f"{name}; set distill_code_refresh_interval before block "
+                    "training patches the model")
+        if (residual_lora and module.lora_A is None
+                and module._recovery_source_weight is None):
             raise ValueError(
-                "GPTQ recovery code refresh requires calibrated Hessians and packed-state "
-                "rollback; use fixed codes with distill_code_refresh_interval=0")
+                f"residual_svd LoRA needs the retained source weight of {name}; "
+                "set distill_lora_init='residual_svd' before block training "
+                "patches the model, or use distill_lora_init='zero'")
 
 
 def recovery_patience_exhausted(stale_steps: int, config: BlockRotationTrainConfig) -> bool:
@@ -1124,6 +1323,13 @@ def _distill_packed_model(model: nn.Module, calls: Sequence[TeacherCall], device
     if config.distill_resume and checkpoint_path and Path(checkpoint_path).exists():
         checkpoint = _load_distill_checkpoint(
             checkpoint_path, distillation_loss_contract(config))
+        if (config.distill_code_refresh_interval
+                and ("packed_state" not in checkpoint
+                     or "best_packed_state" not in checkpoint)):
+            raise ValueError(
+                "distillation checkpoint lacks the packed state that code "
+                "refresh changes; start a fresh recovery run")
+    refresh = bool(config.distill_code_refresh_interval)
     train_end = config.distill_train_batches
     validation_end = train_end + config.distill_validation_batches
     train_calls = calls[:train_end]
@@ -1148,9 +1354,17 @@ def _distill_packed_model(model: nn.Module, calls: Sequence[TeacherCall], device
                 config.distill_scale_multiplier_min,
                 config.distill_scale_multiplier_max))
         if config.distill_lora_rank:
+            # Residual-SVD adapters start from the packed layer as it is now,
+            # at the start of distillation; block training never saw them.
+            residual = (module.recovery_residual()
+                        if config.distill_lora_init == "residual_svd"
+                        and module.lora_A is None else None)
             lora_params.extend(module.enable_lora(
                 config.distill_lora_rank, config.distill_lora_alpha,
-                init=config.distill_lora_init))
+                init=config.distill_lora_init, residual=residual,
+                oversample=config.distill_lora_svd_oversample,
+                niter=config.distill_lora_svd_niter))
+            del residual
         rotation = module.act_rotation
         if (config.distill_train_rotations
                 and isinstance(rotation, ButterflyRotation)
@@ -1178,19 +1392,46 @@ def _distill_packed_model(model: nn.Module, calls: Sequence[TeacherCall], device
         raise ValueError("distillation found no trainable packed parameters")
 
     parameters = rotation_params + scale_params + lora_params + existing_params
-    initial_snapshot = _parameter_snapshot(parameters)
-    angle_reference = [parameter.detach().clone()
-                       for parameter in rotation_params]
+    # The optimiser steps FP32 masters; the model holds their values rounded
+    # to the dtype each parameter is deployed in (rotation storage dtype,
+    # FP16 adapters, the model's own dtype for existing parameters).
+    masters = _MasterParameters(
+        parameters,
+        [parameter.dtype for parameter in rotation_params]
+        + [torch.float32] * len(scale_params)
+        + [_LORA_STORAGE_DTYPE] * len(lora_params)
+        + [parameter.dtype for parameter in existing_params])
+    master_groups = []
+    start = 0
+    for group in (rotation_params, scale_params, lora_params, existing_params):
+        master_groups.append(masters.masters[start:start + len(group)])
+        start += len(group)
+    rotation_masters, scale_masters, lora_masters, existing_masters = master_groups
+
+    def capture_state():
+        # Parameters alone do not describe a refreshed layer: a refresh
+        # replaces its codes and folds the multiplier into the base scales.
+        return (masters.snapshot(),
+                _packed_snapshot(quant_linears) if refresh else None)
+
+    def restore_state(state):
+        parameter_snapshot, packed_snapshot = state
+        masters.restore(parameter_snapshot)
+        if packed_snapshot is not None:
+            _restore_packed_snapshot(quant_linears, packed_snapshot)
+
+    initial_state = capture_state()
+    angle_reference = [master.detach().clone() for master in rotation_masters]
     groups = []
-    if rotation_params:
-        groups.append({"params": rotation_params, "lr": config.distill_lr})
-    if scale_params:
-        groups.append({"params": scale_params, "lr": config.distill_scale_lr})
-    if lora_params:
-        groups.append({"params": lora_params, "lr": config.distill_lora_lr})
-    if existing_params:
+    if rotation_masters:
+        groups.append({"params": rotation_masters, "lr": config.distill_lr})
+    if scale_masters:
+        groups.append({"params": scale_masters, "lr": config.distill_scale_lr})
+    if lora_masters:
+        groups.append({"params": lora_masters, "lr": config.distill_lora_lr})
+    if existing_masters:
         groups.append({
-            "params": existing_params,
+            "params": existing_masters,
             "lr": config.distill_existing_lr,
             "weight_decay": config.distill_existing_weight_decay,
         })
@@ -1205,7 +1446,7 @@ def _distill_packed_model(model: nn.Module, calls: Sequence[TeacherCall], device
     best_validation = initial_validation
     patience_validation = initial_validation
     best_step = 0
-    best_snapshot = initial_snapshot
+    best_state = initial_state
     stale_steps = 0
     steps_run = 0
     resumed = False
@@ -1213,9 +1454,11 @@ def _distill_packed_model(model: nn.Module, calls: Sequence[TeacherCall], device
     if checkpoint is not None:
         if int(checkpoint.get("parameter_count", -1)) != len(parameters):
             raise ValueError("distillation checkpoint parameter layout changed")
-        _restore_parameter_snapshot(parameters, checkpoint["parameters"])
+        restore_state((checkpoint["parameters"],
+                       checkpoint.get("packed_state") if refresh else None))
         optimizer.load_state_dict(checkpoint["optimizer"])
-        best_snapshot = checkpoint["best_snapshot"]
+        best_state = (checkpoint["best_snapshot"],
+                      checkpoint.get("best_packed_state") if refresh else None)
         best_validation = float(checkpoint["best_validation"])
         patience_validation = float(checkpoint["patience_validation"])
         best_step = int(checkpoint["best_step"])
@@ -1225,12 +1468,10 @@ def _distill_packed_model(model: nn.Module, calls: Sequence[TeacherCall], device
         if recovery_patience_exhausted(stale_steps, config):
             start_step = config.distill_steps + 1
         resumed = True
-        if config.distill_code_refresh_interval:
-            for module in quant_linears:
-                module.refresh_quantization()
 
     for step in range(start_step, config.distill_steps + 1):
         optimizer.zero_grad()
+        masters.zero_grad()
         train_value = 0.0
         step_calls = _distill_step_calls(
             train_calls, step, config.distill_batches_per_step
@@ -1242,20 +1483,22 @@ def _distill_packed_model(model: nn.Module, calls: Sequence[TeacherCall], device
                 raise FloatingPointError("recovery produced a non-finite training loss")
             train_value += float(loss.detach().item()) / len(step_calls)
             (loss / len(step_calls)).backward()
-        if rotation_params and config.distill_angle_l2:
+        masters.load_grads()
+        if rotation_masters and config.distill_angle_l2:
             angle_loss = torch.stack([
-                (parameter - reference).pow(2).mean()
-                for parameter, reference in zip(
-                    rotation_params, angle_reference)
+                (master - reference).pow(2).mean()
+                for master, reference in zip(
+                    rotation_masters, angle_reference)
             ]).mean()
             (config.distill_angle_l2 * angle_loss).backward()
-        if any(parameter.grad is not None and not torch.isfinite(parameter.grad).all()
-               for parameter in parameters):
+        if any(master.grad is not None and not torch.isfinite(master.grad).all()
+               for master in masters.masters):
             raise FloatingPointError("recovery produced non-finite gradients; no optimiser step applied")
         if config.distill_max_grad_norm:
             torch.nn.utils.clip_grad_norm_(
-                parameters, config.distill_max_grad_norm)
+                masters.masters, config.distill_max_grad_norm)
         optimizer.step()
+        masters.store()
         for module in quant_linears:
             _project_log_multiplier(
                 module._log_scale_multiplier,
@@ -1276,7 +1519,7 @@ def _distill_packed_model(model: nn.Module, calls: Sequence[TeacherCall], device
             if validation < best_validation:
                 best_validation = validation
                 best_step = step
-                best_snapshot = _parameter_snapshot(parameters)
+                best_state = capture_state()
             threshold = patience_validation * (
                 1.0 - config.distill_validation_min_improvement)
             if validation < threshold:
@@ -1286,27 +1529,33 @@ def _distill_packed_model(model: nn.Module, calls: Sequence[TeacherCall], device
                 stale_steps += 1
         if (checkpoint_path and config.distill_checkpoint_interval
                 and step % config.distill_checkpoint_interval == 0):
-            _save_distill_checkpoint(checkpoint_path, {
+            current_parameters, current_packed = capture_state()
+            state = {
                 "format": "rotquant-distill-v2",
                 "loss_contract": distillation_loss_contract(config),
                 "parameter_count": len(parameters),
-                "parameters": _parameter_snapshot(parameters),
+                "parameters": current_parameters,
                 "optimizer": optimizer.state_dict(),
-                "best_snapshot": best_snapshot,
+                "best_snapshot": best_state[0],
                 "best_validation": best_validation,
                 "patience_validation": patience_validation,
                 "best_step": best_step,
                 "stale_steps": stale_steps,
                 "steps_run": steps_run,
-            })
+            }
+            if refresh:
+                state["packed_state"] = current_packed
+                state["best_packed_state"] = best_state[1]
+            _save_distill_checkpoint(checkpoint_path, state)
         if validated and recovery_patience_exhausted(stale_steps, config):
             break
 
-    _restore_parameter_snapshot(parameters, best_snapshot)
-    if config.distill_code_refresh_interval:
-        for module in quant_linears:
-            module.refresh_quantization()
-    candidate_snapshot = _parameter_snapshot(parameters)
+    # Restoring the best state restores exactly the model that was validated
+    # at ``best_step``, refreshed codes and scales included. Refreshing again
+    # here, as an earlier version did, produced a third state that neither the
+    # validation nor the selection gate had seen.
+    restore_state(best_state)
+    candidate_state = capture_state()
     candidate_train = _distill_eval_loss(
         model, train_calls, device, compute_dtype, config)
     candidate_validation = _distill_eval_loss(
@@ -1315,13 +1564,8 @@ def _distill_packed_model(model: nn.Module, calls: Sequence[TeacherCall], device
         model, selection_calls, device, compute_dtype, config)
     accepted = candidate_selection <= reference_selection * (
         1.0 - config.distill_selection_min_improvement)
-    if accepted:
-        _restore_parameter_snapshot(parameters, candidate_snapshot)
-    else:
-        _restore_parameter_snapshot(parameters, initial_snapshot)
-        if config.distill_code_refresh_interval:
-            for module in quant_linears:
-                module.refresh_quantization()
+    # A rejected run restores the pre-distillation packed state bit for bit.
+    restore_state(candidate_state if accepted else initial_state)
 
     scale_multiplier_values = [
         module.scale_finetuning_multiplier().detach().cpu().reshape(-1)
@@ -1332,7 +1576,7 @@ def _distill_packed_model(model: nn.Module, calls: Sequence[TeacherCall], device
     for module in quant_linears:
         module.commit_scale_finetuning()
         if accepted:
-            module.commit_lora()
+            module.commit_lora(_LORA_STORAGE_DTYPE)
         else:
             module.disable_lora()
         module.drop_recovery_source()
@@ -1410,6 +1654,23 @@ def _distill_packed_model(model: nn.Module, calls: Sequence[TeacherCall], device
     }
 
 
+def _validate_block_quant_configs(patch_cfg: PatchConfig,
+                                  config: BlockRotationTrainConfig) -> None:
+    """Reject proxy/deploy mismatches before any layer is replaced."""
+    quant_configs = [patch_cfg.quant, *patch_cfg.layer_quant.values()]
+    for quant_cfg in quant_configs:
+        if config.learn_scales:
+            issue = _learned_scale_issue(quant_cfg)
+            if issue is not None:
+                raise ValueError(issue)
+        if config.distill_steps and config.distill_code_refresh_interval:
+            issue = code_refresh_config_issue(quant_cfg)
+            if issue is not None:
+                raise ValueError(
+                    f"recovery code refresh cannot keep the packed format "
+                    f"exact: {issue}; use distill_code_refresh_interval=0")
+
+
 def train_and_patch_blocks(model: nn.Module, patch_cfg: PatchConfig,
                            calls: dict[str, list[BlockCall]],
                            distill_calls: Sequence[TeacherCall] | None = None,
@@ -1423,9 +1684,7 @@ def train_and_patch_blocks(model: nn.Module, patch_cfg: PatchConfig,
     if patch_cfg.quant.error_comp == "gptq":
         raise ValueError("block rotation training with GPTQ is not implemented")
     config = BlockRotationTrainConfig(**(patch_cfg.train_rotation or {}))
-    if config.learn_scales and patch_cfg.quant.scale == "turboquant":
-        raise ValueError(
-            "learned block scales currently require rms or mse_search")
+    _validate_block_quant_configs(patch_cfg, config)
     blocks = find_transformer_blocks(model)
     include = tuple(patch_cfg.include) if patch_cfg.include is not None else None
     exclude = tuple(patch_cfg.exclude or ())
